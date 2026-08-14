@@ -1,0 +1,34 @@
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,1,0,1
+ PRODUCTVERSION 0,1,0,1
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "mwfl"
+            VALUE "FileDescription", "Notepad Colon"
+            VALUE "FileVersion", "0.1.0-beta.1"
+            VALUE "InternalName", "notepad-colon"
+            VALUE "LegalCopyright", "Copyright (c) 2026 mwfl contributors"
+            VALUE "OriginalFilename", "notepad-colon.exe"
+            VALUE "ProductName", "Notepad Colon"
+            VALUE "ProductVersion", "0.1.0-beta.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

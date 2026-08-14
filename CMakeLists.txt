@@ -33,6 +33,7 @@ add_library(notepad_colon_model
     src/document.cpp
     src/large_file.cpp
     src/language.cpp
+    src/preferences.cpp
     src/session.cpp
     src/text.cpp
     src/workspace.cpp)
@@ -42,6 +43,7 @@ target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 add_executable(notepad-colon WIN32
     src/main.cpp
     src/scintilla_support.cpp
+    app.rc
     app.manifest)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
@@ -106,6 +108,11 @@ if(BUILD_TESTING)
     add_test(NAME notepad-colon.model COMMAND notepad_colon_model_tests)
     add_test(NAME notepad-colon.gui COMMAND notepad-colon --self-test)
     set_tests_properties(notepad-colon.gui PROPERTIES TIMEOUT 30)
+    add_test(NAME notepad-colon.single-instance
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/single_instance_test.ps1"
+                "$<TARGET_FILE:notepad-colon>")
+    set_tests_properties(notepad-colon.single-instance PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE)
     add_executable(notepad_colon_performance_tests tests/performance_tests.cpp)
     target_link_libraries(notepad_colon_performance_tests PRIVATE notepad_colon_model)
     target_compile_features(notepad_colon_performance_tests PRIVATE cxx_std_20)

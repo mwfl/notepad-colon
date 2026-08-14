@@ -2,7 +2,11 @@
 #include <mwfl/scintilla.h>
 #include <mwfl/file_association.h>
 #include <mwfl/shell_integration.h>
+#include <mwfl/settings_store.h>
+#include <mwfl/single_instance.h>
+#include <mwfl/dialog.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/preferences.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/language.h>
@@ -10,7 +14,9 @@
 #include "scintilla_support.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -20,6 +26,7 @@
 #include <vector>
 #include <thread>
 #include <unordered_map>
+#include <shellapi.h>
 
 using mwfl::operator""_dip;
 
@@ -71,9 +78,12 @@ constexpr mwfl::ControlId kTree{350};
 constexpr mwfl::ControlId kResults{351};
 constexpr mwfl::ControlId kRegisterAssociation{360};
 constexpr mwfl::ControlId kRemoveAssociation{361};
+constexpr mwfl::ControlId kPreferences{362};
+constexpr mwfl::ControlId kAbout{363};
 constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
 constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
 constexpr mwfl::TimerId kMonitorTimer{1};
+constexpr mwfl::TimerId kActivationTestTimer{2};
 constexpr std::wstring_view kSettingsKey = L"Software\\mwfl\\Notepad Colon";
 constexpr mwfl::ControlId kSearch{130};
 constexpr mwfl::ControlId kReplacement{131};
@@ -160,7 +170,12 @@ mwfl::FileAssociationSpec TextAssociation() {
 
 class MainWindow final : public mwfl::WindowBase {
 public:
-    MainWindow() : workspace_({1}, 12) {}
+    MainWindow(mwfl::SingleInstance& instance,
+               std::vector<std::filesystem::path> startup_paths,
+               bool self_test, bool activation_test_server)
+        : workspace_({1}, 12), instance_(instance),
+          startup_paths_(std::move(startup_paths)), self_test_(self_test),
+          activation_test_server_(activation_test_server) {}
 
     void BuildUI() override {
         static_cast<void>(mwfl::SetProcessAppUserModelId(L"mwfl.notepad-colon"));
@@ -168,10 +183,12 @@ public:
             throw std::runtime_error("Scintilla.dll is not available beside Notepad Colon");
         if (!lexilla_.LoadAdjacent())
             throw std::runtime_error("Lexilla.dll is not available beside Notepad Colon");
-        if (!IsSelfTest()) {
+        if (!IsTestMode()) {
             const auto loaded = mwfl::LoadRecentFilesFromRegistry(HKEY_CURRENT_USER, kSettingsKey, 10);
             if (loaded.Succeeded()) recent_ = *loaded.value;
+            LoadPreferences();
         }
+        ApplyAppearance();
         BuildCommands();
         mwfl::EnableFileDrop(GetHwnd());
 
@@ -219,6 +236,8 @@ public:
 
         ResolveSessionPath();
         if (!RestoreSession()) NewDocument();
+        mwfl::Must(instance_.RegisterWindow(GetHwnd()), "register single-instance window");
+        for (const auto& path : startup_paths_) static_cast<void>(OpenPath(path));
         mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
                    "start external-file monitor");
         if (IsSelfTest() && !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
@@ -302,10 +321,33 @@ public:
             CompleteWorkspaceScan();
             return mwfl::EventResult::Handled();
         }
+        if (auto activation = instance_.DecodeActivation(event.id, event.lparam)) {
+            if (::IsIconic(GetHwnd())) ::ShowWindow(GetHwnd(), SW_RESTORE);
+            ::SetForegroundWindow(GetHwnd());
+            std::size_t start = 0;
+            bool opened = false;
+            while (start <= activation->size()) {
+                const auto end = activation->find(L'\n', start);
+                const auto item = activation->substr(start, end - start);
+                if (!item.empty()) opened = OpenPath(item) || opened;
+                if (end == std::wstring::npos) break;
+                start = end + 1;
+            }
+            if (activation_test_server_) {
+                activation_test_result_ = opened ? 0 : 4;
+                ::SetTimer(GetHwnd(), kActivationTestTimer.value, 500, nullptr);
+            }
+            return mwfl::EventResult::Handled(TRUE);
+        }
         return mwfl::EventResult::Propagate();
     }
 
     mwfl::EventResult OnTimer(mwfl::TimerId id) override {
+        if (id == kActivationTestTimer) {
+            ::KillTimer(GetHwnd(), kActivationTestTimer.value);
+            ::PostQuitMessage(activation_test_result_);
+            return mwfl::EventResult::Handled();
+        }
         if (id != kMonitorTimer) return mwfl::EventResult::Propagate();
         CheckExternalChanges(false);
         return mwfl::EventResult::Handled();
@@ -314,7 +356,7 @@ public:
     mwfl::EventResult OnClose() override {
         monitor_timer_.Stop();
         StopWorkers();
-        if (!IsSelfTest()) {
+        if (!IsTestMode()) {
             for (const auto& document : workspace_.GetDocuments()) {
                 if (!document.dirty) continue;
                 if (::MessageBoxW(GetHwnd(),
@@ -329,13 +371,15 @@ public:
                 HKEY_CURRENT_USER, kSettingsKey, recent_));
         }
         adapter_.Detach();
+        instance_.UnregisterWindow();
         return mwfl::EventResult::Propagate();
     }
 
 private:
-    static bool IsSelfTest() noexcept {
-        return std::wstring_view{::GetCommandLineW()}.find(L"--self-test") != std::wstring_view::npos;
+    bool IsSelfTest() const noexcept {
+        return self_test_;
     }
+    bool IsTestMode() const noexcept { return self_test_ || activation_test_server_; }
 
     void BuildCommands() {
         commands_
@@ -378,7 +422,13 @@ private:
             .Add(mwfl::Command(kRegisterAssociation, L"Register .txt Association",
                 [this] { ReportAssociation(true); }))
             .Add(mwfl::Command(kRemoveAssociation, L"Remove Owned .txt Association",
-                [this] { ReportAssociation(false); }));
+                [this] { ReportAssociation(false); }))
+            .Add(mwfl::Command(kPreferences, L"&Preferences...",
+                [this] { ShowPreferences(); }))
+            .Add(mwfl::Command(kAbout, L"&About Notepad Colon",
+                [this] { ::MessageBoxW(GetHwnd(),
+                    L"Notepad Colon 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
+                    L"About Notepad Colon", MB_OK | MB_ICONINFORMATION); }));
         commands_
             .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })
                      .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_4}))
@@ -426,7 +476,7 @@ private:
     }
 
     void BuildMenu() {
-        mwfl::Menu file, edit, search, encoding, line_endings, view, code, tools;
+        mwfl::Menu file, edit, search, encoding, line_endings, view, code, tools, help;
         mwfl::Must(menu_.Create(), "create menu bar");
         mwfl::Must(file.CreatePopup(), "create file menu");
         mwfl::Must(edit.CreatePopup(), "create edit menu");
@@ -436,6 +486,7 @@ private:
         mwfl::Must(view.CreatePopup(), "create view menu");
         mwfl::Must(code.CreatePopup(), "create code menu");
         mwfl::Must(tools.CreatePopup(), "create tools menu");
+        mwfl::Must(help.CreatePopup(), "create help menu");
         for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
         mwfl::Must(file.AppendSeparator(), "append file separator");
@@ -460,8 +511,9 @@ private:
         for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
                               kUppercase, kLowercase, kIndent, kOutdent})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
-        for (const auto id : {kRegisterAssociation, kRemoveAssociation})
+        for (const auto id : {kPreferences, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
+        mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(edit), L"&Edit"), "append edit menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(search), L"&Search"), "append search menu");
@@ -470,6 +522,7 @@ private:
         mwfl::Must(menu_.AppendSubmenu(std::move(view), L"&View"), "append view menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(code), L"&Code"), "append code menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(tools), L"&Tools"), "append tools menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(help), L"&Help"), "append help menu");
         mwfl::Must(menu_.AttachToWindow(GetHwnd()), "attach menu");
     }
 
@@ -502,6 +555,7 @@ private:
                                   mwfl::RectDip{}, runtime_), "create document editor");
         mwfl::Must(editor->ConfigureCodeEditing(), "configure document editor");
         notepad_colon::ConfigureAdvancedEditing(*editor);
+        notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
         mwfl::Must(notepad_colon::ConfigureLanguage(
             *editor, lexilla_, notepad_colon::Language::plain_text), "configure plain-text lexer");
         mwfl::Must(editor->SetText(text), "set document text");
@@ -542,6 +596,7 @@ private:
                             mwfl::RectDip{}, runtime_) ||
             !editor->ConfigureCodeEditing() || !editor->SetText(loaded.value->text)) return false;
         notepad_colon::ConfigureAdvancedEditing(*editor);
+        notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
         const auto language = notepad_colon::DetectLanguage(path);
         if (!notepad_colon::ConfigureLanguage(*editor, lexilla_, language)) return false;
         const bool protected_mode = open_mode == notepad_colon::FileOpenMode::protected_read_only;
@@ -578,7 +633,7 @@ private:
         if (!metadata) return false;
         auto path = metadata->path;
         if (choose_path || path.empty()) {
-            if (IsSelfTest()) {
+            if (IsTestMode()) {
                 path = std::filesystem::temp_directory_path() /
                     (L"notepad-colon-" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
                      std::to_wstring(document.id.value) + L".txt");
@@ -622,6 +677,120 @@ private:
                                : L"Association unchanged; Windows ownership/conflict protected");
     }
 
+    bool IsDark() const noexcept {
+        return mwfl::ResolveAppearance({ToColorMode(preferences_.theme)}).IsDark();
+    }
+
+    static mwfl::ColorMode ToColorMode(notepad_colon::ThemePreference theme) noexcept {
+        switch (theme) {
+        case notepad_colon::ThemePreference::light: return mwfl::ColorMode::light;
+        case notepad_colon::ThemePreference::dark: return mwfl::ColorMode::dark;
+        case notepad_colon::ThemePreference::system: return mwfl::ColorMode::system;
+        }
+        return mwfl::ColorMode::system;
+    }
+
+    void ApplyAppearance() {
+        SetAppearance({ToColorMode(preferences_.theme), mwfl::Backdrop::mica});
+        const bool dark = IsDark();
+        for (auto& document : documents_) {
+            notepad_colon::ApplyPreferences(*document.editor, preferences_, dark);
+            static_cast<void>(notepad_colon::ConfigureLanguage(
+                *document.editor, lexilla_, document.language));
+        }
+    }
+
+    void LoadPreferences() {
+        const std::array schema{
+            mwfl::SettingDefinition{L"FontName", mwfl::SettingType::string, 256, true},
+            mwfl::SettingDefinition{L"FontSize", mwfl::SettingType::dword, 4, true},
+            mwfl::SettingDefinition{L"TabWidth", mwfl::SettingType::dword, 4, true},
+            mwfl::SettingDefinition{L"Theme", mwfl::SettingType::dword, 4, true}};
+        const auto loaded = settings_.Load(schema);
+        if (!loaded) return;
+        notepad_colon::Preferences candidate;
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"FontName"))
+            candidate.font_name = std::get<std::wstring>(value->data);
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"FontSize"))
+            candidate.font_size = std::get<std::uint32_t>(value->data);
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"TabWidth"))
+            candidate.tab_width = std::get<std::uint32_t>(value->data);
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"Theme"))
+            candidate.theme = static_cast<notepad_colon::ThemePreference>(
+                std::get<std::uint32_t>(value->data));
+        preferences_ = notepad_colon::SanitizePreferences(std::move(candidate));
+    }
+
+    bool SavePreferences() {
+        const std::array values{
+            mwfl::SettingValue{L"FontName", preferences_.font_name},
+            mwfl::SettingValue{L"FontSize", preferences_.font_size},
+            mwfl::SettingValue{L"TabWidth", preferences_.tab_width},
+            mwfl::SettingValue{L"Theme", static_cast<std::uint32_t>(preferences_.theme)}};
+        return static_cast<bool>(settings_.Save(values));
+    }
+
+    void ShowPreferences() {
+        mwfl::Label font_label, size_label, tab_label, theme_label, theme_value;
+        mwfl::TextBox font, size, tab;
+        mwfl::Button system, light, dark, accept, cancel;
+        auto candidate = preferences_;
+        mwfl::Dialog* pointer = nullptr;
+        mwfl::Dialog dialog({
+            .owner = GetHwnd(), .title = L"Notepad Colon Preferences",
+            .initial_client_size = {500.0_dip, 310.0_dip}, .resizable = false,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window};
+                    ui.Add(font_label, {401}, L"Font family"); ui.Add(font, {402}, candidate.font_name);
+                    ui.Add(size_label, {403}, L"Font size (8-40)"); ui.Add(size, {404}, std::to_wstring(candidate.font_size));
+                    ui.Add(tab_label, {405}, L"Tab width (1-16)"); ui.Add(tab, {406}, std::to_wstring(candidate.tab_width));
+                    ui.Add(theme_label, {407}, L"Theme"); ui.Add(theme_value, {408}, L"");
+                    ui.Add(system, {409}, L"System"); ui.Add(light, {410}, L"Light"); ui.Add(dark, {411}, L"Dark");
+                    ui.Add(accept, {IDOK}, L"Save"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
+                    const auto update_theme = [&] { theme_value.SetText(
+                        candidate.theme == notepad_colon::ThemePreference::system ? L"System" :
+                        candidate.theme == notepad_colon::ThemePreference::light ? L"Light" : L"Dark"); };
+                    update_theme();
+                    mwfl::SetAccessibleName(font.GetHwnd(), L"Editor font family");
+                    mwfl::SetAccessibleName(size.GetHwnd(), L"Editor font size");
+                    mwfl::SetAccessibleName(tab.GetHwnd(), L"Editor tab width");
+                    mwfl::SetDialogDefaultButton(window, IDOK);
+                    return pointer->SetLayout(mwfl::Column().Margin(16.0_dip).Gap(8.0_dip)
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(font_label, mwfl::Fixed(150.0_dip)).Add(font, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(size_label, mwfl::Fixed(150.0_dip)).Add(size, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(tab_label, mwfl::Fixed(150.0_dip)).Add(tab, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(theme_label, mwfl::Fixed(80.0_dip)).Add(theme_value, mwfl::Fixed(70.0_dip)).Add(system, mwfl::Auto()).Add(light, mwfl::Auto()).Add(dark, mwfl::Auto()), mwfl::Fixed(36.0_dip))
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(mwfl::Column(), mwfl::Stretch()).Add(accept, mwfl::Fixed(100.0_dip)).Add(cancel, mwfl::Fixed(100.0_dip)), mwfl::Fixed(36.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id == 409 || id == 410 || id == 411) {
+                        candidate.theme = id == 409 ? notepad_colon::ThemePreference::system :
+                                          id == 410 ? notepad_colon::ThemePreference::light :
+                                                      notepad_colon::ThemePreference::dark;
+                        theme_value.SetText(id == 409 ? L"System" : id == 410 ? L"Light" : L"Dark");
+                    }
+                    if (id == IDOK) {
+                        candidate.font_name = font.GetText();
+                        wchar_t* end{};
+                        candidate.font_size = static_cast<std::uint32_t>(std::wcstoul(size.GetText().c_str(), &end, 10));
+                        candidate.tab_width = static_cast<std::uint32_t>(std::wcstoul(tab.GetText().c_str(), &end, 10));
+                        if (!notepad_colon::ValidatePreferences(candidate)) {
+                            ::MessageBoxW(pointer->GetHwnd(), L"Enter a valid font, size (8-40), and tab width (1-16).", L"Preferences", MB_OK | MB_ICONWARNING);
+                            return true;
+                        }
+                    }
+                    return false;
+                }} });
+        pointer = &dialog;
+        if (dialog.ShowModal()) {
+            preferences_ = std::move(candidate);
+            ApplyAppearance();
+            if (!IsTestMode()) static_cast<void>(SavePreferences());
+            SyncPresentation(L"Preferences applied");
+        }
+    }
+
     bool SaveActive(bool choose_path) {
         auto* document = ActiveDocument();
         return document && SaveDocument(*document, choose_path);
@@ -639,7 +808,7 @@ private:
         const auto id = workspace_.GetActiveId();
         if (!id) return false;
         const auto* metadata = workspace_.Find(*id);
-        if (metadata && metadata->dirty && !discard && !IsSelfTest()) {
+        if (metadata && metadata->dirty && !discard && !IsTestMode()) {
             const int answer = ::MessageBoxW(GetHwnd(), L"Save changes before closing?",
                                               L"Notepad Colon", MB_ICONWARNING | MB_YESNOCANCEL);
             if (answer == IDCANCEL || (answer == IDYES && !SaveActive(false))) return false;
@@ -737,7 +906,7 @@ private:
         if (path.empty() || !recent_.Add(path)) return;
         RefreshRecentCommands();
         if (menu_.GetHandle()) BuildMenu();
-        if (!IsSelfTest())
+        if (!IsTestMode())
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(HKEY_CURRENT_USER, kSettingsKey, recent_));
     }
 
@@ -853,7 +1022,7 @@ private:
     }
 
     void CheckExternalChanges(bool force) {
-        if (IsSelfTest() && !force) return;
+        if (IsTestMode() && !force) return;
         for (auto& document : documents_) {
             const auto* metadata = workspace_.Find(document.id);
             if (!metadata || metadata->path.empty()) continue;
@@ -886,7 +1055,7 @@ private:
     }
 
     void ResolveSessionPath() {
-        if (IsSelfTest()) {
+        if (IsTestMode()) {
             session_path_ = std::filesystem::temp_directory_path() /
                 (L"notepad-colon-gui-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
             std::error_code ignored;
@@ -1003,6 +1172,32 @@ private:
         int result = 0;
         std::vector<std::filesystem::path> cleanup;
         try {
+            const notepad_colon::Preferences test_preferences{
+                L"Consolas", 13, 3, notepad_colon::ThemePreference::dark};
+            if (auto* editor = ActiveEditor()) {
+                notepad_colon::ApplyPreferences(*editor, test_preferences, true);
+                if (!notepad_colon::PreferencesApplied(*editor, test_preferences)) result = 20;
+                notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
+            } else result = 20;
+            const std::wstring preference_key = L"Software\\mwfl\\Tests\\NotepadColonPrefs-" +
+                                                std::to_wstring(::GetCurrentProcessId());
+            mwfl::VersionedSettingsStore preference_store{HKEY_CURRENT_USER, preference_key, 1};
+            const std::array preference_values{
+                mwfl::SettingValue{L"FontName", std::wstring{L"Cascadia Mono"}},
+                mwfl::SettingValue{L"FontSize", std::uint32_t{12}},
+                mwfl::SettingValue{L"TabWidth", std::uint32_t{2}},
+                mwfl::SettingValue{L"Theme", std::uint32_t{2}}};
+            const std::array preference_schema{
+                mwfl::SettingDefinition{L"FontName", mwfl::SettingType::string, 256, true},
+                mwfl::SettingDefinition{L"FontSize", mwfl::SettingType::dword, 4, true},
+                mwfl::SettingDefinition{L"TabWidth", mwfl::SettingType::dword, 4, true},
+                mwfl::SettingDefinition{L"Theme", mwfl::SettingType::dword, 4, true}};
+            if (!preference_store.Save(preference_values) ||
+                !preference_store.Load(preference_schema)) result = 21;
+            const std::array<std::wstring_view, 4> preference_names{
+                L"FontName", L"FontSize", L"TabWidth", L"Theme"};
+            static_cast<void>(preference_store.RemoveOwned(preference_names));
+            ::RegDeleteTreeW(HKEY_CURRENT_USER, preference_key.c_str());
             auto association = TextAssociation();
             association.extension = L".npc-self-test";
             association.prog_id = L"mwfl.notepad-colon.self-test";
@@ -1127,11 +1322,59 @@ private:
     std::optional<notepad_colon::SearchResult> pending_search_result_;
     std::optional<notepad_colon::WorkspaceScan> pending_workspace_scan_;
     mwfl::UiTimer monitor_timer_;
+    mwfl::SingleInstance& instance_;
+    std::vector<std::filesystem::path> startup_paths_;
+    bool self_test_ = false;
+    bool activation_test_server_ = false;
+    int activation_test_result_ = 4;
+    notepad_colon::Preferences preferences_;
+    mwfl::VersionedSettingsStore settings_{HKEY_CURRENT_USER,
+                                            L"Software\\mwfl\\Notepad Colon\\Preferences", 1};
 };
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
-    return mwfl::RunApplication<MainWindow>(instance, show_command,
+    int count{};
+    wchar_t** arguments = ::CommandLineToArgvW(::GetCommandLineW(), &count);
+    bool self_test = false;
+    bool activation_test_server = false;
+    bool activation_test_client = false;
+    std::vector<std::filesystem::path> paths;
+    for (int index = 1; arguments && index < count; ++index) {
+        const std::wstring_view argument{arguments[index]};
+        if (argument == L"--self-test") self_test = true;
+        else if (argument == L"--activation-test-server") activation_test_server = true;
+        else if (argument == L"--activation-test-client") activation_test_client = true;
+        else if (!argument.starts_with(L"--")) {
+            std::error_code error;
+            auto absolute = std::filesystem::absolute(argument, error);
+            paths.push_back(error ? std::filesystem::path{argument} : std::move(absolute));
+        }
+    }
+    if (arguments) ::LocalFree(arguments);
+    const std::wstring instance_id = self_test
+        ? L"mwfl.notepad-colon.self-test." + std::to_wstring(::GetCurrentProcessId())
+        : (activation_test_server || activation_test_client)
+            ? L"mwfl.notepad-colon.activation-test" : L"mwfl.notepad-colon.v1";
+    mwfl::SingleInstance single_instance{instance_id};
+    if (!single_instance.IsPrimary()) {
+        std::wstring payload;
+        for (const auto& path : paths) {
+            if (!payload.empty()) payload.push_back(L'\n');
+            payload.append(path.wstring());
+        }
+        const auto result = single_instance.ForwardActivation(payload);
+        if (!result.Delivered()) {
+            if (activation_test_client) return 2;
+            ::MessageBoxW(nullptr, L"The existing Notepad Colon instance did not respond.",
+                          L"Notepad Colon", MB_OK | MB_ICONERROR);
+            return 2;
+        }
+        return 0;
+    }
+    if (activation_test_client) return 3;
+    return mwfl::RunApplication<MainWindow>(instance, self_test ? SW_HIDE : show_command,
         {.title = L"Notepad Colon", .initial_bounds = {{}, {900.0_dip, 650.0_dip}},
-         .use_default_bounds = false}, {.com_apartment = mwfl::ComApartment::sta});
+         .use_default_bounds = false}, {.com_apartment = mwfl::ComApartment::sta},
+         single_instance, std::move(paths), self_test, activation_test_server);
 }

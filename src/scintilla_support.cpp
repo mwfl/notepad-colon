@@ -218,4 +218,32 @@ void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcep
     editor.Focus();
 }
 
+void ApplyPreferences(mwfl::ScintillaEditor& editor,
+                      const Preferences& preferences,
+                      bool dark) noexcept {
+    const int required = ::WideCharToMultiByte(CP_UTF8, 0, preferences.font_name.c_str(), -1,
+                                                nullptr, 0, nullptr, nullptr);
+    std::string font(required > 0 ? static_cast<std::size_t>(required) : 1, '\0');
+    if (required > 0)
+        ::WideCharToMultiByte(CP_UTF8, 0, preferences.font_name.c_str(), -1,
+                              font.data(), required, nullptr, nullptr);
+    editor.Send(SCI_STYLESETFONT, STYLE_DEFAULT, reinterpret_cast<LPARAM>(font.c_str()));
+    editor.Send(SCI_STYLESETSIZE, STYLE_DEFAULT, preferences.font_size);
+    editor.Send(SCI_STYLESETFORE, STYLE_DEFAULT, dark ? RGB(230, 230, 230) : RGB(30, 30, 30));
+    editor.Send(SCI_STYLESETBACK, STYLE_DEFAULT, dark ? RGB(30, 30, 30) : RGB(255, 255, 255));
+    editor.Send(SCI_STYLECLEARALL);
+    editor.Send(SCI_SETTABWIDTH, preferences.tab_width);
+    editor.Send(SCI_SETINDENT, preferences.tab_width);
+    editor.Send(SCI_SETCARETFORE, dark ? RGB(255, 255, 255) : RGB(0, 0, 0));
+    editor.Send(SCI_SETCARETLINEBACK, dark ? RGB(45, 45, 48) : RGB(245, 248, 252));
+}
+
+bool PreferencesApplied(const mwfl::ScintillaEditor& editor,
+                        const Preferences& preferences) noexcept {
+    auto& mutable_editor = const_cast<mwfl::ScintillaEditor&>(editor);
+    return mutable_editor.Send(SCI_STYLEGETSIZE, STYLE_DEFAULT) == preferences.font_size &&
+           mutable_editor.Send(SCI_GETTABWIDTH) == preferences.tab_width &&
+           mutable_editor.Send(SCI_GETINDENT) == preferences.tab_width;
+}
+
 }  // namespace notepad_colon

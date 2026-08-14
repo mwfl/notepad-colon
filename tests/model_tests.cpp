@@ -3,6 +3,7 @@
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/preferences.h>
 #include <notepad_colon/workspace.h>
 
 #include <windows.h>
@@ -21,6 +22,15 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    notepad_colon::Preferences preferences;
+    Check(notepad_colon::ValidatePreferences(preferences), "default preferences must be valid");
+    preferences.font_name.clear();
+    preferences.font_size = 100;
+    preferences.tab_width = 0;
+    preferences.theme = static_cast<notepad_colon::ThemePreference>(99);
+    Check(!notepad_colon::ValidatePreferences(preferences), "invalid preferences must be rejected");
+    Check(notepad_colon::SanitizePreferences(preferences) == notepad_colon::Preferences{},
+          "invalid preferences must sanitize to safe defaults");
     using notepad_colon::FileOpenMode;
     Check(notepad_colon::ClassifyFileSize(32ull * 1024 * 1024) == FileOpenMode::editable,
           "32 MiB must remain editable");

@@ -20,6 +20,9 @@ telemetry, and cloud services.
   VCS, cache, and dependency directories.
 - Explicit, reversible per-user `.txt` association under **Tools**. Existing
   associations are never silently overwritten.
+- A native Preferences dialog persists System/Light/Dark theme, editor font,
+  font size, and tab width. A single running instance accepts multiple file
+  paths forwarded from later command-line launches.
 - Files through 32 MiB open normally; files above 32 MiB through 256 MiB open
   in protected read-only mode. Larger files are rejected before allocation.
 

@@ -2,6 +2,7 @@
 
 #include <mwfl/scintilla.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/preferences.h>
 
 #include <windows.h>
 
@@ -39,5 +40,10 @@ void IndentSelection(mwfl::ScintillaEditor& editor, bool indent) noexcept;
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept;
 void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept;
 void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept;
+void ApplyPreferences(mwfl::ScintillaEditor& editor,
+                      const Preferences& preferences,
+                      bool dark) noexcept;
+bool PreferencesApplied(const mwfl::ScintillaEditor& editor,
+                        const Preferences& preferences) noexcept;
 
 }  // namespace notepad_colon
