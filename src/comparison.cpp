@@ -5,17 +5,25 @@
 
 namespace notepad_colon {
 namespace {
-std::vector<std::wstring> Lines(std::wstring_view text) {
-    std::vector<std::wstring> result;
+struct ParsedLine { std::wstring text; std::wstring ending; };
+
+std::vector<ParsedLine> Lines(std::wstring_view text) {
+    std::vector<ParsedLine> result;
     std::size_t start = 0;
     while (start < text.size()) {
         auto end = text.find_first_of(L"\r\n", start);
-        result.emplace_back(text.substr(start, end - start));
-        if (end == std::wstring_view::npos) return result;
+        ParsedLine line{std::wstring{text.substr(start, end - start)}, {}};
+        if (end == std::wstring_view::npos) {
+            result.push_back(std::move(line));
+            return result;
+        }
+        line.ending = text[end] == L'\r' && end + 1 < text.size() && text[end + 1] == L'\n'
+            ? L"\r\n" : std::wstring(1, text[end]);
+        result.push_back(std::move(line));
         start = end + 1;
         if (text[end] == L'\r' && start < text.size() && text[start] == L'\n') ++start;
     }
-    if (text.empty()) result.emplace_back();
+    if (text.empty()) result.push_back({});
     return result;
 }
 
@@ -53,8 +61,10 @@ ComparisonResult CompareText(std::wstring_view left, std::wstring_view right,
     const auto b = Lines(right);
     std::vector<std::wstring> normalized_a, normalized_b;
     normalized_a.reserve(a.size()); normalized_b.reserve(b.size());
-    for (const auto& line : a) normalized_a.push_back(Normalized(line, options));
-    for (const auto& line : b) normalized_b.push_back(Normalized(line, options));
+    for (const auto& line : a) normalized_a.push_back(
+        Normalized(line.text, options) + (options.ignore_line_endings ? L"" : line.ending));
+    for (const auto& line : b) normalized_b.push_back(
+        Normalized(line.text, options) + (options.ignore_line_endings ? L"" : line.ending));
 
     const auto width = b.size() + 1;
     std::vector<std::size_t> lcs((a.size() + 1) * width);
@@ -68,20 +78,20 @@ ComparisonResult CompareText(std::wstring_view left, std::wstring_view right,
     std::size_t i = 0, j = 0;
     while (i < a.size() || j < b.size()) {
         if (i < a.size() && j < b.size() && normalized_a[i] == normalized_b[j]) {
-            result.lines.push_back({DifferenceKind::equal, i + 1, j + 1, a[i], b[j]});
+            result.lines.push_back({DifferenceKind::equal, i + 1, j + 1, a[i].text, b[j].text});
             ++i; ++j;
         } else if (i < a.size() && j < b.size() &&
                    lcs[(i + 1) * width + j] == lcs[i * width + j + 1]) {
-            const auto [left_span, right_span] = ChangedSpans(a[i], b[j]);
+            const auto [left_span, right_span] = ChangedSpans(a[i].text, b[j].text);
             result.lines.push_back({DifferenceKind::modified, i + 1, j + 1,
-                                    a[i], b[j], left_span, right_span});
+                                    a[i].text, b[j].text, left_span, right_span});
             ++i; ++j;
         } else if (j < b.size() &&
                    (i == a.size() || lcs[i * width + j + 1] > lcs[(i + 1) * width + j])) {
-            result.lines.push_back({DifferenceKind::inserted, 0, j + 1, {}, b[j], {}, {0, b[j].size()}});
+            result.lines.push_back({DifferenceKind::inserted, i + 1, j + 1, {}, b[j].text, {}, {0, b[j].text.size()}});
             ++j;
         } else {
-            result.lines.push_back({DifferenceKind::deleted, i + 1, 0, a[i], {}, {0, a[i].size()}, {}});
+            result.lines.push_back({DifferenceKind::deleted, i + 1, j + 1, a[i].text, {}, {0, a[i].text.size()}, {}});
             ++i;
         }
     }

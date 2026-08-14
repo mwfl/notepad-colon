@@ -36,6 +36,21 @@ int main() {
     Check(notepad_colon::CompareText(L"One  two", L"one two",
               {.ignore_case = true, .ignore_whitespace = true}).identical,
           "comparison ignore options");
+    Check(notepad_colon::CompareText(L"one\r\ntwo\r\n", L"one\ntwo\n").identical,
+          "line endings ignored by default");
+    Check(!notepad_colon::CompareText(L"one\r\ntwo\r\n", L"one\ntwo\n",
+              {.ignore_line_endings = false}).identical,
+          "line ending differences can be compared");
+    const auto inserted_comparison = notepad_colon::CompareText(L"one\nthree", L"one\ntwo\nthree");
+    Check(inserted_comparison.changed_lines == 1 &&
+              inserted_comparison.lines[1].kind == notepad_colon::DifferenceKind::inserted &&
+              inserted_comparison.lines[1].left_line == 2,
+          "inserted line retains destination position");
+    const auto deleted_comparison = notepad_colon::CompareText(L"one\ntwo\nthree", L"one\nthree");
+    Check(deleted_comparison.changed_lines == 1 &&
+              deleted_comparison.lines[1].kind == notepad_colon::DifferenceKind::deleted &&
+              deleted_comparison.lines[1].right_line == 2,
+          "deleted line retains destination position");
     using notepad_colon::LineOrder;
     Check(notepad_colon::SortLines(L"beta\nAlpha\nalpha\n", LineOrder::ascending, true, true) ==
               L"Alpha\nbeta\n", "case-folded sort and dedupe");

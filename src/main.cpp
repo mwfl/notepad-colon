@@ -6,6 +6,7 @@
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/comparison.h>
 #include <notepad_colon/editing.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
@@ -30,6 +31,8 @@
 #include <unordered_map>
 #include <utility>
 #include <shellapi.h>
+#include <commctrl.h>
+#include <Scintilla.h>
 
 using mwfl::operator""_dip;
 
@@ -95,6 +98,8 @@ constexpr mwfl::ControlId kUrlDecode{391};
 constexpr mwfl::ControlId kInsertDateTime{392};
 constexpr mwfl::ControlId kInsertSequence{393};
 constexpr mwfl::ControlId kRecoveryManager{394};
+constexpr mwfl::ControlId kCompareWithFile{395};
+constexpr mwfl::ControlId kCompareWithDisk{396};
 constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
@@ -178,6 +183,57 @@ bool SamePath(const std::filesystem::path& left, const std::filesystem::path& ri
     const auto b = right.lexically_normal().native();
     return ::CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
                                   b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+struct CompareScrollSync {
+    mwfl::ScintillaEditor* left = nullptr;
+    mwfl::ScintillaEditor* right = nullptr;
+    bool updating = false;
+};
+
+LRESULT CALLBACK CompareEditorSubclass(HWND window, UINT message, WPARAM wparam,
+                                       LPARAM lparam, UINT_PTR, DWORD_PTR reference) {
+    const auto result = ::DefSubclassProc(window, message, wparam, lparam);
+    if (message != WM_VSCROLL && message != WM_MOUSEWHEEL && message != WM_KEYUP) return result;
+    auto* sync = reinterpret_cast<CompareScrollSync*>(reference);
+    if (!sync || sync->updating) return result;
+    auto* source = sync->left->GetHwnd() == window ? sync->left : sync->right;
+    auto* target = source == sync->left ? sync->right : sync->left;
+    sync->updating = true;
+    target->Send(SCI_SETFIRSTVISIBLELINE, source->Send(SCI_GETFIRSTVISIBLELINE));
+    sync->updating = false;
+    return result;
+}
+
+enum class ComparisonLineEdit { replace, insert, remove };
+
+bool EditComparisonLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line,
+                        std::wstring_view text, ComparisonLineEdit edit) {
+    const auto line = static_cast<LRESULT>(one_based_line > 0 ? one_based_line - 1 : 0);
+    const auto count = editor.Send(SCI_GETLINECOUNT);
+    auto start = line < count ? editor.Send(SCI_POSITIONFROMLINE, line) : editor.GetLength();
+    auto end = start;
+    std::wstring replacement(text);
+    if (edit == ComparisonLineEdit::replace || edit == ComparisonLineEdit::remove) {
+        if (line >= count) return false;
+        end = edit == ComparisonLineEdit::remove && line + 1 < count
+            ? editor.Send(SCI_POSITIONFROMLINE, line + 1)
+            : editor.Send(SCI_GETLINEENDPOSITION, line);
+        if (edit == ComparisonLineEdit::remove) replacement.clear();
+    } else {
+        const auto eol = editor.Send(SCI_GETEOLMODE);
+        replacement += eol == SC_EOL_CRLF ? L"\r\n" : eol == SC_EOL_CR ? L"\r" : L"\n";
+    }
+    const auto utf8 = mwfl::ToUtf8(replacement);
+    if (!utf8) return false;
+    const bool was_read_only = editor.IsReadOnly();
+    if (was_read_only) editor.SetReadOnly(false);
+    editor.Send(SCI_BEGINUNDOACTION);
+    editor.Send(SCI_SETTARGETRANGE, start, end);
+    editor.Send(SCI_REPLACETARGET, utf8->size(), reinterpret_cast<LPARAM>(utf8->data()));
+    editor.Send(SCI_ENDUNDOACTION);
+    if (was_read_only) editor.SetReadOnly(true);
+    return true;
 }
 
 std::filesystem::path ExecutablePath() {
@@ -449,6 +505,10 @@ private:
                 [this] { ShowPreferences(); }))
             .Add(mwfl::Command(kRecoveryManager, L"Recovery Manager...",
                 [this] { ShowRecoveryManager(); }))
+            .Add(mwfl::Command(kCompareWithFile, L"Compare with File...",
+                [this] { CompareWithFile(); }))
+            .Add(mwfl::Command(kCompareWithDisk, L"Compare with Saved Version",
+                [this] { CompareWithDisk(); }))
             .Add(mwfl::Command(kAbout, L"&About Notepad Colon",
                 [this] { ::MessageBoxW(GetHwnd(),
                     L"Notepad Colon 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
@@ -582,7 +642,8 @@ private:
                               kBase64Encode, kBase64Decode, kUrlEncode, kUrlDecode,
                               kInsertDateTime, kInsertSequence})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
-        for (const auto id : {kPreferences, kRecoveryManager, kRegisterAssociation, kRemoveAssociation})
+        for (const auto id : {kPreferences, kRecoveryManager, kCompareWithFile,
+                              kCompareWithDisk, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
         mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
@@ -1038,6 +1099,186 @@ private:
         if (text) NewDocument(*text, L"Recovered — " + snapshots[*chosen].title);
     }
 
+    void CompareWithFile() {
+        const auto* document = ActiveDocument();
+        if (!document) return;
+        const auto left = document->editor->GetText();
+        if (!left) return;
+        const auto selected = mwfl::ShowOpenFileDialog({
+            .owner = GetHwnd(), .title = L"Choose file to compare",
+            .filters = {{L"Text and source files", L"*.txt;*.md;*.cpp;*.h;*.json;*.xml;*.ini;*.yaml;*.yml;*.ps1"},
+                        {L"All files", L"*.*"}}});
+        if (!selected.accepted) return;
+        const auto loaded = mwfl::ReadTextFile(selected.path);
+        if (!loaded.Succeeded()) { status_.SetText(L"Comparison file could not be opened"); return; }
+        ShowComparison(selected.path.filename().wstring(), *left, loaded.value->text);
+    }
+
+    void CompareWithDisk() {
+        const auto* document = ActiveDocument();
+        const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        if (!document || !metadata || metadata->path.empty()) {
+            status_.SetText(L"Save the document before comparing with its saved version");
+            return;
+        }
+        const auto left = document->editor->GetText();
+        const auto loaded = mwfl::ReadTextFile(metadata->path);
+        if (!left || !loaded.Succeeded()) { status_.SetText(L"Saved version could not be read"); return; }
+        ShowComparison(L"Saved — " + metadata->title, *left, loaded.value->text);
+    }
+
+    void ShowComparison(std::wstring right_title, std::wstring left_text,
+                        std::wstring right_text) {
+        mwfl::ScintillaEditor left, right;
+        mwfl::Label left_label, right_label, summary;
+        mwfl::CheckBox ignore_case, ignore_whitespace, ignore_eol;
+        mwfl::Button previous, next, copy_left, copy_right, apply, close;
+        notepad_colon::ComparisonResult comparison;
+        std::vector<std::size_t> changes;
+        std::size_t current = 0;
+        std::optional<std::wstring> applied_text;
+        CompareScrollSync sync{&left, &right};
+        mwfl::Dialog* pointer = nullptr;
+
+        const auto refresh = [&] {
+            const auto left_value = left.GetText();
+            const auto right_value = right.GetText();
+            if (!left_value || !right_value) return;
+            comparison = notepad_colon::CompareText(*left_value, *right_value,
+                {.ignore_case = ignore_case.IsChecked(),
+                 .ignore_whitespace = ignore_whitespace.IsChecked(),
+                 .ignore_line_endings = ignore_eol.IsChecked()});
+            changes.clear();
+            left.Send(SCI_MARKERDELETEALL, 10); right.Send(SCI_MARKERDELETEALL, 10);
+            left.Send(SCI_SETINDICATORCURRENT, 20); left.Send(SCI_INDICATORCLEARRANGE, 0, left.GetLength());
+            right.Send(SCI_SETINDICATORCURRENT, 20); right.Send(SCI_INDICATORCLEARRANGE, 0, right.GetLength());
+            const auto mark_span = [](mwfl::ScintillaEditor& editor, std::size_t line,
+                                      std::wstring_view line_text, notepad_colon::TextSpan span) {
+                if (!line || !span.length) return;
+                const auto prefix = mwfl::ToUtf8(line_text.substr(0, span.start));
+                const auto changed = mwfl::ToUtf8(line_text.substr(span.start, span.length));
+                if (!prefix || !changed) return;
+                const auto position = editor.Send(SCI_POSITIONFROMLINE, line - 1) +
+                    static_cast<LRESULT>(prefix->size());
+                editor.Send(SCI_SETINDICATORCURRENT, 20);
+                editor.Send(SCI_INDICATORFILLRANGE, position, changed->size());
+            };
+            for (std::size_t index = 0; index < comparison.lines.size(); ++index) {
+                const auto& difference = comparison.lines[index];
+                if (difference.kind == notepad_colon::DifferenceKind::equal) continue;
+                changes.push_back(index);
+                if (difference.left_line) left.Send(SCI_MARKERADD, difference.left_line - 1, 10);
+                if (difference.right_line) right.Send(SCI_MARKERADD, difference.right_line - 1, 10);
+                mark_span(left, difference.left_line, difference.left_text, difference.left_change);
+                mark_span(right, difference.right_line, difference.right_text, difference.right_change);
+            }
+            if (current >= changes.size()) current = changes.empty() ? 0 : changes.size() - 1;
+            summary.SetText(comparison.identical ? L"Files are identical" :
+                std::to_wstring(comparison.changed_lines) + L" changed line(s)  •  Difference " +
+                std::to_wstring(current + 1) + L" of " + std::to_wstring(changes.size()));
+        };
+        const auto go_to_current = [&] {
+            if (changes.empty()) return;
+            const auto& difference = comparison.lines[changes[current]];
+            if (difference.left_line) left.Send(SCI_GOTOLINE, difference.left_line - 1);
+            if (difference.right_line) right.Send(SCI_GOTOLINE, difference.right_line - 1);
+            summary.SetText(std::to_wstring(comparison.changed_lines) + L" changed line(s)  •  Difference " +
+                std::to_wstring(current + 1) + L" of " + std::to_wstring(changes.size()));
+        };
+        const auto copy_difference = [&](bool right_to_left) {
+            if (changes.empty()) return;
+            const auto difference = comparison.lines[changes[current]];
+            if (right_to_left) {
+                const auto edit = difference.kind == notepad_colon::DifferenceKind::inserted
+                    ? ComparisonLineEdit::insert : difference.kind == notepad_colon::DifferenceKind::deleted
+                    ? ComparisonLineEdit::remove : ComparisonLineEdit::replace;
+                static_cast<void>(EditComparisonLine(left, difference.left_line,
+                                                     difference.right_text, edit));
+            } else {
+                const auto edit = difference.kind == notepad_colon::DifferenceKind::inserted
+                    ? ComparisonLineEdit::remove : difference.kind == notepad_colon::DifferenceKind::deleted
+                    ? ComparisonLineEdit::insert : ComparisonLineEdit::replace;
+                static_cast<void>(EditComparisonLine(right, difference.right_line,
+                                                     difference.left_text, edit));
+            }
+            refresh();
+            go_to_current();
+        };
+
+        mwfl::Dialog dialog({
+            .owner = GetHwnd(), .title = L"Compare Text",
+            .initial_client_size = {980.0_dip, 620.0_dip}, .resizable = true,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window};
+                    ui.Add(left_label, {601}, L"Current document");
+                    ui.Add(right_label, {602}, right_title);
+                    ui.Add(summary, {603}, L"");
+                    ui.Add(ignore_case, {604}, L"Ignore case");
+                    ui.Add(ignore_whitespace, {605}, L"Ignore whitespace");
+                    ui.Add(ignore_eol, {612}, L"Ignore EOL");
+                    ignore_eol.SetChecked(true);
+                    ui.Add(previous, {606}, L"Previous"); ui.Add(next, {607}, L"Next");
+                    ui.Add(copy_left, {608}, L"← Use right");
+                    ui.Add(copy_right, {609}, L"Use left →");
+                    ui.Add(apply, {IDOK}, L"Apply current side"); ui.Add(close, {IDCANCEL}, L"Close");
+                    if (!left.Create(window, {610}, {}, runtime_) ||
+                        !right.Create(window, {611}, {}, runtime_)) return false;
+                    left.ConfigureCodeEditing(); right.ConfigureCodeEditing();
+                    notepad_colon::ApplyPreferences(left, preferences_, IsDark());
+                    notepad_colon::ApplyPreferences(right, preferences_, IsDark());
+                    left.SetText(left_text); right.SetText(right_text);
+                    left.SetReadOnly(true); right.SetReadOnly(true);
+                    for (auto* editor : {&left, &right}) {
+                        editor->Send(SCI_MARKERDEFINE, 10, SC_MARK_BACKGROUND);
+                        editor->Send(SCI_MARKERSETBACK, 10, IsDark() ? RGB(82, 66, 20) : RGB(255, 241, 184));
+                        editor->Send(SCI_INDICSETSTYLE, 20, INDIC_ROUNDBOX);
+                        editor->Send(SCI_INDICSETFORE, 20, IsDark() ? RGB(255, 190, 60) : RGB(190, 90, 0));
+                        editor->Send(SCI_INDICSETALPHA, 20, 70);
+                        ::SetWindowSubclass(editor->GetHwnd(), CompareEditorSubclass, 1,
+                                            reinterpret_cast<DWORD_PTR>(&sync));
+                    }
+                    mwfl::SetAccessibleName(left.GetHwnd(), L"Current document comparison side");
+                    mwfl::SetAccessibleName(right.GetHwnd(), L"Comparison file side");
+                    const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(5.0_dip)
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(left_label, mwfl::Stretch())
+                            .Add(right_label, mwfl::Stretch()), mwfl::Fixed(24.0_dip))
+                        .Add(mwfl::Row().Gap(5.0_dip).Add(left, mwfl::Stretch())
+                            .Add(right, mwfl::Stretch()), mwfl::Stretch())
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(summary, mwfl::Stretch())
+                            .Add(ignore_case, mwfl::Auto()).Add(ignore_whitespace, mwfl::Auto())
+                            .Add(ignore_eol, mwfl::Auto()),
+                            mwfl::Fixed(28.0_dip))
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(previous, mwfl::Auto()).Add(next, mwfl::Auto())
+                            .Add(copy_left, mwfl::Auto()).Add(copy_right, mwfl::Auto())
+                            .Add(mwfl::Column(), mwfl::Stretch()).Add(apply, mwfl::Auto())
+                            .Add(close, mwfl::Fixed(80.0_dip)), mwfl::Fixed(30.0_dip)));
+                    refresh(); go_to_current();
+                    return layout;
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id == 604 || id == 605 || id == 612) { refresh(); go_to_current(); return true; }
+                    if (id == 606 && !changes.empty()) { current = current ? current - 1 : changes.size() - 1; go_to_current(); return true; }
+                    if (id == 607 && !changes.empty()) { current = (current + 1) % changes.size(); go_to_current(); return true; }
+                    if (id == 608) { copy_difference(true); return true; }
+                    if (id == 609) { copy_difference(false); return true; }
+                    if (id == IDOK) { applied_text = left.GetText(); pointer->Accept(); return true; }
+                    return false;
+                },
+                .destroyed = [&] {
+                    if (left.GetHwnd()) ::RemoveWindowSubclass(left.GetHwnd(), CompareEditorSubclass, 1);
+                    if (right.GetHwnd()) ::RemoveWindowSubclass(right.GetHwnd(), CompareEditorSubclass, 1);
+                }}});
+        pointer = &dialog;
+        static_cast<void>(dialog.ShowModal());
+        if (applied_text) {
+            if (auto* editor = ActiveEditor())
+                static_cast<void>(notepad_colon::ReplaceDocumentText(
+                    *editor, *applied_text, editor->GetSelection()));
+            SyncPresentation(L"Comparison changes applied");
+        }
+    }
+
     void InsertDateTime() {
         SYSTEMTIME time{};
         ::GetLocalTime(&time);
@@ -1291,6 +1532,26 @@ private:
             if (!metadata || metadata->path.empty()) continue;
             const auto current = notepad_colon::CaptureFileState(metadata->path);
             if (current == document.file_state || document.external_changed) continue;
+            if (!current.exists && !IsTestMode()) {
+                const auto answer = ::MessageBoxW(GetHwnd(),
+                    (metadata->title + L" was deleted outside Notepad Colon.\n\n"
+                     L"Choose Yes to keep its contents as an unsaved document, or No to keep "
+                     L"the original path blocked from overwrite.").c_str(),
+                    L"File deleted on disk", MB_YESNO | MB_ICONWARNING);
+                if (answer == IDYES) {
+                    workspace_.Rename(document.id, metadata->title, {});
+                    workspace_.SetDirty(document.id, true);
+                    document.stamp.reset();
+                    document.file_state = current;
+                    document.external_changed = false;
+                    SynchronizeTabs(false);
+                    SyncPresentation(L"Kept deleted file as an unsaved document");
+                } else {
+                    document.external_changed = true;
+                    status_.SetText(metadata->title + L" is missing on disk; use Save As to preserve it");
+                }
+                continue;
+            }
             if (!metadata->dirty && current.exists) {
                 const auto loaded = mwfl::ReadTextFile(metadata->path);
                 if (loaded.Succeeded() && document.editor->SetText(loaded.value->text)) {
@@ -1301,6 +1562,33 @@ private:
                     document.editor->SetSavePoint();
                     workspace_.SetDirty(document.id, false);
                     SyncPresentation(L"Reloaded external change");
+                }
+            } else if (!IsTestMode() && current.exists) {
+                const auto answer = ::MessageBoxW(GetHwnd(),
+                    (metadata->title + L" changed on disk while it has unsaved edits.\n\n"
+                     L"Yes: compare with disk\nNo: reload and discard local edits\nCancel: keep local edits").c_str(),
+                    L"External edit conflict", MB_YESNOCANCEL | MB_ICONWARNING);
+                if (answer == IDYES) {
+                    const auto local = document.editor->GetText();
+                    const auto disk = mwfl::ReadTextFile(metadata->path);
+                    if (local && disk.Succeeded())
+                        ShowComparison(L"Disk — " + metadata->title, *local, disk.value->text);
+                    document.external_changed = true;
+                } else if (answer == IDNO) {
+                    const auto disk = mwfl::ReadTextFile(metadata->path);
+                    if (disk.Succeeded() && document.editor->SetText(disk.value->text)) {
+                        document.encoding = disk.value->encoding;
+                        document.line_ending = notepad_colon::DetectLineEnding(disk.value->text);
+                        document.stamp = disk.value->stamp;
+                        document.file_state = current;
+                        document.external_changed = false;
+                        document.editor->SetSavePoint();
+                        workspace_.SetDirty(document.id, false);
+                        SyncPresentation(L"Reloaded disk version");
+                    }
+                } else {
+                    document.external_changed = true;
+                    status_.SetText(metadata->title + L" conflict retained; use Compare or Save As");
                 }
             } else {
                 document.external_changed = true;
