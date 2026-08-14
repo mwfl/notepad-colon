@@ -85,7 +85,8 @@ bool IsValidWorkspaceName(std::wstring_view name) noexcept {
 
 bool CreateWorkspaceItem(const std::filesystem::path& parent, std::wstring_view name,
                          bool directory, const std::vector<std::filesystem::path>& roots) {
-    if (!IsValidWorkspaceName(name) || !IsWithinWorkspaceRoots(parent, roots)) return false;
+    if (!IsValidWorkspaceName(name) || !IsWithinWorkspaceRoots(parent, roots) ||
+        !std::filesystem::is_directory(parent)) return false;
     const auto target = parent / name;
     if (!IsWithinWorkspaceRoots(target, roots) || std::filesystem::exists(target)) return false;
     std::error_code error;
@@ -97,6 +98,7 @@ bool CreateWorkspaceItem(const std::filesystem::path& parent, std::wstring_view 
 bool RenameWorkspaceItem(const std::filesystem::path& source, std::wstring_view new_name,
                          const std::vector<std::filesystem::path>& roots) {
     if (!IsValidWorkspaceName(new_name) || !IsWithinWorkspaceRoots(source, roots)) return false;
+    if (Contains(roots, source)) return false;
     const auto target = source.parent_path() / new_name;
     if (!IsWithinWorkspaceRoots(target, roots) || std::filesystem::exists(target)) return false;
     std::error_code error; std::filesystem::rename(source, target, error); return !error;
@@ -104,7 +106,7 @@ bool RenameWorkspaceItem(const std::filesystem::path& source, std::wstring_view 
 
 bool RecycleWorkspaceItem(const std::filesystem::path& path,
                           const std::vector<std::filesystem::path>& roots) noexcept {
-    if (!IsWithinWorkspaceRoots(path, roots)) return false;
+    if (!IsWithinWorkspaceRoots(path, roots) || Contains(roots, path)) return false;
     try {
         std::wstring from = std::filesystem::absolute(path).wstring(); from.push_back(L'\0'); from.push_back(L'\0');
         SHFILEOPSTRUCTW operation{}; operation.wFunc = FO_DELETE; operation.pFrom = from.c_str();

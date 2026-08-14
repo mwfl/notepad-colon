@@ -252,6 +252,9 @@ int main() {
     Check(notepad_colon::CreateWorkspaceItem(workspace_path / L"src", L"created.txt", false, {workspace_path}) &&
               notepad_colon::RenameWorkspaceItem(workspace_path / L"src" / L"created.txt", L"renamed.txt", {workspace_path}),
           "workspace create and rename stay within roots");
+    Check(!notepad_colon::RenameWorkspaceItem(workspace_path, L"renamed-root", {workspace_path}) &&
+              !notepad_colon::RecycleWorkspaceItem(workspace_path, {workspace_path}),
+          "workspace roots must be protected from destructive item operations");
     std::filesystem::remove(workspace_path / L"src" / L"renamed.txt", ignored);
     {
         std::ofstream(workspace_path / L"src" / L"one.txt", std::ios::binary)

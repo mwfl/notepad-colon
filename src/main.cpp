@@ -124,6 +124,23 @@ constexpr mwfl::ControlId kExportText{410};
 constexpr mwfl::ControlId kExportHtml{411};
 constexpr mwfl::ControlId kDocumentStatistics{412};
 constexpr mwfl::ControlId kPageSetup{413};
+constexpr mwfl::ControlId kWorkspaceRefresh{414};
+constexpr mwfl::ControlId kWorkspaceNewFile{415};
+constexpr mwfl::ControlId kWorkspaceNewFolder{416};
+constexpr mwfl::ControlId kWorkspaceRename{417};
+constexpr mwfl::ControlId kWorkspaceRecycle{418};
+constexpr mwfl::ControlId kWorkspaceReveal{419};
+constexpr mwfl::ControlId kWorkspaceCopyPath{420};
+constexpr mwfl::ControlId kWorkspaceCopyRelativePath{421};
+constexpr mwfl::ControlId kWorkspaceRemoveRoot{422};
+constexpr mwfl::ControlId kSaveNamedSession{423};
+constexpr mwfl::ControlId kOpenNamedSession{424};
+constexpr mwfl::ControlId kPinTab{425};
+constexpr mwfl::ControlId kSortTabs{426};
+constexpr mwfl::ControlId kCloseOtherTabs{427};
+constexpr mwfl::ControlId kCloseLeftTabs{428};
+constexpr mwfl::ControlId kCloseRightTabs{429};
+constexpr mwfl::ControlId kOpenNewWindow{430};
 
 struct PrintOptions {
     double margin_inches = 0.5;
@@ -619,6 +636,26 @@ private:
                      .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'F'}))
             .Add(mwfl::Command(kCancelSearch, L"Cancel Folder Search", [this] { CancelFolderSearch(); }));
         commands_
+            .Add(mwfl::Command(kWorkspaceRefresh, L"Refresh Workspace", [this] { RefreshWorkspace(); }))
+            .Add(mwfl::Command(kWorkspaceNewFile, L"New File in Selected Folder...", [this] { CreateWorkspaceSelection(false); }))
+            .Add(mwfl::Command(kWorkspaceNewFolder, L"New Folder in Selected Folder...", [this] { CreateWorkspaceSelection(true); }))
+            .Add(mwfl::Command(kWorkspaceRename, L"Rename Selected Item...", [this] { RenameWorkspaceSelection(); }))
+            .Add(mwfl::Command(kWorkspaceRecycle, L"Move Selected Item to Recycle Bin", [this] { RecycleWorkspaceSelection(); }))
+            .Add(mwfl::Command(kWorkspaceReveal, L"Reveal Selected Item in Explorer", [this] { RevealWorkspaceSelection(); }))
+            .Add(mwfl::Command(kWorkspaceCopyPath, L"Copy Full Path", [this] { CopyWorkspacePath(false); }))
+            .Add(mwfl::Command(kWorkspaceCopyRelativePath, L"Copy Relative Path", [this] { CopyWorkspacePath(true); }))
+            .Add(mwfl::Command(kWorkspaceRemoveRoot, L"Remove Selected Workspace Root", [this] { RemoveWorkspaceRoot(); }));
+        commands_
+            .Add(mwfl::Command(kSaveNamedSession, L"Save Named Session...", [this] { SaveNamedSession(); }))
+            .Add(mwfl::Command(kOpenNamedSession, L"Open Named Session...", [this] { OpenNamedSession(); }));
+        commands_
+            .Add(mwfl::Command(kPinTab, L"Pin / Unpin Active Tab", [this] { TogglePinActive(); }))
+            .Add(mwfl::Command(kSortTabs, L"Sort Tabs by Name", [this] { SortTabs(); }))
+            .Add(mwfl::Command(kCloseOtherTabs, L"Close Other Tabs", [this] { CloseRelativeTabs(0); }))
+            .Add(mwfl::Command(kCloseLeftTabs, L"Close Tabs to the Left", [this] { CloseRelativeTabs(-1); }))
+            .Add(mwfl::Command(kCloseRightTabs, L"Close Tabs to the Right", [this] { CloseRelativeTabs(1); }))
+            .Add(mwfl::Command(kOpenNewWindow, L"Open Active Document in New Window", [this] { OpenActiveInNewWindow(); }));
+        commands_
             .Add(mwfl::Command(kToggleFindBar, L"Find / Replace Bar", [this] {
                 find_bar_visible_ = !find_bar_visible_; ApplyCompactLayout();
                 if (find_bar_visible_) search_.Focus();
@@ -675,6 +712,7 @@ private:
         mwfl::Must(tools.CreatePopup(), "create tools menu");
         mwfl::Must(help.CreatePopup(), "create help menu");
         for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll,
+                              kSaveNamedSession, kOpenNamedSession,
                               kExportText, kExportHtml, kPrintPreview, kPrint,
                               kPageSetup, kPrinterSettings, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
@@ -686,7 +724,9 @@ private:
                 mwfl::Must(file.AppendCommand(*commands_.Find(
                     {static_cast<WORD>(kRecentBase.value + index)})), "append recent file");
         }
-        for (const auto id : {kUndo, kRedo, kCut, kCopy, kPaste, kSelectAll})
+        for (const auto id : {kUndo, kRedo, kCut, kCopy, kPaste, kSelectAll,
+                              kPinTab, kSortTabs, kCloseOtherTabs, kCloseLeftTabs,
+                              kCloseRightTabs, kOpenNewWindow})
             mwfl::Must(edit.AppendCommand(*commands_.Find(id)), "append edit command");
         for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kFindInFiles, kCancelSearch})
             mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
@@ -698,6 +738,10 @@ private:
                               kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
                               kRectangular, kToggleFold, kToggleBookmark, kNextBookmark})
             mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
+        for (const auto id : {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,
+                              kWorkspaceRename, kWorkspaceRecycle, kWorkspaceReveal,
+                              kWorkspaceCopyPath, kWorkspaceCopyRelativePath, kWorkspaceRemoveRoot})
+            mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append workspace command");
         for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
                               kUppercase, kLowercase, kTitleCase, kSentenceCase,
                               kIndent, kOutdent, kToggleComment, kSelectNext,
@@ -1925,6 +1969,7 @@ private:
         const HWND hwnd = found->editor->GetHwnd();
         if (!workspace_.Close(*id) || adapter_.UnbindPage(*id) != mwfl::DocumentTabStatus::success)
             return false;
+        std::erase(pinned_documents_, *id);
         documents_.erase(found);
         if (::IsWindow(hwnd)) ::DestroyWindow(hwnd);
         if (documents_.empty()) NewDocument();
@@ -1934,6 +1979,71 @@ private:
             static_cast<void>(SaveSessionSnapshot());
         }
         return true;
+    }
+
+    bool IsPinned(mwfl::DocumentId id) const noexcept {
+        return std::ranges::find(pinned_documents_, id) != pinned_documents_.end();
+    }
+
+    void TogglePinActive() {
+        const auto id = workspace_.GetActiveId();
+        if (!id) return;
+        const auto found = std::ranges::find(pinned_documents_, *id);
+        if (found == pinned_documents_.end()) {
+            pinned_documents_.push_back(*id);
+            static_cast<void>(workspace_.Move(*id, 0));
+            status_.SetText(L"Tab pinned");
+        } else {
+            pinned_documents_.erase(found);
+            status_.SetText(L"Tab unpinned");
+        }
+        SynchronizeTabs(true);
+    }
+
+    void SortTabs() {
+        std::vector<mwfl::WorkspaceDocument> ordered(workspace_.GetDocuments().begin(),
+                                                     workspace_.GetDocuments().end());
+        std::ranges::stable_sort(ordered, [&](const auto& left, const auto& right) {
+            const bool left_pinned = IsPinned(left.id), right_pinned = IsPinned(right.id);
+            if (left_pinned != right_pinned) return left_pinned;
+            return ::CompareStringOrdinal(left.title.c_str(), -1, right.title.c_str(), -1, TRUE) == CSTR_LESS_THAN;
+        });
+        for (std::size_t index = 0; index < ordered.size(); ++index)
+            static_cast<void>(workspace_.Move(ordered[index].id, index));
+        SynchronizeTabs(true); status_.SetText(L"Tabs sorted (pinned tabs first)");
+    }
+
+    void CloseRelativeTabs(int direction) {
+        const auto active = workspace_.GetActiveId();
+        if (!active) return;
+        const auto active_index = workspace_.FindIndex(*active);
+        if (!active_index) return;
+        std::vector<mwfl::DocumentId> close;
+        const auto documents = workspace_.GetDocuments();
+        for (std::size_t index = 0; index < documents.size(); ++index) {
+            if (documents[index].id == *active || IsPinned(documents[index].id)) continue;
+            if (direction == 0 || (direction < 0 && index < *active_index) ||
+                (direction > 0 && index > *active_index)) close.push_back(documents[index].id);
+        }
+        for (const auto id : close) {
+            static_cast<void>(workspace_.Activate(id)); SynchronizeTabs(true);
+            if (!CloseActive()) break;
+        }
+        if (workspace_.Find(*active)) { static_cast<void>(workspace_.Activate(*active)); SynchronizeTabs(true); }
+    }
+
+    void OpenActiveInNewWindow() {
+        const auto* metadata = workspace_.GetActiveId() ? workspace_.Find(*workspace_.GetActiveId()) : nullptr;
+        if (!metadata || metadata->path.empty()) {
+            status_.SetText(L"Save the document before opening it in another window"); return;
+        }
+        auto command_line = L"\"" + ExecutablePath().wstring() + L"\" \"" + metadata->path.wstring() + L"\"";
+        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+        if (::CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+                             &startup, &process)) {
+            ::CloseHandle(process.hThread); ::CloseHandle(process.hProcess);
+            status_.SetText(L"Document sent to a new window");
+        } else status_.SetText(L"Could not open a new window");
     }
 
     std::optional<mwfl::ScintillaTextRange> FindNext() {
@@ -2015,6 +2125,122 @@ private:
         if (menu_.GetHandle()) BuildMenu();
         if (!IsTestMode())
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(HKEY_CURRENT_USER, kSettingsKey, recent_));
+    }
+
+    std::optional<std::filesystem::path> SelectedWorkspacePath() const {
+        const auto item = TreeView_GetSelection(tree_.GetHwnd());
+        if (!item) return std::nullopt;
+        TVITEMW details{};
+        details.mask = TVIF_PARAM;
+        details.hItem = item;
+        if (!TreeView_GetItem(tree_.GetHwnd(), &details)) return std::nullopt;
+        const auto found = tree_paths_.find(static_cast<std::uint64_t>(details.lParam));
+        return found == tree_paths_.end() ? std::nullopt
+                                         : std::optional<std::filesystem::path>{found->second};
+    }
+
+    std::optional<std::wstring> PromptWorkspaceName(std::wstring_view title,
+                                                     std::wstring_view initial = {}) {
+        mwfl::TextBox name; mwfl::Button accept, cancel; std::optional<std::wstring> result;
+        mwfl::Dialog* pointer = nullptr;
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = std::wstring(title),
+            .initial_client_size = {400.0_dip, 104.0_dip}, .resizable = false,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window}; ui.Add(name, {731}, std::wstring(initial));
+                    ui.Add(accept, {IDOK}, L"OK"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
+                    mwfl::SetAccessibleName(name.GetHwnd(), L"Workspace item name");
+                    return pointer->SetLayout(mwfl::Column().Margin(10.0_dip).Gap(8.0_dip)
+                        .Add(name, mwfl::Fixed(28.0_dip))
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(mwfl::Column(), mwfl::Stretch())
+                            .Add(accept, mwfl::Fixed(76.0_dip)).Add(cancel, mwfl::Fixed(76.0_dip)),
+                            mwfl::Fixed(28.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id != IDOK) return false;
+                    const auto value = name.GetText();
+                    if (!notepad_colon::IsValidWorkspaceName(value)) {
+                        ::MessageBoxW(pointer->GetHwnd(), L"Enter a valid Windows file or folder name.",
+                                      L"Invalid name", MB_OK | MB_ICONWARNING);
+                        return true;
+                    }
+                    result = value; pointer->Accept(); return true;
+                }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal()); return result;
+    }
+
+    void RefreshWorkspace() {
+        if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
+    }
+
+    void CreateWorkspaceSelection(bool directory) {
+        auto selected = SelectedWorkspacePath();
+        if (!selected) { status_.SetText(L"Select a workspace folder first"); return; }
+        std::error_code error;
+        auto parent = std::filesystem::is_directory(*selected, error) ? *selected : selected->parent_path();
+        const auto name = PromptWorkspaceName(directory ? L"New Folder" : L"New File");
+        if (!name) return;
+        if (!notepad_colon::CreateWorkspaceItem(parent, *name, directory, workspace_catalog_.Roots())) {
+            ::MessageBoxW(GetHwnd(), L"The item could not be created safely.", L"Workspace",
+                          MB_OK | MB_ICONERROR); return;
+        }
+        RefreshWorkspace();
+        if (!directory) static_cast<void>(OpenPath(parent / *name));
+    }
+
+    void RenameWorkspaceSelection() {
+        const auto selected = SelectedWorkspacePath();
+        if (!selected) return;
+        const auto name = PromptWorkspaceName(L"Rename Workspace Item", selected->filename().wstring());
+        if (!name) return;
+        if (!notepad_colon::RenameWorkspaceItem(*selected, *name, workspace_catalog_.Roots()))
+            ::MessageBoxW(GetHwnd(), L"Workspace roots cannot be renamed, and the new name must be unused.",
+                          L"Rename", MB_OK | MB_ICONWARNING);
+        else RefreshWorkspace();
+    }
+
+    void RecycleWorkspaceSelection() {
+        const auto selected = SelectedWorkspacePath();
+        if (!selected) return;
+        const auto prompt = L"Move this item to the Recycle Bin?\n\n" + selected->wstring();
+        if (::MessageBoxW(GetHwnd(), prompt.c_str(), L"Workspace", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+        if (!notepad_colon::RecycleWorkspaceItem(*selected, workspace_catalog_.Roots()))
+            ::MessageBoxW(GetHwnd(), L"Workspace roots cannot be deleted, or the operation failed.",
+                          L"Workspace", MB_OK | MB_ICONERROR);
+        else RefreshWorkspace();
+    }
+
+    void RevealWorkspaceSelection() {
+        const auto selected = SelectedWorkspacePath();
+        if (!selected) return;
+        const auto parameters = L"/select,\"" + selected->wstring() + L"\"";
+        ::ShellExecuteW(GetHwnd(), L"open", L"explorer.exe", parameters.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+
+    void CopyWorkspacePath(bool relative) {
+        const auto selected = SelectedWorkspacePath();
+        if (!selected) return;
+        auto value = *selected;
+        if (relative) for (const auto& root : workspace_catalog_.Roots())
+            if (notepad_colon::IsWithinWorkspaceRoots(*selected, {root})) {
+                value = selected->lexically_relative(root); break;
+            }
+        status_.SetText(mwfl::SetClipboardText(GetHwnd(), value.wstring())
+            ? L"Path copied" : L"Could not access clipboard");
+    }
+
+    void RemoveWorkspaceRoot() {
+        const auto selected = SelectedWorkspacePath();
+        if (!selected || !std::ranges::any_of(workspace_catalog_.Roots(),
+            [&](const auto& root) { return SamePath(root, *selected); })) {
+            status_.SetText(L"Select a workspace root to remove"); return;
+        }
+        static_cast<void>(workspace_catalog_.RemoveRoot(*selected));
+        if (workspace_catalog_.Roots().empty()) {
+            TreeView_DeleteAllItems(tree_.GetHwnd()); tree_paths_.clear(); workspace_visible_ = false;
+            ApplyCompactLayout();
+        } else RefreshWorkspace();
+        static_cast<void>(SaveSessionSnapshot());
     }
 
     void OpenFolderInteractive() {
@@ -2278,8 +2504,7 @@ private:
         }
     }
 
-    bool SaveSessionSnapshot() {
-        if (session_path_.empty() || restoring_session_) return true;
+    std::optional<notepad_colon::Session> CaptureSession() {
         notepad_colon::Session session;
         session.workspace_paths = workspace_catalog_.Roots();
         if (!session.workspace_paths.empty()) session.workspace_path = session.workspace_paths.front();
@@ -2289,9 +2514,9 @@ private:
         }
         for (const auto& metadata : workspace_.GetDocuments()) {
             const auto* document = FindDocument(metadata.id);
-            if (!document) return false;
+            if (!document) return std::nullopt;
             const auto text = document->editor->GetText();
-            if (!text) return false;
+            if (!text) return std::nullopt;
             notepad_colon::SessionEntry entry;
             entry.path = metadata.path;
             entry.recovery_text = metadata.dirty || metadata.path.empty() ? *text : L"";
@@ -2303,7 +2528,49 @@ private:
             entry.dirty = metadata.dirty;
             session.documents.push_back(std::move(entry));
         }
-        return notepad_colon::SaveSessionAtomic(session_path_, session);
+        return session;
+    }
+
+    bool SaveSessionSnapshot() {
+        if (session_path_.empty() || restoring_session_) return true;
+        const auto session = CaptureSession();
+        return session && notepad_colon::SaveSessionAtomic(session_path_, *session);
+    }
+
+    void SaveNamedSession() {
+        const auto selected = mwfl::ShowSaveFileDialog({.owner = GetHwnd(), .title = L"Save Named Session",
+            .filters = {{L"Notepad Colon session", L"*.npcsession"}},
+            .default_extension = L"npcsession"});
+        if (!selected.accepted) return;
+        const auto session = CaptureSession();
+        status_.SetText(session && notepad_colon::SaveSessionAtomic(selected.path, *session)
+            ? L"Named session saved" : L"Named session could not be saved");
+    }
+
+    void OpenNamedSession() {
+        const auto selected = mwfl::ShowOpenFileDialog({.owner = GetHwnd(), .title = L"Open Named Session",
+            .filters = {{L"Notepad Colon session", L"*.npcsession"}}});
+        if (!selected.accepted) return;
+        notepad_colon::Session session;
+        if (!notepad_colon::LoadSession(selected.path, session)) {
+            ::MessageBoxW(GetHwnd(), L"This session file is invalid or unreadable.", L"Open Session",
+                          MB_OK | MB_ICONERROR); return;
+        }
+        for (const auto& root : session.workspace_paths)
+            if (std::filesystem::is_directory(root)) static_cast<void>(workspace_catalog_.AddRoot(root));
+        if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
+        for (const auto& entry : session.documents) {
+            if (!entry.path.empty() && OpenPath(entry.path)) {
+                if (entry.dirty && !entry.recovery_text.empty()) {
+                    auto* document = ActiveDocument();
+                    if (document && document->editor->SetText(entry.recovery_text)) {
+                        workspace_.SetDirty(document->id, true);
+                        document->editor->SetSelection({entry.view.anchor, entry.view.caret});
+                    }
+                }
+            } else if (!entry.recovery_text.empty()) NewDocument(entry.recovery_text, L"Recovered session note");
+        }
+        status_.SetText(L"Named session opened");
     }
 
     bool RestoreSession() {
@@ -2527,6 +2794,7 @@ private:
     mwfl::DocumentWorkspaceModel workspace_;
     mwfl::DocumentTabWorkspaceAdapter adapter_;
     std::vector<EditorDocument> documents_;
+    std::vector<mwfl::DocumentId> pinned_documents_;
     std::uint64_t next_id_ = 1;
     mwfl::CommandSet commands_;
     mwfl::AcceleratorTable accelerators_;
