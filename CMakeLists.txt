@@ -22,7 +22,8 @@ add_library(notepad_colon_model
     src/document.cpp
     src/language.cpp
     src/session.cpp
-    src/text.cpp)
+    src/text.cpp
+    src/workspace.cpp)
 target_include_directories(notepad_colon_model PUBLIC include)
 target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 

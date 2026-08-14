@@ -2,10 +2,12 @@
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/workspace.h>
 
 #include <windows.h>
 
 #include <iostream>
+#include <fstream>
 
 namespace {
 int failures = 0;
@@ -36,6 +38,7 @@ int main() {
 
     notepad_colon::Session original;
     original.active_index = 1;
+    original.workspace_path = L"C:\\work";
     original.documents.push_back({L"C:\\work\\ä½ å¥½.cpp", L"", notepad_colon::Encoding::utf8,
                                   notepad_colon::LineEnding::lf, {4, 9, 2}, false});
     original.documents.push_back({{}, L"unsaved\ntext\tΩ", notepad_colon::Encoding::utf8,
@@ -44,12 +47,15 @@ int main() {
     notepad_colon::Session decoded;
     Check(notepad_colon::DeserializeSession(encoded, decoded), "serialized session must parse");
     Check(decoded.documents.size() == 2 && decoded.active_index == 1, "session shape must round trip");
+    Check(decoded.workspace_path == original.workspace_path, "workspace path must round trip");
     if (decoded.documents.size() == 2) {
         Check(decoded.documents[0].path == original.documents[0].path, "Unicode path must round trip");
     Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
               "recovery text must round trip");
     }
     Check(!notepad_colon::DeserializeSession("bad", decoded), "invalid sessions must be rejected");
+    Check(notepad_colon::DeserializeSession("NPCSESSION\t1\t0\n", decoded),
+          "version 1 sessions must remain readable");
 
     const std::wstring mixed = L"one\r\ntwo\nthree\rfour";
     Check(notepad_colon::DetectLineEnding(mixed) == notepad_colon::LineEnding::crlf,
@@ -78,5 +84,40 @@ int main() {
     Check(notepad_colon::DetectLanguage(L"data.yaml") == Language::yaml, "YAML detection");
     Check(notepad_colon::DetectLanguage(L"README") == Language::plain_text, "plain text fallback");
     Check(notepad_colon::LexerName(Language::python) == "python", "Python lexer mapping");
+
+    const auto workspace_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-workspace-test-" + std::to_wstring(::GetCurrentProcessId()));
+    std::filesystem::create_directories(workspace_path / L"src");
+    std::filesystem::create_directories(workspace_path / L"build");
+    {
+        std::ofstream(workspace_path / L"src" / L"one.txt", std::ios::binary)
+            << "alpha needle beta\nNeedlework must not whole-word match\nneedle again\n";
+        std::ofstream(workspace_path / L"src" / L"two.txt", std::ios::binary)
+            << "NEEDLE uppercase\n";
+        std::ofstream(workspace_path / L"build" / L"ignored.txt", std::ios::binary)
+            << "needle ignored\n";
+        std::ofstream binary(workspace_path / L"binary.dat", std::ios::binary);
+        const char bytes[]{'a', '\0', 'n'};
+        binary.write(bytes, sizeof(bytes));
+    }
+    const auto scan = notepad_colon::ScanWorkspace(workspace_path);
+    Check(scan.entries.size() == 4, "workspace scan must include src, two text files, and binary");
+    Check(scan.skipped == 1, "workspace scan must skip build directory");
+    notepad_colon::SearchOptions search_options;
+    search_options.whole_word = true;
+    const auto search_result = notepad_colon::SearchWorkspace(workspace_path, L"needle", search_options);
+    Check(search_result.matches.size() == 3, "case-insensitive whole-word folder search");
+    Check(search_result.files_searched == 2, "folder search must search two text files");
+    Check(search_result.files_skipped >= 2, "folder search must report build and binary skips");
+    search_options.match_case = true;
+    const auto case_result = notepad_colon::SearchWorkspace(workspace_path, L"needle", search_options);
+    Check(case_result.matches.size() == 2, "case-sensitive folder search");
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    Check(notepad_colon::SearchWorkspace(workspace_path, L"needle", {}, cancelled.get_token()).cancelled,
+          "pre-cancelled folder search must report cancellation");
+    const auto before_state = notepad_colon::CaptureFileState(workspace_path / L"src" / L"one.txt");
+    Check(before_state.exists && before_state.size > 0, "file monitor state must capture a file");
+    std::filesystem::remove_all(workspace_path, ignored);
     return failures == 0 ? 0 : 1;
 }

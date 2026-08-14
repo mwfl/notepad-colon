@@ -38,5 +38,6 @@ void ChangeCase(mwfl::ScintillaEditor& editor, bool upper) noexcept;
 void IndentSelection(mwfl::ScintillaEditor& editor, bool indent) noexcept;
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept;
 void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept;
+void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept;
 
 }  // namespace notepad_colon

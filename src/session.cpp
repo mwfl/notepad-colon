@@ -43,7 +43,8 @@ bool Unescape(std::string_view value, std::wstring& output) {
 
 std::string SerializeSession(const Session& session) {
     std::ostringstream output;
-    output << "NPCSESSION\t1\t" << session.active_index << '\n';
+    output << "NPCSESSION\t2\t" << session.active_index << '\t'
+           << Escape(session.workspace_path.wstring()) << '\n';
     for (const auto& entry : session.documents) {
         output << static_cast<int>(entry.encoding) << '\t'
                << static_cast<int>(entry.line_ending) << '\t'
@@ -59,18 +60,27 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
         std::istringstream stream{std::string(input)};
         std::string line;
         if (!std::getline(stream, line)) return false;
-        const auto first_tab = line.find('\t');
-        const auto second_tab = first_tab == std::string::npos ? std::string::npos : line.find('\t', first_tab + 1);
-        if (first_tab == std::string::npos || second_tab == std::string::npos ||
-            line.substr(0, first_tab) != "NPCSESSION" ||
-            line.substr(first_tab + 1, second_tab - first_tab - 1) != "1") return false;
+        std::vector<std::string> header_fields;
+        std::istringstream header_stream{line};
+        std::string header_field;
+        while (std::getline(header_stream, header_field, '\t')) header_fields.push_back(header_field);
+        if (!line.empty() && line.back() == '\t') header_fields.emplace_back();
+        if (header_fields.size() < 3 || header_fields.size() > 4 ||
+            header_fields[0] != "NPCSESSION" ||
+            (header_fields[1] != "1" && header_fields[1] != "2")) return false;
         std::size_t active = 0;
-        const auto active_text = std::string_view{line}.substr(second_tab + 1);
+        const auto active_text = std::string_view{header_fields[2]};
         const auto active_result = std::from_chars(active_text.data(), active_text.data() + active_text.size(), active);
         if (active_result.ec != std::errc{} || active_result.ptr != active_text.data() + active_text.size()) return false;
 
         Session parsed;
         parsed.active_index = active;
+        if (header_fields[1] == "2") {
+            if (header_fields.size() != 4) return false;
+            std::wstring workspace;
+            if (!Unescape(header_fields[3], workspace)) return false;
+            parsed.workspace_path = workspace;
+        }
         while (std::getline(stream, line)) {
             if (line.empty()) continue;
             std::vector<std::string> fields;

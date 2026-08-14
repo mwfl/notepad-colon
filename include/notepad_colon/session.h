@@ -20,6 +20,7 @@ struct SessionEntry {
 struct Session {
     std::vector<SessionEntry> documents;
     std::size_t active_index = 0;
+    std::filesystem::path workspace_path;
 };
 
 std::string SerializeSession(const Session& session);

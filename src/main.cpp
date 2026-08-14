@@ -3,15 +3,20 @@
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/workspace.h>
 #include "scintilla_support.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <thread>
+#include <unordered_map>
 
 using mwfl::operator""_dip;
 
@@ -56,6 +61,14 @@ constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
 constexpr mwfl::ControlId kZoomReset{336};
+constexpr mwfl::ControlId kOpenFolder{340};
+constexpr mwfl::ControlId kFindInFiles{341};
+constexpr mwfl::ControlId kCancelSearch{342};
+constexpr mwfl::ControlId kTree{350};
+constexpr mwfl::ControlId kResults{351};
+constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
+constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
+constexpr mwfl::TimerId kMonitorTimer{1};
 constexpr std::wstring_view kSettingsKey = L"Software\\mwfl\\Notepad Colon";
 constexpr mwfl::ControlId kSearch{130};
 constexpr mwfl::ControlId kReplacement{131};
@@ -70,6 +83,8 @@ struct EditorDocument {
     std::optional<mwfl::FileStamp> stamp;
     bool read_only = false;
     notepad_colon::Language language = notepad_colon::Language::plain_text;
+    notepad_colon::FileState file_state;
+    bool external_changed = false;
 };
 
 std::wstring_view EncodingName(mwfl::TextEncoding encoding) noexcept {
@@ -139,12 +154,18 @@ public:
         ui.Add(toolbar_);
         ui.Add(search_, kSearch, L"");
         ui.Add(replacement_, kReplacement, L"");
+        ui.Add(tree_, kTree, mwfl::RectDip{});
         ui.Add(tabs_, mwfl::TabControlOptions{});
+        ui.Add(results_, kResults, mwfl::RectDip{}, mwfl::ListViewOptions{});
         ui.Add(status_);
         for (const auto id : {kNew, kOpen, kSave, kClose, kUndo, kRedo,
                               kCut, kCopy, kPaste, kFindNext, kReplaceNext})
             mwfl::Must(toolbar_.AddCommand(*commands_.Find(id)), "add toolbar command");
         toolbar_.AutoSize();
+        mwfl::Must(mwfl::AddColumns(results_, {{L"File", 330}, {L"Line", 70},
+                                                {L"Column", 70}, {L"Preview", 520}}),
+                   "add search-result columns");
+        results_.SetExtendedListStyle(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
         mwfl::Must(adapter_.Attach(tabs_) == mwfl::DocumentTabStatus::success,
                    "attach document tab adapter");
         BuildMenu();
@@ -156,17 +177,25 @@ public:
         mwfl::Must(mwfl::SetAccessibleName(replacement_.GetHwnd(), L"Replacement text"),
                    "name replacement");
         mwfl::Must(mwfl::SetAccessibleName(status_.GetHwnd(), L"Document status"), "name status");
+        mwfl::Must(mwfl::SetAccessibleName(tree_.GetHwnd(), L"Workspace files"), "name workspace tree");
+        mwfl::Must(mwfl::SetAccessibleName(results_.GetHwnd(), L"Folder search results"), "name search results");
 
         SetLayout(mwfl::Column()
             .Add(toolbar_, mwfl::Auto())
             .Add(mwfl::Row().Gap(5.0_dip).Margin(5.0_dip)
                 .Add(search_, mwfl::Stretch())
                 .Add(replacement_, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
-            .Add(tabs_, mwfl::Stretch())
+            .Add(mwfl::Row().Gap(5.0_dip)
+                .Add(tree_, mwfl::Fixed(245.0_dip))
+                .Add(mwfl::Column().Gap(5.0_dip)
+                    .Add(tabs_, mwfl::Stretch())
+                    .Add(results_, mwfl::Fixed(165.0_dip)), mwfl::Stretch()), mwfl::Stretch())
             .Add(status_, mwfl::Fixed(26.0_dip)));
 
         ResolveSessionPath();
         if (!RestoreSession()) NewDocument();
+        mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
+                   "start external-file monitor");
         if (IsSelfTest() && !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
             throw std::runtime_error("could not schedule GUI self-test");
     }
@@ -180,6 +209,25 @@ public:
             adapter_.ActivateNativeSelection(workspace_);
             SyncPresentation(L"Document selected");
             return mwfl::EventResult::Handled();
+        }
+        if (event.IsFrom(tree_)) {
+            const auto notification = tree_.DecodeNotification(event.header);
+            if (notification && notification->kind == mwfl::TreeViewNotificationKind::selection_changed) {
+                const auto found = tree_paths_.find(notification->item.value);
+                if (found != tree_paths_.end() && std::filesystem::is_regular_file(found->second))
+                    static_cast<void>(OpenPath(found->second));
+                return mwfl::EventResult::Handled();
+            }
+        }
+        if (event.IsFrom(results_)) {
+            if (const auto notification = results_.DecodeNotification(event.header);
+                notification && notification->kind == mwfl::ListViewNotificationKind::activated) {
+                const auto index = notification->item.value > 0 ? notification->item.value - 1 : 0;
+                if (index < search_results_.matches.size() && OpenPath(search_results_.matches[index].path))
+                    if (auto* editor = ActiveEditor())
+                        notepad_colon::GoToLine(*editor, search_results_.matches[index].line);
+                return mwfl::EventResult::Handled();
+            }
         }
         auto* document = FindByHwnd(event.header.hwndFrom);
         if (!document) return mwfl::EventResult::Propagate();
@@ -221,10 +269,26 @@ public:
             status_.SetText(L"Opened " + std::to_wstring(opened) + L" dropped file(s)");
             return mwfl::EventResult::Handled();
         }
+        if (event.id == kSearchCompleteMessage) {
+            CompleteSearch();
+            return mwfl::EventResult::Handled();
+        }
+        if (event.id == kWorkspaceCompleteMessage) {
+            CompleteWorkspaceScan();
+            return mwfl::EventResult::Handled();
+        }
         return mwfl::EventResult::Propagate();
     }
 
+    mwfl::EventResult OnTimer(mwfl::TimerId id) override {
+        if (id != kMonitorTimer) return mwfl::EventResult::Propagate();
+        CheckExternalChanges(false);
+        return mwfl::EventResult::Handled();
+    }
+
     mwfl::EventResult OnClose() override {
+        monitor_timer_.Stop();
+        StopWorkers();
         if (!IsSelfTest()) {
             for (const auto& document : workspace_.GetDocuments()) {
                 if (!document.dirty) continue;
@@ -314,6 +378,12 @@ private:
                      .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_MINUS}))
             .Add(mwfl::Command(kZoomReset, L"Reset Zoom", [this] { if (auto* e = ActiveEditor()) e->SetZoom(0); })
                      .SetShortcut({FVIRTKEY | FCONTROL, '0'}));
+        commands_
+            .Add(mwfl::Command(kOpenFolder, L"Open &Folder...", [this] { OpenFolderInteractive(); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, 'K'}))
+            .Add(mwfl::Command(kFindInFiles, L"Find in Files", [this] { StartFolderSearch(); })
+                     .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'F'}))
+            .Add(mwfl::Command(kCancelSearch, L"Cancel Folder Search", [this] { CancelFolderSearch(); }));
         for (std::size_t index = 0; index < recent_.GetMaximumEntries(); ++index) {
             commands_.Add(mwfl::Command(
                 {static_cast<WORD>(kRecentBase.value + index)}, L"Recent file",
@@ -335,7 +405,7 @@ private:
         mwfl::Must(line_endings.CreatePopup(), "create line endings menu");
         mwfl::Must(view.CreatePopup(), "create view menu");
         mwfl::Must(code.CreatePopup(), "create code menu");
-        for (const auto id : {kNew, kOpen, kSave, kSaveAs, kSaveAll, kClose})
+        for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
         mwfl::Must(file.AppendSeparator(), "append file separator");
         mwfl::Must(file.AppendCommand(*commands_.Find(kExit)), "append exit command");
@@ -347,7 +417,7 @@ private:
         }
         for (const auto id : {kUndo, kRedo, kCut, kCopy, kPaste, kSelectAll})
             mwfl::Must(edit.AppendCommand(*commands_.Find(id)), "append edit command");
-        for (const auto id : {kFindNext, kReplaceNext, kReplaceAll})
+        for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kFindInFiles, kCancelSearch})
             mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
         for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be})
             mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
@@ -439,7 +509,7 @@ private:
         mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str());
         documents_.push_back({id, std::move(editor), loaded.value->encoding,
                               notepad_colon::DetectLineEnding(loaded.value->text), loaded.value->stamp,
-                              false, language});
+                              false, language, notepad_colon::CaptureFileState(path)});
         workspace_.Activate(id);
         SynchronizeTabs(true);
         SyncPresentation(L"Opened");
@@ -478,6 +548,8 @@ private:
         const auto saved = mwfl::WriteTextFileAtomic(path, *text, document.encoding, expected);
         if (!saved.Succeeded() || !saved.stamp) return false;
         document.stamp = saved.stamp;
+        document.file_state = notepad_colon::CaptureFileState(path);
+        document.external_changed = false;
         document.line_ending = notepad_colon::DetectLineEnding(*text);
         document.editor->SetSavePoint();
         workspace_.Rename(document.id, path.filename().wstring(), path);
@@ -613,6 +685,150 @@ private:
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(HKEY_CURRENT_USER, kSettingsKey, recent_));
     }
 
+    void OpenFolderInteractive() {
+        const auto selected = mwfl::ShowFolderDialog({GetHwnd(), L"Choose a workspace folder"});
+        if (selected.accepted) StartWorkspaceScan(selected.path);
+    }
+
+    void StartWorkspaceScan(std::filesystem::path root) {
+        if (workspace_worker_.joinable()) {
+            workspace_worker_.request_stop();
+            workspace_worker_.join();
+        }
+        workspace_root_ = std::move(root);
+        status_.SetText(L"Scanning workspace...");
+        const HWND window = GetHwnd();
+        const auto scan_root = workspace_root_;
+        workspace_worker_ = std::jthread([this, window, scan_root](std::stop_token stop) {
+            auto scan = notepad_colon::ScanWorkspace(scan_root, 20000, stop);
+            {
+                std::scoped_lock lock{worker_mutex_};
+                pending_workspace_scan_ = std::move(scan);
+            }
+            ::PostMessageW(window, kWorkspaceCompleteMessage, 0, 0);
+        });
+    }
+
+    void CompleteWorkspaceScan() {
+        std::optional<notepad_colon::WorkspaceScan> scan;
+        {
+            std::scoped_lock lock{worker_mutex_};
+            scan = std::move(pending_workspace_scan_);
+            pending_workspace_scan_.reset();
+        }
+        if (!scan) return;
+        TreeView_DeleteAllItems(tree_.GetHwnd());
+        tree_paths_.clear();
+        constexpr mwfl::TreeItemId root_id{1};
+        tree_.AddItem(root_id, workspace_root_.filename().wstring());
+        tree_paths_[root_id.value] = workspace_root_;
+        std::unordered_map<std::wstring, mwfl::TreeItemId> directory_ids;
+        directory_ids[L""] = root_id;
+        std::uint64_t next = 2;
+        for (const auto& entry : scan->entries) {
+            const mwfl::TreeItemId id{next++};
+            const auto parent_text = entry.relative_path.parent_path().wstring();
+            const auto parent = directory_ids.contains(parent_text) ? directory_ids[parent_text] : root_id;
+            tree_.AddChild(id, entry.relative_path.filename().wstring(), parent);
+            tree_paths_[id.value] = workspace_root_ / entry.relative_path;
+            if (entry.directory) directory_ids[entry.relative_path.wstring()] = id;
+        }
+        tree_.Expand(root_id);
+        status_.SetText(L"Workspace: " + workspace_root_.wstring() + L" | " +
+            std::to_wstring(scan->entries.size()) + L" entries" +
+            (scan->truncated ? L" (truncated)" : L""));
+    }
+
+    void StartFolderSearch() {
+        if (workspace_root_.empty()) {
+            OpenFolderInteractive();
+            return;
+        }
+        const auto query = search_.GetText();
+        if (query.empty()) {
+            status_.SetText(L"Enter search text before Find in Files");
+            return;
+        }
+        CancelFolderSearch();
+        if (search_worker_.joinable()) search_worker_.join();
+        if (auto* command = commands_.Find(kCancelSearch)) command->SetEnabled(true);
+        menu_.UpdateCommand(*commands_.Find(kCancelSearch));
+        status_.SetText(L"Searching workspace...");
+        const HWND window = GetHwnd();
+        const auto root = workspace_root_;
+        search_worker_ = std::jthread([this, window, root, query](std::stop_token stop) {
+            auto result = notepad_colon::SearchWorkspace(root, query, {}, stop);
+            {
+                std::scoped_lock lock{worker_mutex_};
+                pending_search_result_ = std::move(result);
+            }
+            ::PostMessageW(window, kSearchCompleteMessage, 0, 0);
+        });
+    }
+
+    void CancelFolderSearch() {
+        if (search_worker_.joinable()) search_worker_.request_stop();
+    }
+
+    void CompleteSearch() {
+        std::optional<notepad_colon::SearchResult> result;
+        {
+            std::scoped_lock lock{worker_mutex_};
+            result = std::move(pending_search_result_);
+            pending_search_result_.reset();
+        }
+        if (!result) return;
+        search_results_ = std::move(*result);
+        ListView_DeleteAllItems(results_.GetHwnd());
+        for (std::size_t index = 0; index < search_results_.matches.size(); ++index) {
+            const auto& match = search_results_.matches[index];
+            const mwfl::ListItemId id{index + 1};
+            results_.AddItem(id, match.path.lexically_relative(workspace_root_).wstring());
+            results_.SetItemText(id, 1, std::to_wstring(match.line));
+            results_.SetItemText(id, 2, std::to_wstring(match.column));
+            results_.SetItemText(id, 3, match.preview);
+        }
+        if (auto* command = commands_.Find(kCancelSearch)) command->SetEnabled(false);
+        menu_.UpdateCommand(*commands_.Find(kCancelSearch));
+        status_.SetText((search_results_.cancelled ? L"Search cancelled | " : L"Search complete | ") +
+            std::to_wstring(search_results_.matches.size()) + L" matches in " +
+            std::to_wstring(search_results_.files_searched) + L" files" +
+            (search_results_.truncated ? L" (truncated)" : L""));
+    }
+
+    void CheckExternalChanges(bool force) {
+        if (IsSelfTest() && !force) return;
+        for (auto& document : documents_) {
+            const auto* metadata = workspace_.Find(document.id);
+            if (!metadata || metadata->path.empty()) continue;
+            const auto current = notepad_colon::CaptureFileState(metadata->path);
+            if (current == document.file_state || document.external_changed) continue;
+            if (!metadata->dirty && current.exists) {
+                const auto loaded = mwfl::ReadTextFile(metadata->path);
+                if (loaded.Succeeded() && document.editor->SetText(loaded.value->text)) {
+                    document.encoding = loaded.value->encoding;
+                    document.line_ending = notepad_colon::DetectLineEnding(loaded.value->text);
+                    document.stamp = loaded.value->stamp;
+                    document.file_state = current;
+                    document.editor->SetSavePoint();
+                    workspace_.SetDirty(document.id, false);
+                    SyncPresentation(L"Reloaded external change");
+                }
+            } else {
+                document.external_changed = true;
+                status_.SetText(metadata->title + L" changed on disk; Save As or reload before overwriting");
+            }
+        }
+    }
+
+    void StopWorkers() {
+        for (auto* worker : {&search_worker_, &workspace_worker_}) {
+            if (!worker->joinable()) continue;
+            worker->request_stop();
+            worker->join();
+        }
+    }
+
     void ResolveSessionPath() {
         if (IsSelfTest()) {
             session_path_ = std::filesystem::temp_directory_path() /
@@ -632,6 +848,7 @@ private:
     bool SaveSessionSnapshot() {
         if (session_path_.empty() || restoring_session_) return true;
         notepad_colon::Session session;
+        session.workspace_path = workspace_root_;
         if (const auto active = workspace_.GetActiveId()) {
             const auto index = workspace_.FindIndex(*active);
             if (index) session.active_index = *index;
@@ -659,6 +876,8 @@ private:
         if (session_path_.empty()) return false;
         notepad_colon::Session session;
         if (!notepad_colon::LoadSession(session_path_, session) || session.documents.empty()) return false;
+        if (!session.workspace_path.empty() && std::filesystem::is_directory(session.workspace_path))
+            StartWorkspaceScan(session.workspace_path);
         restoring_session_ = true;
         for (const auto& entry : session.documents) {
             if (!entry.path.empty() && OpenPath(entry.path)) {
@@ -759,6 +978,36 @@ private:
                 const auto* metadata = workspace_.Find(second->id);
                 if (metadata) cleanup.push_back(metadata->path);
             }
+            if (result == 0 && second) {
+                const auto* metadata = workspace_.Find(second->id);
+                if (!metadata || !mwfl::WriteTextFileAtomic(
+                        metadata->path, L"external replacement is longer\n",
+                        mwfl::TextEncoding::utf8).Succeeded()) result = 14;
+                CheckExternalChanges(true);
+                const auto reloaded = second->editor->GetText();
+                if (result == 0 && (!reloaded || *reloaded != L"external replacement is longer\n")) result = 15;
+            }
+            const auto test_workspace = std::filesystem::temp_directory_path() /
+                (L"notepad-colon-gui-workspace-" + std::to_wstring(::GetCurrentProcessId()));
+            std::filesystem::create_directories(test_workspace / L"src");
+            const auto workspace_file = test_workspace / L"src" / L"match.txt";
+            if (!mwfl::WriteTextFileAtomic(workspace_file, L"folder needle result\n",
+                                           mwfl::TextEncoding::utf8).Succeeded()) result = 16;
+            workspace_root_ = test_workspace;
+            {
+                std::scoped_lock lock{worker_mutex_};
+                pending_workspace_scan_ = notepad_colon::ScanWorkspace(test_workspace);
+            }
+            CompleteWorkspaceScan();
+            if (result == 0 && TreeView_GetCount(tree_.GetHwnd()) < 3) result = 17;
+            {
+                std::scoped_lock lock{worker_mutex_};
+                pending_search_result_ = notepad_colon::SearchWorkspace(test_workspace, L"needle");
+            }
+            CompleteSearch();
+            if (result == 0 && ListView_GetItemCount(results_.GetHwnd()) != 1) result = 18;
+            std::error_code workspace_ignored;
+            std::filesystem::remove_all(test_workspace, workspace_ignored);
             if (result == 0 && !CloseActive(true)) result = 5;
             if (result == 0 && workspace_.GetCount() != 1) result = 6;
             first = ActiveDocument();
@@ -794,11 +1043,22 @@ private:
     mwfl::Menu menu_;
     mwfl::Toolbar toolbar_;
     mwfl::TextBox search_, replacement_;
+    mwfl::TreeView tree_;
     mwfl::TabControl tabs_;
+    mwfl::ListView results_;
     mwfl::StatusBar status_;
     std::filesystem::path session_path_;
     bool restoring_session_ = false;
     mwfl::RecentFileList recent_{10};
+    std::filesystem::path workspace_root_;
+    std::unordered_map<std::uint64_t, std::filesystem::path> tree_paths_;
+    notepad_colon::SearchResult search_results_;
+    std::jthread search_worker_;
+    std::jthread workspace_worker_;
+    std::mutex worker_mutex_;
+    std::optional<notepad_colon::SearchResult> pending_search_result_;
+    std::optional<notepad_colon::WorkspaceScan> pending_workspace_scan_;
+    mwfl::UiTimer monitor_timer_;
 };
 }  // namespace
 

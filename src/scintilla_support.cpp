@@ -213,4 +213,9 @@ void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept {
     else editor.Send(SCI_BRACEBADLIGHT, brace);
 }
 
+void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept {
+    editor.Send(SCI_GOTOLINE, one_based_line > 0 ? one_based_line - 1 : 0);
+    editor.Focus();
+}
+
 }  // namespace notepad_colon
