@@ -3,8 +3,10 @@
 #include <Scintilla.h>
 
 #include <array>
+#include <climits>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace notepad_colon {
 namespace {
@@ -165,6 +167,85 @@ void DuplicateLine(mwfl::ScintillaEditor& editor) noexcept { editor.Send(SCI_LIN
 void DeleteLine(mwfl::ScintillaEditor& editor) noexcept { editor.Send(SCI_LINEDELETE); }
 void ChangeCase(mwfl::ScintillaEditor& editor, bool upper) noexcept { editor.Send(upper ? SCI_UPPERCASE : SCI_LOWERCASE); }
 void IndentSelection(mwfl::ScintillaEditor& editor, bool indent) noexcept { editor.Send(indent ? SCI_TAB : SCI_BACKTAB); }
+
+bool TransformSelectionOrDocument(
+    mwfl::ScintillaEditor& editor,
+    const std::function<std::wstring(std::wstring_view)>& transform) noexcept {
+    auto range = editor.GetSelection();
+    if (range.start == range.end) range = {0, editor.GetLength()};
+    if (!range || range.end - range.start > static_cast<mwfl::ScintillaPosition>(INT_MAX)) return false;
+    editor.Send(SCI_SETTARGETRANGE, range.start, range.end);
+    std::string source(static_cast<std::size_t>(range.end - range.start) + 1, '\0');
+    const auto copied = editor.Send(SCI_GETTARGETTEXT, 0, reinterpret_cast<LPARAM>(source.data()));
+    if (copied < 0) return false;
+    source.resize(static_cast<std::size_t>(copied));
+    const auto wide = mwfl::FromUtf8(source);
+    if (!wide) return false;
+    const auto replacement = mwfl::ToUtf8(transform(*wide));
+    if (!replacement) return false;
+    editor.Send(SCI_BEGINUNDOACTION);
+    editor.Send(SCI_REPLACETARGET, replacement->size(), reinterpret_cast<LPARAM>(replacement->data()));
+    editor.Send(SCI_ENDUNDOACTION);
+    return editor.SetSelection({range.start, range.start +
+        static_cast<mwfl::ScintillaPosition>(replacement->size())});
+}
+
+bool SelectNextOccurrence(mwfl::ScintillaEditor& editor, bool all) noexcept {
+    auto selection = editor.GetSelection();
+    if (selection.start == selection.end) {
+        const auto caret = selection.start;
+        selection.start = editor.Send(SCI_WORDSTARTPOSITION, caret, 1);
+        selection.end = editor.Send(SCI_WORDENDPOSITION, caret, 1);
+        if (selection.start == selection.end || !editor.SetSelection(selection)) return false;
+    }
+    std::string needle(static_cast<std::size_t>(selection.end - selection.start) + 1, '\0');
+    editor.Send(SCI_SETTARGETRANGE, selection.start, selection.end);
+    const auto copied = editor.Send(SCI_GETTARGETTEXT, 0, reinterpret_cast<LPARAM>(needle.data()));
+    if (copied <= 0) return false;
+    needle.resize(static_cast<std::size_t>(copied));
+    editor.Send(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE | SCFIND_WHOLEWORD);
+    auto start = selection.end;
+    bool added = false;
+    do {
+        editor.Send(SCI_SETTARGETRANGE, start, editor.GetLength());
+        const auto found = editor.Send(SCI_SEARCHINTARGET, needle.size(),
+                                       reinterpret_cast<LPARAM>(needle.data()));
+        if (found < 0) break;
+        const auto end = editor.Send(SCI_GETTARGETEND);
+        editor.Send(SCI_ADDSELECTION, end, found);
+        added = true;
+        start = end;
+    } while (all);
+    return added;
+}
+
+void ToggleLineComment(mwfl::ScintillaEditor& editor, std::string_view prefix) noexcept {
+    const std::string marker(prefix);
+    auto selection = editor.GetSelection();
+    auto first = editor.Send(SCI_LINEFROMPOSITION, selection.start);
+    auto last = editor.Send(SCI_LINEFROMPOSITION, selection.end);
+    if (selection.end == editor.Send(SCI_POSITIONFROMLINE, last) && last > first) --last;
+    bool uncomment = true;
+    for (auto line = first; line <= last; ++line) {
+        const auto position = editor.Send(SCI_GETLINEINDENTPOSITION, line);
+        for (std::size_t i = 0; i < prefix.size(); ++i)
+            if (editor.Send(SCI_GETCHARAT, position + static_cast<LRESULT>(i)) != prefix[i]) {
+                uncomment = false; break;
+            }
+        if (!uncomment) break;
+    }
+    editor.Send(SCI_BEGINUNDOACTION);
+    for (auto line = first; line <= last; ++line) {
+        const auto position = editor.Send(SCI_GETLINEINDENTPOSITION, line);
+        if (uncomment) {
+            editor.Send(SCI_SETTARGETRANGE, position, position + static_cast<LRESULT>(prefix.size()));
+            editor.Send(SCI_REPLACETARGET, 0, reinterpret_cast<LPARAM>(""));
+        } else {
+            editor.Send(SCI_INSERTTEXT, position, reinterpret_cast<LPARAM>(marker.c_str()));
+        }
+    }
+    editor.Send(SCI_ENDUNDOACTION);
+}
 
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept {
     if (character == '\n' || character == '\r') {

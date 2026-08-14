@@ -1,4 +1,5 @@
 #include <notepad_colon/document.h>
+#include <notepad_colon/editing.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
@@ -22,6 +23,32 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    using notepad_colon::LineOrder;
+    Check(notepad_colon::SortLines(L"beta\nAlpha\nalpha\n", LineOrder::ascending, true, true) ==
+              L"Alpha\nbeta\n", "case-folded sort and dedupe");
+    Check(notepad_colon::SortLines(L"a\r\nb\r\nc", LineOrder::reverse) == L"c\r\nb\r\na",
+          "reverse lines preserves CRLF");
+    Check(notepad_colon::RemoveBlankLines(L"one\n \t\ntwo\n") == L"one\ntwo\n",
+          "blank lines removed");
+    Check(notepad_colon::TrimTrailingWhitespace(L"one  \n two\t\n") == L"one\n two\n",
+          "trailing whitespace removed");
+    Check(notepad_colon::JoinLines(L" one \n\ntwo\n") == L"one two", "lines joined");
+    Check(notepad_colon::SplitLines(L"alpha beta gamma", 10) == L"alpha beta\ngamma",
+          "long line wrapped at word boundary");
+    Check(notepad_colon::TabsToSpaces(L"a\tb", 4) == L"a   b", "tabs use tab stops");
+    Check(notepad_colon::SpacesToTabs(L"a   b", 4) == L"a\tb", "spaces use tab stops");
+    Check(notepad_colon::ConvertCase(L"hello WORLD. next ONE!", notepad_colon::LetterCase::sentence) ==
+              L"Hello world. Next one!", "sentence case conversion");
+    const auto escaped = notepad_colon::EscapeJsonString(L"a\n\"b\"");
+    Check(escaped == L"a\\n\\\"b\\\"", "JSON escape");
+    Check(notepad_colon::UnescapeJsonString(escaped) == std::optional<std::wstring>{L"a\n\"b\""},
+          "JSON unescape");
+    Check(notepad_colon::Base64Encode("hello") == "aGVsbG8=", "base64 encode");
+    Check(notepad_colon::Base64Decode("aGVsbG8=") == std::optional<std::string>{"hello"},
+          "base64 decode");
+    Check(!notepad_colon::Base64Decode("bad"), "invalid base64 rejected");
+    Check(notepad_colon::EnsureFinalNewline(L"text", L"\r\n") == L"text\r\n",
+          "final newline inserted");
     notepad_colon::Preferences preferences;
     Check(notepad_colon::ValidatePreferences(preferences), "default preferences must be valid");
     preferences.font_name.clear();

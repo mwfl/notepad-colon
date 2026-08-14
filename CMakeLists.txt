@@ -31,6 +31,7 @@ endif()
 
 add_library(notepad_colon_model
     src/document.cpp
+    src/editing.cpp
     src/large_file.cpp
     src/language.cpp
     src/preferences.cpp

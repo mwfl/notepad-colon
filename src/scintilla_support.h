@@ -6,6 +6,8 @@
 
 #include <windows.h>
 
+#include <functional>
+
 namespace notepad_colon {
 
 class LexillaRuntime final {
@@ -37,6 +39,11 @@ void DuplicateLine(mwfl::ScintillaEditor& editor) noexcept;
 void DeleteLine(mwfl::ScintillaEditor& editor) noexcept;
 void ChangeCase(mwfl::ScintillaEditor& editor, bool upper) noexcept;
 void IndentSelection(mwfl::ScintillaEditor& editor, bool indent) noexcept;
+bool TransformSelectionOrDocument(
+    mwfl::ScintillaEditor& editor,
+    const std::function<std::wstring(std::wstring_view)>& transform) noexcept;
+bool SelectNextOccurrence(mwfl::ScintillaEditor& editor, bool all) noexcept;
+void ToggleLineComment(mwfl::ScintillaEditor& editor, std::string_view prefix) noexcept;
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept;
 void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept;
 void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept;

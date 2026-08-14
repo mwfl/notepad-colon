@@ -6,6 +6,7 @@
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/editing.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
@@ -26,6 +27,7 @@
 #include <vector>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <shellapi.h>
 
 using mwfl::operator""_dip;
@@ -67,6 +69,23 @@ constexpr mwfl::ControlId kUppercase{329};
 constexpr mwfl::ControlId kLowercase{330};
 constexpr mwfl::ControlId kIndent{331};
 constexpr mwfl::ControlId kOutdent{332};
+constexpr mwfl::ControlId kSelectNext{370};
+constexpr mwfl::ControlId kSelectAllOccurrences{371};
+constexpr mwfl::ControlId kSortAscending{372};
+constexpr mwfl::ControlId kSortDescending{373};
+constexpr mwfl::ControlId kUniqueLines{374};
+constexpr mwfl::ControlId kReverseLines{375};
+constexpr mwfl::ControlId kRemoveBlankLines{376};
+constexpr mwfl::ControlId kTrimTrailing{377};
+constexpr mwfl::ControlId kJoinLines{378};
+constexpr mwfl::ControlId kSplitLines{379};
+constexpr mwfl::ControlId kTabsToSpaces{380};
+constexpr mwfl::ControlId kSpacesToTabs{381};
+constexpr mwfl::ControlId kTitleCase{382};
+constexpr mwfl::ControlId kSentenceCase{383};
+constexpr mwfl::ControlId kJsonEscape{384};
+constexpr mwfl::ControlId kJsonUnescape{385};
+constexpr mwfl::ControlId kToggleComment{386};
 constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
@@ -80,6 +99,9 @@ constexpr mwfl::ControlId kRegisterAssociation{360};
 constexpr mwfl::ControlId kRemoveAssociation{361};
 constexpr mwfl::ControlId kPreferences{362};
 constexpr mwfl::ControlId kAbout{363};
+constexpr mwfl::ControlId kToggleFindBar{364};
+constexpr mwfl::ControlId kToggleWorkspace{365};
+constexpr mwfl::ControlId kToggleResults{366};
 constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
 constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
 constexpr mwfl::TimerId kMonitorTimer{1};
@@ -200,8 +222,7 @@ public:
         ui.Add(tabs_, mwfl::TabControlOptions{});
         ui.Add(results_, kResults, mwfl::RectDip{}, mwfl::ListViewOptions{});
         ui.Add(status_);
-        for (const auto id : {kNew, kOpen, kSave, kClose, kUndo, kRedo,
-                              kCut, kCopy, kPaste, kFindNext, kReplaceNext})
+        for (const auto id : {kNew, kOpen, kSave, kUndo, kRedo, kToggleFindBar})
             mwfl::Must(toolbar_.AddCommand(*commands_.Find(id)), "add toolbar command");
         toolbar_.AutoSize();
         mwfl::Must(mwfl::AddColumns(results_, {{L"File", 330}, {L"Line", 70},
@@ -222,17 +243,7 @@ public:
         mwfl::Must(mwfl::SetAccessibleName(tree_.GetHwnd(), L"Workspace files"), "name workspace tree");
         mwfl::Must(mwfl::SetAccessibleName(results_.GetHwnd(), L"Folder search results"), "name search results");
 
-        SetLayout(mwfl::Column()
-            .Add(toolbar_, mwfl::Auto())
-            .Add(mwfl::Row().Gap(5.0_dip).Margin(5.0_dip)
-                .Add(search_, mwfl::Stretch())
-                .Add(replacement_, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
-            .Add(mwfl::Row().Gap(5.0_dip)
-                .Add(tree_, mwfl::Fixed(245.0_dip))
-                .Add(mwfl::Column().Gap(5.0_dip)
-                    .Add(tabs_, mwfl::Stretch())
-                    .Add(results_, mwfl::Fixed(165.0_dip)), mwfl::Stretch()), mwfl::Stretch())
-            .Add(status_, mwfl::Fixed(26.0_dip)));
+        ApplyCompactLayout();
 
         ResolveSessionPath();
         if (!RestoreSession()) NewDocument();
@@ -451,6 +462,27 @@ private:
             .Add(mwfl::Command(kIndent, L"Indent", [this] { if (auto* e = ActiveEditor()) notepad_colon::IndentSelection(*e, true); }))
             .Add(mwfl::Command(kOutdent, L"Outdent", [this] { if (auto* e = ActiveEditor()) notepad_colon::IndentSelection(*e, false); }));
         commands_
+            .Add(mwfl::Command(kSelectNext, L"Select Next Occurrence", [this] { if (auto* e = ActiveEditor()) notepad_colon::SelectNextOccurrence(*e, false); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, 'D'}))
+            .Add(mwfl::Command(kSelectAllOccurrences, L"Select All Occurrences", [this] { if (auto* e = ActiveEditor()) notepad_colon::SelectNextOccurrence(*e, true); })
+                     .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'L'}))
+            .Add(mwfl::Command(kSortAscending, L"Sort Lines Ascending", [this] { Transform([](auto s) { return notepad_colon::SortLines(s, notepad_colon::LineOrder::ascending); }); }))
+            .Add(mwfl::Command(kSortDescending, L"Sort Lines Descending", [this] { Transform([](auto s) { return notepad_colon::SortLines(s, notepad_colon::LineOrder::descending); }); }))
+            .Add(mwfl::Command(kUniqueLines, L"Remove Duplicate Lines", [this] { Transform([](auto s) { return notepad_colon::SortLines(s, notepad_colon::LineOrder::ascending, true); }); }))
+            .Add(mwfl::Command(kReverseLines, L"Reverse Lines", [this] { Transform([](auto s) { return notepad_colon::SortLines(s, notepad_colon::LineOrder::reverse); }); }))
+            .Add(mwfl::Command(kRemoveBlankLines, L"Remove Blank Lines", [this] { Transform([](auto s) { return notepad_colon::RemoveBlankLines(s); }); }))
+            .Add(mwfl::Command(kTrimTrailing, L"Trim Trailing Whitespace", [this] { Transform(notepad_colon::TrimTrailingWhitespace); }))
+            .Add(mwfl::Command(kJoinLines, L"Join Lines", [this] { Transform([](auto s) { return notepad_colon::JoinLines(s); }); }))
+            .Add(mwfl::Command(kSplitLines, L"Split Lines at Column 80", [this] { Transform([](auto s) { return notepad_colon::SplitLines(s, 80); }); }))
+            .Add(mwfl::Command(kTabsToSpaces, L"Convert Tabs to Spaces", [this] { Transform([this](auto s) { return notepad_colon::TabsToSpaces(s, static_cast<std::size_t>(preferences_.tab_width)); }); }))
+            .Add(mwfl::Command(kSpacesToTabs, L"Convert Spaces to Tabs", [this] { Transform([this](auto s) { return notepad_colon::SpacesToTabs(s, static_cast<std::size_t>(preferences_.tab_width)); }); }))
+            .Add(mwfl::Command(kTitleCase, L"Title Case", [this] { Transform([](auto s) { return notepad_colon::ConvertCase(s, notepad_colon::LetterCase::title); }); }))
+            .Add(mwfl::Command(kSentenceCase, L"Sentence case", [this] { Transform([](auto s) { return notepad_colon::ConvertCase(s, notepad_colon::LetterCase::sentence); }); }))
+            .Add(mwfl::Command(kJsonEscape, L"Escape JSON String", [this] { Transform(notepad_colon::EscapeJsonString); }))
+            .Add(mwfl::Command(kJsonUnescape, L"Unescape JSON String", [this] { Transform([](auto s) { const auto value = notepad_colon::UnescapeJsonString(s); return value.value_or(std::wstring{s}); }); }))
+            .Add(mwfl::Command(kToggleComment, L"Toggle Line Comment", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleLineComment(*e, "//"); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_2}));
+        commands_
             .Add(mwfl::Command(kWordWrap, L"Word Wrap", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleWordWrap(*e); }))
             .Add(mwfl::Command(kZoomIn, L"Zoom In", [this] { if (auto* e = ActiveEditor()) e->SetZoom(e->GetZoom() + 1); })
                      .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_PLUS}))
@@ -464,6 +496,17 @@ private:
             .Add(mwfl::Command(kFindInFiles, L"Find in Files", [this] { StartFolderSearch(); })
                      .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'F'}))
             .Add(mwfl::Command(kCancelSearch, L"Cancel Folder Search", [this] { CancelFolderSearch(); }));
+        commands_
+            .Add(mwfl::Command(kToggleFindBar, L"Find / Replace Bar", [this] {
+                find_bar_visible_ = !find_bar_visible_; ApplyCompactLayout();
+                if (find_bar_visible_) search_.Focus();
+            }).SetShortcut({FVIRTKEY | FCONTROL, 'F'}))
+            .Add(mwfl::Command(kToggleWorkspace, L"Workspace Panel", [this] {
+                workspace_visible_ = !workspace_visible_; ApplyCompactLayout();
+            }).SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'E'}))
+            .Add(mwfl::Command(kToggleResults, L"Search Results Panel", [this] {
+                results_visible_ = !results_visible_; ApplyCompactLayout();
+            }).SetShortcut({FVIRTKEY | FCONTROL, 'J'}));
         for (std::size_t index = 0; index < recent_.GetMaximumEntries(); ++index) {
             commands_.Add(mwfl::Command(
                 {static_cast<WORD>(kRecentBase.value + index)}, L"Recent file",
@@ -505,11 +548,17 @@ private:
             mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
         for (const auto id : {kCrlf, kLf})
             mwfl::Must(line_endings.AppendCommand(*commands_.Find(id)), "append line ending command");
-        for (const auto id : {kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
+        for (const auto id : {kToggleFindBar, kToggleWorkspace, kToggleResults,
+                              kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
                               kRectangular, kToggleFold, kToggleBookmark, kNextBookmark})
             mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
         for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
-                              kUppercase, kLowercase, kIndent, kOutdent})
+                              kUppercase, kLowercase, kTitleCase, kSentenceCase,
+                              kIndent, kOutdent, kToggleComment, kSelectNext,
+                              kSelectAllOccurrences, kSortAscending, kSortDescending,
+                              kUniqueLines, kReverseLines, kRemoveBlankLines, kTrimTrailing,
+                              kJoinLines, kSplitLines, kTabsToSpaces, kSpacesToTabs,
+                              kJsonEscape, kJsonUnescape})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
         for (const auto id : {kPreferences, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
@@ -545,6 +594,36 @@ private:
     mwfl::ScintillaEditor* ActiveEditor() noexcept {
         const auto* document = ActiveDocument();
         return document ? document->editor.get() : nullptr;
+    }
+
+    void ApplyCompactLayout() {
+        ::ShowWindow(search_.GetHwnd(), find_bar_visible_ ? SW_SHOW : SW_HIDE);
+        ::ShowWindow(replacement_.GetHwnd(), find_bar_visible_ ? SW_SHOW : SW_HIDE);
+        ::ShowWindow(tree_.GetHwnd(), workspace_visible_ ? SW_SHOW : SW_HIDE);
+        ::ShowWindow(results_.GetHwnd(), results_visible_ ? SW_SHOW : SW_HIDE);
+        SetLayout(mwfl::Column()
+            .Add(toolbar_, mwfl::Auto())
+            .Add(mwfl::Row().Gap(4.0_dip).Margin(3.0_dip)
+                .Add(search_, mwfl::Stretch())
+                .Add(replacement_, mwfl::Stretch()),
+                mwfl::Fixed(find_bar_visible_ ? 30.0_dip : 0.0_dip))
+            .Add(mwfl::Row().Gap(workspace_visible_ ? 3.0_dip : 0.0_dip)
+                .Add(tree_, mwfl::Fixed(workspace_visible_ ? 220.0_dip : 0.0_dip))
+                .Add(mwfl::Column().Gap(results_visible_ ? 3.0_dip : 0.0_dip)
+                    .Add(tabs_, mwfl::Stretch())
+                    .Add(results_, mwfl::Fixed(results_visible_ ? 135.0_dip : 0.0_dip)),
+                    mwfl::Stretch()), mwfl::Stretch())
+            .Add(status_, mwfl::Fixed(22.0_dip)));
+        adapter_.ArrangePages();
+        ::InvalidateRect(GetHwnd(), nullptr, TRUE);
+    }
+
+    template <typename TransformFunction>
+    void Transform(TransformFunction&& transform) {
+        if (auto* editor = ActiveEditor(); editor &&
+            notepad_colon::TransformSelectionOrDocument(*editor,
+                std::forward<TransformFunction>(transform)))
+            status_.SetText(L"Text transformed");
     }
 
     void NewDocument(std::wstring text = {}, std::wstring title = {}) {
@@ -959,6 +1038,8 @@ private:
             if (entry.directory) directory_ids[entry.relative_path.wstring()] = id;
         }
         tree_.Expand(root_id);
+        workspace_visible_ = true;
+        ApplyCompactLayout();
         status_.SetText(L"Workspace: " + workspace_root_.wstring() + L" | " +
             std::to_wstring(scan->entries.size()) + L" entries" +
             (scan->truncated ? L" (truncated)" : L""));
@@ -1015,6 +1096,8 @@ private:
         }
         if (auto* command = commands_.Find(kCancelSearch)) command->SetEnabled(false);
         menu_.UpdateCommand(*commands_.Find(kCancelSearch));
+        results_visible_ = true;
+        ApplyCompactLayout();
         status_.SetText((search_results_.cancelled ? L"Search cancelled | " : L"Search complete | ") +
             std::to_wstring(search_results_.matches.size()) + L" matches in " +
             std::to_wstring(search_results_.files_searched) + L" files" +
@@ -1312,6 +1395,9 @@ private:
     mwfl::StatusBar status_;
     std::filesystem::path session_path_;
     bool restoring_session_ = false;
+    bool find_bar_visible_ = false;
+    bool workspace_visible_ = false;
+    bool results_visible_ = false;
     mwfl::RecentFileList recent_{10};
     std::filesystem::path workspace_root_;
     std::unordered_map<std::uint64_t, std::filesystem::path> tree_paths_;
