@@ -7,6 +7,7 @@
 #include <notepad_colon/language.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/macro.h>
+#include <notepad_colon/output.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
 #include <notepad_colon/workspace.h>
@@ -27,6 +28,15 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    const auto statistics = notepad_colon::CalculateStatistics(L"one two\r\n\r\n三");
+    Check(statistics.words == 3 && statistics.lines == 3 && statistics.non_blank_lines == 2 &&
+              statistics.characters_without_whitespace == 7 && statistics.utf8_bytes > statistics.characters,
+          "document statistics count words lines and UTF-8 bytes");
+    Check(notepad_colon::EscapeHtml(L"<&\"'>") == L"&lt;&amp;&quot;&#39;&gt;", "HTML escaping");
+    const auto html = notepad_colon::ExportHtmlDocument(L"A&B", L"<code>", true);
+    Check(html.find(L"A&amp;B") != std::wstring::npos &&
+              html.find(L"&lt;code&gt;") != std::wstring::npos &&
+              html.find(L"#1e1e1e") != std::wstring::npos, "standalone HTML export");
     const auto shortcut = notepad_colon::ParseShortcut(7, L"Ctrl+Shift+F5");
     Check(shortcut && notepad_colon::FormatShortcut(*shortcut) == L"Ctrl+Shift+F5",
           "shortcut parses and formats");

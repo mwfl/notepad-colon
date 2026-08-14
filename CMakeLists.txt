@@ -37,6 +37,7 @@ add_library(notepad_colon_model
     src/large_file.cpp
     src/language.cpp
     src/macro.cpp
+    src/output.cpp
     src/preferences.cpp
     src/recovery.cpp
     src/session.cpp
@@ -52,7 +53,7 @@ add_executable(notepad-colon WIN32
     app.manifest)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
-target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell oleacc)
+target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc)
 FetchContent_GetProperties(mwfl_scintilla_binary)
 FetchContent_GetProperties(mwfl_scintilla_source)
 set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME OFF)

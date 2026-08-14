@@ -3,12 +3,14 @@
 #include <mwfl/file_association.h>
 #include <mwfl/shell_integration.h>
 #include <mwfl/settings_store.h>
+#include <mwfl/printing_settings.h>
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/configuration.h>
 #include <notepad_colon/macro.h>
+#include <notepad_colon/output.h>
 #include <notepad_colon/editing.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
@@ -114,6 +116,21 @@ constexpr mwfl::ControlId kMacroManage{403};
 constexpr mwfl::ControlId kShortcutSettings{404};
 constexpr mwfl::ControlId kExportConfiguration{405};
 constexpr mwfl::ControlId kImportConfiguration{406};
+constexpr mwfl::ControlId kPrint{407};
+constexpr mwfl::ControlId kPrintPreview{408};
+constexpr mwfl::ControlId kPrinterSettings{409};
+constexpr mwfl::ControlId kExportText{410};
+constexpr mwfl::ControlId kExportHtml{411};
+constexpr mwfl::ControlId kDocumentStatistics{412};
+constexpr mwfl::ControlId kPageSetup{413};
+
+struct PrintOptions {
+    double margin_inches = 0.5;
+    bool header = true;
+    bool footer = true;
+    bool line_numbers = true;
+    bool syntax_colours = true;
+};
 constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
@@ -624,6 +641,15 @@ private:
             .Add(mwfl::Command(kShortcutSettings, L"Keyboard Shortcuts...", [this] { ShowShortcutSettings(); }))
             .Add(mwfl::Command(kExportConfiguration, L"Export Settings...", [this] { ExportConfiguration(); }))
             .Add(mwfl::Command(kImportConfiguration, L"Import Settings...", [this] { ImportConfiguration(); }));
+        commands_
+            .Add(mwfl::Command(kPrint, L"&Print...", [this] { PrintActive(); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, 'P'}))
+            .Add(mwfl::Command(kPrintPreview, L"Print Pre&view...", [this] { ShowPrintPreview(); }))
+            .Add(mwfl::Command(kPrinterSettings, L"Printer Settings...", [this] { ConfigurePrinter(); }))
+            .Add(mwfl::Command(kPageSetup, L"Page Setup...", [this] { ShowPageSetup(); }))
+            .Add(mwfl::Command(kExportText, L"Export Plain Text...", [this] { ExportDocument(false); }))
+            .Add(mwfl::Command(kExportHtml, L"Export HTML...", [this] { ExportDocument(true); }))
+            .Add(mwfl::Command(kDocumentStatistics, L"Document Statistics...", [this] { ShowDocumentStatistics(); }));
         for (std::size_t index = 0; index < recent_.GetMaximumEntries(); ++index) {
             commands_.Add(mwfl::Command(
                 {static_cast<WORD>(kRecentBase.value + index)}, L"Recent file",
@@ -647,7 +673,9 @@ private:
         mwfl::Must(code.CreatePopup(), "create code menu");
         mwfl::Must(tools.CreatePopup(), "create tools menu");
         mwfl::Must(help.CreatePopup(), "create help menu");
-        for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll, kClose})
+        for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll,
+                              kExportText, kExportHtml, kPrintPreview, kPrint,
+                              kPageSetup, kPrinterSettings, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
         mwfl::Must(file.AppendSeparator(), "append file separator");
         mwfl::Must(file.AppendCommand(*commands_.Find(kExit)), "append exit command");
@@ -682,6 +710,7 @@ private:
         for (const auto id : {kCommandPalette, kMacroStart, kMacroStop, kMacroPlay,
                               kMacroPlayFive, kMacroSave, kMacroManage,
                               kShortcutSettings, kExportConfiguration, kImportConfiguration,
+                              kDocumentStatistics,
                               kPreferences, kRecoveryManager, kCompareWithFile,
                               kCompareWithDisk, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
@@ -1624,6 +1653,238 @@ private:
         status_.SetText(L"Settings and shortcuts imported");
     }
 
+    std::optional<std::wstring> ActiveSelectionText() const {
+        const auto* document = const_cast<MainWindow*>(this)->ActiveDocument();
+        if (!document) return std::nullopt;
+        const auto selection = document->editor->GetSelection();
+        if (selection.start == selection.end) return std::wstring{};
+        std::string utf8(static_cast<std::size_t>(selection.end - selection.start) + 1, '\0');
+        document->editor->Send(SCI_GETSELTEXT, 0, reinterpret_cast<LPARAM>(utf8.data()));
+        utf8.resize(static_cast<std::size_t>(selection.end - selection.start));
+        return mwfl::FromUtf8(utf8);
+    }
+
+    void ShowDocumentStatistics() {
+        const auto* document = ActiveDocument(); if (!document) return;
+        const auto text = document->editor->GetText(); if (!text) return;
+        const auto stats = notepad_colon::CalculateStatistics(*text);
+        const auto selection = ActiveSelectionText();
+        const auto selection_stats = selection ? notepad_colon::CalculateStatistics(*selection)
+                                               : notepad_colon::DocumentStatistics{};
+        mwfl::Label values; mwfl::Button close; mwfl::Dialog* pointer = nullptr;
+        const auto content = L"Characters                 " + std::to_wstring(stats.characters) +
+            L"\nCharacters (no spaces)    " + std::to_wstring(stats.characters_without_whitespace) +
+            L"\nWords                         " + std::to_wstring(stats.words) +
+            L"\nLines                           " + std::to_wstring(stats.lines) +
+            L"\nNon-blank lines             " + std::to_wstring(stats.non_blank_lines) +
+            L"\nUTF-8 bytes                  " + std::to_wstring(stats.utf8_bytes) +
+            L"\n\nSelected characters       " + std::to_wstring(selection_stats.characters) +
+            L"\nSelected words               " + std::to_wstring(selection_stats.words);
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Document Statistics",
+            .initial_client_size = {410.0_dip, 300.0_dip}, .resizable = false,
+            .callbacks = {.initialize = [&](HWND window) {
+                mwfl::ControlHost ui{window}; ui.Add(values, {741}, content); ui.Add(close, {IDOK}, L"Close");
+                return pointer->SetLayout(mwfl::Column().Margin(14.0_dip).Gap(8.0_dip)
+                    .Add(values, mwfl::Stretch())
+                    .Add(mwfl::Row().Add(mwfl::Column(), mwfl::Stretch()).Add(close, mwfl::Fixed(86.0_dip)),
+                         mwfl::Fixed(30.0_dip)));
+            }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal());
+    }
+
+    void ExportDocument(bool html) {
+        const auto* document = ActiveDocument();
+        const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        const auto text = document ? document->editor->GetText() : std::nullopt;
+        if (!document || !metadata || !text) return;
+        const auto selected = mwfl::ShowSaveFileDialog({.owner = GetHwnd(),
+            .title = html ? L"Export HTML" : L"Export plain text",
+            .filters = html ? std::vector<mwfl::FileDialogOptions::Filter>{{L"HTML document", L"*.html;*.htm"}}
+                            : std::vector<mwfl::FileDialogOptions::Filter>{{L"Text file", L"*.txt"}},
+            .default_extension = html ? L"html" : L"txt", .path_must_exist = false});
+        if (!selected.accepted) return;
+        const auto output = html ? notepad_colon::ExportHtmlDocument(metadata->title, *text, IsDark()) : *text;
+        const auto written = mwfl::WriteTextFileAtomic(selected.path, output, mwfl::TextEncoding::utf8);
+        status_.SetText(written.Succeeded() ? (html ? L"HTML exported" : L"Plain text exported")
+                                           : L"Export failed");
+    }
+
+    void ShowPageSetup() {
+        auto candidate = print_options_;
+        mwfl::Label margin_label; mwfl::TextBox margin;
+        mwfl::CheckBox header, footer, line_numbers, colours;
+        mwfl::Button save, cancel; mwfl::Dialog* pointer = nullptr;
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Page Setup",
+            .initial_client_size = {470.0_dip, 285.0_dip}, .resizable = false,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window}; ui.Add(margin_label, {761}, L"Margins (inches)");
+                    ui.Add(margin, {762}, std::to_wstring(candidate.margin_inches));
+                    ui.Add(header, {763}, L"Print document title in header");
+                    ui.Add(footer, {764}, L"Print page number in footer");
+                    ui.Add(line_numbers, {765}, L"Print line numbers");
+                    ui.Add(colours, {766}, L"Print syntax colours on white paper");
+                    ui.Add(save, {IDOK}, L"Save"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
+                    header.SetChecked(candidate.header); footer.SetChecked(candidate.footer);
+                    line_numbers.SetChecked(candidate.line_numbers); colours.SetChecked(candidate.syntax_colours);
+                    return pointer->SetLayout(mwfl::Column().Margin(12.0_dip).Gap(7.0_dip)
+                        .Add(mwfl::Row().Gap(8.0_dip).Add(margin_label, mwfl::Fixed(150.0_dip))
+                            .Add(margin, mwfl::Stretch()), mwfl::Fixed(30.0_dip))
+                        .Add(header, mwfl::Fixed(28.0_dip)).Add(footer, mwfl::Fixed(28.0_dip))
+                        .Add(line_numbers, mwfl::Fixed(28.0_dip)).Add(colours, mwfl::Fixed(28.0_dip))
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(mwfl::Column(), mwfl::Stretch())
+                            .Add(save, mwfl::Fixed(82.0_dip)).Add(cancel, mwfl::Fixed(82.0_dip)), mwfl::Fixed(30.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id == IDOK) {
+                        wchar_t* end{}; const auto value = std::wcstod(margin.GetText().c_str(), &end);
+                        if (!end || *end || value < 0.1 || value > 2.0) {
+                            ::MessageBoxW(pointer->GetHwnd(), L"Margins must be between 0.1 and 2.0 inches.",
+                                          L"Page Setup", MB_OK | MB_ICONWARNING); return true;
+                        }
+                        candidate = {value, header.IsChecked(), footer.IsChecked(),
+                                     line_numbers.IsChecked(), colours.IsChecked()};
+                    }
+                    return false;
+                }}});
+        pointer = &dialog;
+        if (dialog.ShowModal()) { print_options_ = candidate; status_.SetText(L"Page setup updated"); }
+    }
+
+    void ConfigurePrinter() {
+        mwfl::PrinterSettings initial;
+        if (printer_settings_.IsValid()) initial = printer_settings_.Clone();
+        auto result = mwfl::ShowPrintDialog(GetHwnd(), std::move(initial), PD_NOSELECTION);
+        if (result.action == mwfl::PrintDialogAction::accepted) {
+            printer_settings_ = std::move(result.settings);
+            status_.SetText(L"Printer settings updated: " + printer_settings_.PrinterName());
+        } else if (result.action == mwfl::PrintDialogAction::cancelled)
+            status_.SetText(L"Printer settings cancelled");
+        else status_.SetText(L"No printer is available or the printer dialog failed");
+    }
+
+    std::vector<mwfl::PrintPage> PaginateForPrinter(mwfl::ScintillaEditor& editor, HDC dc,
+                                                     mwfl::ScintillaPosition begin,
+                                                     mwfl::ScintillaPosition end) {
+        std::vector<mwfl::PrintPage> pages;
+        const int dpi_x = ::GetDeviceCaps(dc, LOGPIXELSX), dpi_y = ::GetDeviceCaps(dc, LOGPIXELSY);
+        const int width = ::GetDeviceCaps(dc, HORZRES), height = ::GetDeviceCaps(dc, VERTRES);
+        const int margin_x = static_cast<int>(dpi_x * print_options_.margin_inches);
+        const int margin_y = static_cast<int>(dpi_y * print_options_.margin_inches);
+        Sci_RangeToFormatFull format{};
+        format.hdc = reinterpret_cast<Sci_SurfaceID>(dc); format.hdcTarget = format.hdc;
+        format.rcPage = {0, 0, width, height};
+        format.rc = {margin_x, margin_y + (print_options_.header ? dpi_y / 3 : 0),
+                     width - margin_x, height - margin_y - (print_options_.footer ? dpi_y / 3 : 0)};
+        auto position = begin;
+        while (position < end && pages.size() < 10000) {
+            format.chrg = {position, end};
+            const auto next = editor.Send(SCI_FORMATRANGEFULL, FALSE, reinterpret_cast<LPARAM>(&format));
+            if (next <= position) break;
+            pages.push_back({{pages.size() + 1}, pages.size(), position, next});
+            position = next;
+        }
+        editor.Send(SCI_FORMATRANGEFULL, FALSE, 0);
+        return pages;
+    }
+
+    void PrintActive() {
+        auto* document = ActiveDocument(); const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        if (!document || !metadata) return;
+        mwfl::PrinterSettings initial;
+        if (printer_settings_.IsValid()) initial = printer_settings_.Clone();
+        const auto selection = document->editor->GetSelection();
+        auto dialog = mwfl::ShowPrintDialog(GetHwnd(), std::move(initial),
+            selection.start == selection.end ? PD_NOSELECTION : PD_SELECTION);
+        if (dialog.action == mwfl::PrintDialogAction::cancelled) { status_.SetText(L"Printing cancelled"); return; }
+        if (dialog.action != mwfl::PrintDialogAction::accepted) { status_.SetText(L"No printer is available"); return; }
+        printer_settings_ = std::move(dialog.settings);
+        auto backend = mwfl::CreatePrinterBackend(printer_settings_);
+        if (!backend) { status_.SetText(L"Printer device could not be opened"); return; }
+        mwfl::PrintJob job(std::move(backend.backend));
+        const auto begin = (dialog.flags & PD_SELECTION) ? selection.start : 0;
+        const auto end = (dialog.flags & PD_SELECTION) ? selection.end : document->editor->GetLength();
+        document->editor->Send(SCI_SETPRINTCOLOURMODE,
+            print_options_.syntax_colours ? SC_PRINT_COLOURONWHITEDEFAULTBG : SC_PRINT_BLACKONWHITE);
+        document->editor->Send(SCI_SETPRINTWRAPMODE, SC_WRAP_WORD);
+        const auto line_number_width = document->editor->Send(SCI_GETMARGINWIDTHN, 0);
+        if (!print_options_.line_numbers) document->editor->Send(SCI_SETMARGINWIDTHN, 0, 0);
+        const auto pages = PaginateForPrinter(*document->editor, job.DeviceContext(), begin, end);
+        if (pages.empty()) {
+            document->editor->Send(SCI_SETMARGINWIDTHN, 0, line_number_width);
+            status_.SetText(L"Nothing to print"); return;
+        }
+        const auto result = mwfl::PrintPages(job, metadata->title, pages,
+            [&](HDC dc, const mwfl::PrintPage& page) {
+                const int dpi_x = ::GetDeviceCaps(dc, LOGPIXELSX), dpi_y = ::GetDeviceCaps(dc, LOGPIXELSY);
+                const int width = ::GetDeviceCaps(dc, HORZRES), height = ::GetDeviceCaps(dc, VERTRES);
+                ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(0, 0, 0));
+                const int margin_x = static_cast<int>(dpi_x * print_options_.margin_inches);
+                const int margin_y = static_cast<int>(dpi_y * print_options_.margin_inches);
+                if (print_options_.header) {
+                    RECT header{margin_x, margin_y, width - margin_x, margin_y + dpi_y / 4};
+                    ::DrawTextW(dc, metadata->title.c_str(), -1, &header,
+                                DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
+                if (print_options_.footer) {
+                    const auto footer_text = L"Page " + std::to_wstring(page.index + 1) + L" of " + std::to_wstring(pages.size());
+                    RECT footer{margin_x, height - margin_y - dpi_y / 4, width - margin_x, height - margin_y};
+                    ::DrawTextW(dc, footer_text.c_str(), -1, &footer, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+                }
+                Sci_RangeToFormatFull format{}; format.hdc = reinterpret_cast<Sci_SurfaceID>(dc); format.hdcTarget = format.hdc;
+                format.rcPage = {0, 0, width, height};
+                format.rc = {margin_x, margin_y + (print_options_.header ? dpi_y / 3 : 0),
+                             width - margin_x, height - margin_y - (print_options_.footer ? dpi_y / 3 : 0)};
+                format.chrg = {page.content_begin, page.content_end};
+                return document->editor->Send(SCI_FORMATRANGEFULL, TRUE, reinterpret_cast<LPARAM>(&format)) > page.content_begin;
+            }, [](const mwfl::PrintPage&) { return (::GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0; });
+        document->editor->Send(SCI_FORMATRANGEFULL, FALSE, 0);
+        document->editor->Send(SCI_SETMARGINWIDTHN, 0, line_number_width);
+        status_.SetText(result == mwfl::PrintOperationStatus::success ? L"Document printed" :
+            result == mwfl::PrintOperationStatus::cancelled ? L"Printing cancelled safely" : L"Printing failed");
+    }
+
+    void ShowPrintPreview() {
+        const auto* document = ActiveDocument(); const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        const auto text = document ? document->editor->GetText() : std::nullopt;
+        if (!document || !metadata || !text) return;
+        std::vector<std::wstring> pages(1); std::size_t line = 0, start = 0;
+        while (start < text->size()) {
+            const auto end = text->find(L'\n', start);
+            if (line && line % 55 == 0) pages.emplace_back();
+            pages.back().append(text->substr(start, end == std::wstring::npos ? end : end - start));
+            pages.back() += L'\n'; ++line;
+            if (end == std::wstring::npos) break; start = end + 1;
+        }
+        mwfl::ScintillaEditor preview; mwfl::Label page_label;
+        mwfl::Button previous, next, print, close; std::size_t current = 0; mwfl::Dialog* pointer = nullptr;
+        const auto refresh = [&] { preview.SetReadOnly(false); preview.SetText(pages[current]); preview.SetReadOnly(true);
+            page_label.SetText(metadata->title + L"  •  Page " + std::to_wstring(current + 1) + L" of " + std::to_wstring(pages.size())); };
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Print Preview",
+            .initial_client_size = {760.0_dip, 700.0_dip}, .resizable = true,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window}; ui.Add(page_label, {751}, L"");
+                    ui.Add(previous, {752}, L"Previous"); ui.Add(next, {753}, L"Next");
+                    ui.Add(print, {754}, L"Print..."); ui.Add(close, {IDCANCEL}, L"Close");
+                    if (!preview.Create(window, {755}, {}, runtime_)) return false;
+                    preview.ConfigureCodeEditing(); notepad_colon::ApplyPreferences(preview, preferences_, false);
+                    preview.SetReadOnly(true); refresh();
+                    return pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(5.0_dip)
+                        .Add(page_label, mwfl::Fixed(24.0_dip)).Add(preview, mwfl::Stretch())
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(previous, mwfl::Fixed(86.0_dip))
+                            .Add(next, mwfl::Fixed(86.0_dip)).Add(mwfl::Column(), mwfl::Stretch())
+                            .Add(print, mwfl::Fixed(86.0_dip)).Add(close, mwfl::Fixed(86.0_dip)), mwfl::Fixed(30.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id == 752) { current = current ? current - 1 : pages.size() - 1; refresh(); return true; }
+                    if (id == 753) { current = (current + 1) % pages.size(); refresh(); return true; }
+                    if (id == 754) { pointer->Cancel(); PrintActive(); return true; }
+                    return false;
+                }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal());
+    }
+
     void InsertDateTime() {
         SYSTEMTIME time{};
         ::GetLocalTime(&time);
@@ -2269,6 +2530,8 @@ private:
     std::vector<notepad_colon::ShortcutBinding> default_shortcuts_;
     std::vector<mwfl::ControlId> recent_commands_;
     bool playing_macro_ = false;
+    mwfl::PrinterSettings printer_settings_;
+    PrintOptions print_options_;
     mwfl::SingleInstance& instance_;
     std::vector<std::filesystem::path> startup_paths_;
     bool self_test_ = false;
