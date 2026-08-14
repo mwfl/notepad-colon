@@ -28,11 +28,11 @@ deliberately out of scope.
 
 ## Supported systems
 
-The currently runnable package supports Windows 10 or newer on x64. Builds use
-MSVC C++20 with Visual Studio 2022 or Visual Studio 2026. CI also compiles the
-application on native Windows ARM64, but ARM64 distribution remains blocked
-until matching ARM64 Scintilla and Lexilla runtime DLLs replace the upstream
-x64-only binaries; ARM64 is therefore not claimed as a runnable release yet.
+Windows 10 or newer on x64 and ARM64. Builds use MSVC C++20 with Visual Studio
+2022 or Visual Studio 2026. CI builds, runs the GUI/model/performance tests, and
+creates native portable packages for x64 and ARM64. The ARM64 configuration
+builds matching Scintilla and Lexilla DLLs from their official source projects;
+CI rejects the package if any executable is not PE ARM64.
 
 ## Local development
 

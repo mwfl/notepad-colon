@@ -37,14 +37,49 @@ target_compile_features(notepad-colon PRIVATE cxx_std_20)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell oleacc)
 FetchContent_GetProperties(mwfl_scintilla_binary)
 FetchContent_GetProperties(mwfl_scintilla_source)
-if(mwfl_scintilla_binary_SOURCE_DIR)
+set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME OFF)
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+    set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME ON)
+    FetchContent_Declare(notepad_colon_scintilla_runtime
+        GIT_REPOSITORY https://github.com/ScintillaOrg/scintilla.git
+        GIT_TAG rel-5-6-5
+        GIT_SHALLOW TRUE
+        SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/scintilla"
+        SOURCE_SUBDIR _not_a_cmake_project)
+    FetchContent_Declare(notepad_colon_lexilla_runtime
+        GIT_REPOSITORY https://github.com/ScintillaOrg/lexilla.git
+        GIT_TAG rel-5-5-1
+        GIT_SHALLOW TRUE
+        SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/lexilla"
+        SOURCE_SUBDIR _not_a_cmake_project)
+    FetchContent_MakeAvailable(notepad_colon_scintilla_runtime
+                               notepad_colon_lexilla_runtime)
+    include_external_msproject(notepad_colon_scintilla_runtime_project
+        "${notepad_colon_scintilla_runtime_SOURCE_DIR}/win32/Scintilla.vcxproj"
+        PLATFORM ARM64)
+    include_external_msproject(notepad_colon_lexilla_runtime_project
+        "${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/Lexilla.vcxproj"
+        PLATFORM ARM64)
+    add_dependencies(notepad-colon notepad_colon_scintilla_runtime_project
+                                   notepad_colon_lexilla_runtime_project)
+    set(NOTEPAD_COLON_SCINTILLA_DLL
+        "${notepad_colon_scintilla_runtime_SOURCE_DIR}/win32/ARM64/$<CONFIG>/Scintilla.dll")
+    set(NOTEPAD_COLON_LEXILLA_DLL
+        "${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/ARM64/$<CONFIG>/Lexilla.dll")
+elseif(mwfl_scintilla_binary_SOURCE_DIR)
+    set(NOTEPAD_COLON_SCINTILLA_DLL
+        "${mwfl_scintilla_binary_SOURCE_DIR}/Scintilla.dll")
+    set(NOTEPAD_COLON_LEXILLA_DLL
+        "${mwfl_scintilla_binary_SOURCE_DIR}/Lexilla.dll")
+endif()
+if(NOTEPAD_COLON_SCINTILLA_DLL)
     add_custom_command(TARGET notepad-colon POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${mwfl_scintilla_binary_SOURCE_DIR}/Scintilla.dll"
+            "${NOTEPAD_COLON_SCINTILLA_DLL}"
             "$<TARGET_FILE_DIR:notepad-colon>/Scintilla.dll")
     add_custom_command(TARGET notepad-colon POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${mwfl_scintilla_binary_SOURCE_DIR}/Lexilla.dll"
+            "${NOTEPAD_COLON_LEXILLA_DLL}"
             "$<TARGET_FILE_DIR:notepad-colon>/Lexilla.dll")
 endif()
 if(mwfl_scintilla_source_SOURCE_DIR)
@@ -76,10 +111,10 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS notepad-colon RUNTIME DESTINATION . COMPONENT product)
-if(mwfl_scintilla_binary_SOURCE_DIR)
+if(NOTEPAD_COLON_SCINTILLA_DLL)
     install(FILES
-        "${mwfl_scintilla_binary_SOURCE_DIR}/Scintilla.dll"
-        "${mwfl_scintilla_binary_SOURCE_DIR}/Lexilla.dll"
+        "${NOTEPAD_COLON_SCINTILLA_DLL}"
+        "${NOTEPAD_COLON_LEXILLA_DLL}"
         DESTINATION . COMPONENT product)
 endif()
 install(FILES README.md LICENSE DESTINATION . COMPONENT product)
