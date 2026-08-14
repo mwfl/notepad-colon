@@ -162,6 +162,10 @@ int main() {
           "recovery snapshot saves");
     Check(recovery.Save(L"doc", L"Draft", L"C:\\work\\draft.txt", L"second"),
           "second recovery snapshot saves");
+    const auto tied_recovery_time = std::filesystem::file_time_type::clock::now();
+    for (const auto& entry : std::filesystem::directory_iterator(recovery_path))
+        if (entry.path().extension() == L".recovery")
+            std::filesystem::last_write_time(entry.path(), tied_recovery_time);
     const auto recovery_items = recovery.List();
     Check(recovery_items.size() == 2, "recovery snapshots listed within retention");
     if (!recovery_items.empty())

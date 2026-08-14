@@ -47,9 +47,12 @@ bool RecoveryStore::Save(std::wstring_view document_key, std::wstring_view title
     std::error_code error;
     std::filesystem::create_directories(directory_, error);
     if (error) return false;
-    const auto ticks = std::chrono::duration_cast<std::chrono::milliseconds>(
+    auto ticks = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto target = directory_ / (SafeName(document_key) + L"-" + std::to_wstring(ticks) + L".recovery");
+    auto target = directory_ / (SafeName(document_key) + L"-" + std::to_wstring(ticks) + L".recovery");
+    while (std::filesystem::exists(target, error) && !error)
+        target = directory_ / (SafeName(document_key) + L"-" + std::to_wstring(++ticks) + L".recovery");
+    if (error) return false;
     const auto temporary = target.wstring() + L".tmp";
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output) return false;
@@ -98,8 +101,12 @@ std::vector<RecoverySnapshot> RecoveryStore::List() const {
             std::chrono::system_clock::now());
         result.push_back({entry.path(), *wide_path, *wide_title, created, entry.file_size(error)});
     }
-    std::ranges::sort(result, {}, [](const auto& item) { return item.created; });
-    std::ranges::reverse(result);
+    std::ranges::sort(result, [](const auto& left, const auto& right) {
+        if (left.created != right.created) return left.created > right.created;
+        // Some CI file systems expose coarser write-time precision than the
+        // millisecond timestamp embedded in our snapshot filename.
+        return left.file.filename().native() > right.file.filename().native();
+    });
     return result;
 }
 
