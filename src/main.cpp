@@ -153,6 +153,9 @@ constexpr mwfl::ControlId kPreviousLargeWindow{436};
 constexpr mwfl::ControlId kNextLargeWindow{437};
 constexpr mwfl::ControlId kEnglishUi{438};
 constexpr mwfl::ControlId kChineseUi{439};
+constexpr mwfl::ControlId kWorkspaceFilter{440};
+constexpr mwfl::ControlId kWorkspaceManager{441};
+constexpr mwfl::ControlId kFavoriteWorkspace{442};
 
 struct PrintOptions {
     double margin_inches = 0.5;
@@ -364,6 +367,7 @@ public:
         ui.Add(toolbar_);
         ui.Add(search_, kSearch, L"");
         ui.Add(replacement_, kReplacement, L"");
+        ui.Add(workspace_filter_, kWorkspaceFilter, L"");
         ui.Add(tree_, kTree, mwfl::RectDip{});
         ui.Add(tabs_, mwfl::TabControlOptions{});
         ui.Add(results_, kResults, mwfl::RectDip{}, mwfl::ListViewOptions{});
@@ -397,12 +401,17 @@ public:
                    "name replacement");
         mwfl::Must(mwfl::SetAccessibleName(status_.GetHwnd(), L"Document status"), "name status");
         mwfl::Must(mwfl::SetAccessibleName(tree_.GetHwnd(), L"Workspace files"), "name workspace tree");
+        mwfl::Must(mwfl::SetAccessibleName(workspace_filter_.GetHwnd(), L"Filter workspace files"),
+                   "name workspace filter");
         mwfl::Must(mwfl::SetAccessibleName(results_.GetHwnd(), L"Folder search results"), "name search results");
 
         ApplyCompactLayout();
 
         ResolveSessionPath();
-        if (!RestoreSession()) NewDocument();
+        if (!RestoreSession()) {
+            NewDocument();
+            if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
+        }
         mwfl::Must(instance_.RegisterWindow(GetHwnd()), "register single-instance window");
         for (const auto& path : startup_paths_) static_cast<void>(OpenPath(path));
         mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
@@ -412,6 +421,10 @@ public:
     }
 
     mwfl::EventResult OnCommand(const mwfl::CommandEvent& event) override {
+        if (event.id == kWorkspaceFilter) {
+            RenderWorkspaceTree();
+            return mwfl::EventResult::Handled();
+        }
         auto* command = commands_.Find(event.id);
         if (!command || !command->IsEnabled() || !command->IsVisible())
             return mwfl::EventResult::Propagate();
@@ -547,6 +560,7 @@ public:
                 return mwfl::EventResult::Handled();
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(
                 HKEY_CURRENT_USER, kSettingsKey, recent_));
+            SaveWorkspaceCatalog();
         }
         adapter_.Detach();
         instance_.UnregisterWindow();
@@ -696,6 +710,9 @@ private:
             .Add(mwfl::Command(kWorkspaceCopyRelativePath, L"Copy Relative Path", [this] { CopyWorkspacePath(true); }))
             .Add(mwfl::Command(kWorkspaceRemoveRoot, L"Remove Selected Workspace Root", [this] { RemoveWorkspaceRoot(); }));
         commands_
+            .Add(mwfl::Command(kWorkspaceManager, L"Recent / Favorite Workspaces...", [this] { ShowWorkspaceManager(); }))
+            .Add(mwfl::Command(kFavoriteWorkspace, L"Favorite Active Workspace", [this] { ToggleFavoriteWorkspace(); }));
+        commands_
             .Add(mwfl::Command(kSaveNamedSession, L"Save Named Session...", [this] { SaveNamedSession(); }))
             .Add(mwfl::Command(kOpenNamedSession, L"Open Named Session...", [this] { OpenNamedSession(); }));
         commands_
@@ -821,7 +838,8 @@ private:
             mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
         for (const auto id : {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,
                               kWorkspaceRename, kWorkspaceRecycle, kWorkspaceReveal,
-                              kWorkspaceCopyPath, kWorkspaceCopyRelativePath, kWorkspaceRemoveRoot})
+                              kWorkspaceCopyPath, kWorkspaceCopyRelativePath, kWorkspaceRemoveRoot,
+                              kWorkspaceManager, kFavoriteWorkspace})
             mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append workspace command");
         for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
                               kUppercase, kLowercase, kTitleCase, kSentenceCase,
@@ -879,6 +897,7 @@ private:
         ::ShowWindow(search_.GetHwnd(), find_bar_visible_ ? SW_SHOW : SW_HIDE);
         ::ShowWindow(replacement_.GetHwnd(), find_bar_visible_ ? SW_SHOW : SW_HIDE);
         ::ShowWindow(tree_.GetHwnd(), workspace_visible_ ? SW_SHOW : SW_HIDE);
+        ::ShowWindow(workspace_filter_.GetHwnd(), workspace_visible_ ? SW_SHOW : SW_HIDE);
         ::ShowWindow(results_.GetHwnd(), results_visible_ ? SW_SHOW : SW_HIDE);
         SetLayout(mwfl::Column()
             .Add(toolbar_, mwfl::Auto())
@@ -887,7 +906,10 @@ private:
                 .Add(replacement_, mwfl::Stretch()),
                 mwfl::Fixed(find_bar_visible_ ? 30.0_dip : 0.0_dip))
             .Add(mwfl::Row().Gap(workspace_visible_ ? 3.0_dip : 0.0_dip)
-                .Add(tree_, mwfl::Fixed(workspace_visible_ ? 220.0_dip : 0.0_dip))
+                .Add(mwfl::Column().Gap(3.0_dip)
+                    .Add(workspace_filter_, mwfl::Fixed(workspace_visible_ ? 26.0_dip : 0.0_dip))
+                    .Add(tree_, mwfl::Stretch()),
+                    mwfl::Fixed(workspace_visible_ ? 220.0_dip : 0.0_dip))
                 .Add(mwfl::Column().Gap(results_visible_ ? 3.0_dip : 0.0_dip)
                     .Add(tabs_, mwfl::Stretch())
                     .Add(results_, mwfl::Fixed(results_visible_ ? 135.0_dip : 0.0_dip)),
@@ -2424,6 +2446,67 @@ private:
         if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
     }
 
+    void SaveWorkspaceCatalog() {
+        if (!workspace_catalog_path_.empty())
+            static_cast<void>(notepad_colon::SaveWorkspaceCatalogAtomic(
+                workspace_catalog_path_, workspace_catalog_));
+    }
+
+    void ToggleFavoriteWorkspace() {
+        if (workspace_root_.empty()) { status_.SetText(L"Open a workspace first"); return; }
+        const bool favorite = !std::ranges::any_of(workspace_catalog_.Favorites(),
+            [&](const auto& path) { return SamePath(path, workspace_root_); });
+        workspace_catalog_.SetFavorite(workspace_root_, favorite); SaveWorkspaceCatalog();
+        status_.SetText(favorite ? L"Workspace added to favorites" : L"Workspace removed from favorites");
+    }
+
+    void ShowWorkspaceManager() {
+        std::vector<std::filesystem::path> paths;
+        for (const auto& path : workspace_catalog_.Favorites()) paths.push_back(path);
+        for (const auto& path : workspace_catalog_.Recent())
+            if (!std::ranges::any_of(paths, [&](const auto& existing) { return SamePath(existing, path); }))
+                paths.push_back(path);
+        mwfl::ListBox list; mwfl::Button open, favorite, close; mwfl::Dialog* pointer = nullptr;
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Recent and Favorite Workspaces",
+            .initial_client_size = {620.0_dip, 330.0_dip}, .resizable = true,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window}; ui.Add(list, {781}, {});
+                    ui.Add(open, {782}, L"Open"); ui.Add(favorite, {783}, L"Favorite / Unfavorite");
+                    ui.Add(close, {IDCANCEL}, L"Close");
+                    for (const auto& path : paths) {
+                        const bool starred = std::ranges::any_of(workspace_catalog_.Favorites(),
+                            [&](const auto& item) { return SamePath(item, path); });
+                        list.AddItem((starred ? L"★  " : L"   ") + path.wstring());
+                    }
+                    if (!paths.empty()) list.SetSelection(0);
+                    return pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)
+                        .Add(list, mwfl::Stretch())
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(open, mwfl::Fixed(80.0_dip))
+                            .Add(favorite, mwfl::Fixed(150.0_dip)).Add(mwfl::Column(), mwfl::Stretch())
+                            .Add(close, mwfl::Fixed(80.0_dip)), mwfl::Fixed(28.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    const auto index = list.GetSelection();
+                    if (index == LB_ERR || static_cast<std::size_t>(index) >= paths.size()) return false;
+                    const auto path = paths[static_cast<std::size_t>(index)];
+                    if (id == 782) {
+                        if (std::filesystem::is_directory(path)) { pointer->Accept(); StartWorkspaceScan(path); }
+                        else ::MessageBoxW(pointer->GetHwnd(), L"This workspace folder no longer exists.",
+                                           L"Workspace", MB_OK | MB_ICONWARNING);
+                        return true;
+                    }
+                    if (id == 783) {
+                        const bool is_favorite = std::ranges::any_of(workspace_catalog_.Favorites(),
+                            [&](const auto& item) { return SamePath(item, path); });
+                        workspace_catalog_.SetFavorite(path, !is_favorite); SaveWorkspaceCatalog();
+                        pointer->Accept(); return true;
+                    }
+                    return false;
+                }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal());
+    }
+
     void CreateWorkspaceSelection(bool directory) {
         auto selected = SelectedWorkspacePath();
         if (!selected) { status_.SetText(L"Select a workspace folder first"); return; }
@@ -2492,6 +2575,7 @@ private:
             ApplyCompactLayout();
         } else RefreshWorkspace();
         static_cast<void>(SaveSessionSnapshot());
+        SaveWorkspaceCatalog();
     }
 
     void OpenFolderInteractive() {
@@ -2505,6 +2589,7 @@ private:
             workspace_worker_.join();
         }
         static_cast<void>(workspace_catalog_.AddRoot(root));
+        SaveWorkspaceCatalog();
         workspace_root_ = std::move(root);
         status_.SetText(L"Scanning workspace...");
         const HWND window = GetHwnd();
@@ -2531,12 +2616,27 @@ private:
             pending_workspace_scans_.clear();
         }
         if (scans.empty()) return;
+        workspace_scans_ = std::move(scans);
+        RenderWorkspaceTree();
+        std::size_t entries = 0; bool truncated = false;
+        for (const auto& [root, scan] : workspace_scans_) {
+            static_cast<void>(root); entries += scan.entries.size(); truncated = truncated || scan.truncated;
+        }
+        workspace_visible_ = true;
+        ApplyCompactLayout();
+        status_.SetText(L"Workspace: " + std::to_wstring(workspace_scans_.size()) + L" root(s) | " +
+            std::to_wstring(entries) + L" entries" + (truncated ? L" (truncated)" : L""));
+    }
+
+    void RenderWorkspaceTree() {
         TreeView_DeleteAllItems(tree_.GetHwnd());
         tree_paths_.clear();
         std::uint64_t next = 1;
-        std::size_t entries = 0;
-        bool truncated = false;
-        for (const auto& [root, scan] : scans) {
+        auto filter = workspace_filter_.GetText();
+        std::ranges::transform(filter, filter.begin(), [](wchar_t value) {
+            return static_cast<wchar_t>(std::towlower(value));
+        });
+        for (const auto& [root, scan] : workspace_scans_) {
             const mwfl::TreeItemId root_id{next++};
             const auto label = root.filename().empty() ? root.wstring() : root.filename().wstring();
             tree_.AddItem(root_id, label);
@@ -2544,6 +2644,11 @@ private:
             std::unordered_map<std::wstring, mwfl::TreeItemId> directory_ids;
             directory_ids[L""] = root_id;
             for (const auto& entry : scan.entries) {
+                auto relative = entry.relative_path.wstring();
+                std::ranges::transform(relative, relative.begin(), [](wchar_t value) {
+                    return static_cast<wchar_t>(std::towlower(value));
+                });
+                if (!entry.directory && !filter.empty() && relative.find(filter) == std::wstring::npos) continue;
                 const mwfl::TreeItemId id{next++};
                 const auto parent_text = entry.relative_path.parent_path().wstring();
                 const auto parent = directory_ids.contains(parent_text) ? directory_ids[parent_text] : root_id;
@@ -2551,14 +2656,8 @@ private:
                 tree_paths_[id.value] = root / entry.relative_path;
                 if (entry.directory) directory_ids[entry.relative_path.wstring()] = id;
             }
-            entries += scan.entries.size();
-            truncated = truncated || scan.truncated;
             tree_.Expand(root_id);
         }
-        workspace_visible_ = true;
-        ApplyCompactLayout();
-        status_.SetText(L"Workspace: " + std::to_wstring(scans.size()) + L" root(s) | " +
-            std::to_wstring(entries) + L" entries" + (truncated ? L" (truncated)" : L""));
     }
 
     void StartFolderSearch() {
@@ -2729,6 +2828,8 @@ private:
                 (L"notepad-colon-gui-macros-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
             configuration_path_ = std::filesystem::temp_directory_path() /
                 (L"notepad-colon-gui-config-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
+            workspace_catalog_path_ = std::filesystem::temp_directory_path() /
+                (L"notepad-colon-gui-workspaces-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
             return;
         }
         wchar_t local_app_data[32768]{};
@@ -2741,6 +2842,9 @@ private:
             recovery_store_ = std::make_unique<notepad_colon::RecoveryStore>(
                 session_path_.parent_path() / L"Recovery", 50);
         if (!session_path_.empty()) {
+            workspace_catalog_path_ = session_path_.parent_path() / L"workspaces.state";
+            static_cast<void>(notepad_colon::LoadWorkspaceCatalog(
+                workspace_catalog_path_, workspace_catalog_));
             macros_path_ = session_path_.parent_path() / L"macros.state";
             static_cast<void>(notepad_colon::LoadMacros(macros_path_, saved_macros_));
             configuration_path_ = session_path_.parent_path() / L"settings.npcconfig";
@@ -3042,6 +3146,7 @@ private:
         if (!session_path_.empty()) {
             std::error_code ignored;
             std::filesystem::remove(session_path_, ignored);
+            std::filesystem::remove(workspace_catalog_path_, ignored);
         }
         adapter_.Detach();
         ::PostQuitMessage(result);
@@ -3058,7 +3163,7 @@ private:
     mwfl::AcceleratorTable accelerators_;
     mwfl::Menu menu_;
     mwfl::Toolbar toolbar_;
-    mwfl::TextBox search_, replacement_;
+    mwfl::TextBox search_, replacement_, workspace_filter_;
     mwfl::TreeView tree_;
     mwfl::TabControl tabs_;
     mwfl::ListView results_;
@@ -3072,6 +3177,7 @@ private:
     std::filesystem::path workspace_root_;
     notepad_colon::WorkspaceCatalog workspace_catalog_;
     std::unordered_map<std::uint64_t, std::filesystem::path> tree_paths_;
+    std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> workspace_scans_;
     notepad_colon::SearchResult search_results_;
     std::jthread search_worker_;
     std::jthread workspace_worker_;
@@ -3088,6 +3194,7 @@ private:
     std::vector<notepad_colon::SavedMacro> saved_macros_;
     std::filesystem::path macros_path_;
     std::filesystem::path configuration_path_;
+    std::filesystem::path workspace_catalog_path_;
     std::vector<notepad_colon::ShortcutBinding> default_shortcuts_;
     std::vector<mwfl::ControlId> recent_commands_;
     bool playing_macro_ = false;

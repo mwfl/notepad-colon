@@ -141,4 +141,34 @@ bool DeserializeWorkspaceCatalog(std::string_view encoded, WorkspaceCatalog& cat
     }
     catalog = std::move(parsed); return true;
 }
+
+bool SaveWorkspaceCatalogAtomic(const std::filesystem::path& path,
+                                const WorkspaceCatalog& catalog) noexcept {
+    try {
+        std::filesystem::create_directories(path.parent_path());
+        auto temporary = path; temporary += L".tmp-" + std::to_wstring(::GetCurrentProcessId());
+        const auto bytes = SerializeWorkspaceCatalog(catalog);
+        {
+            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+            if (!output || !output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+                std::error_code ignored; std::filesystem::remove(temporary, ignored); return false;
+            }
+        }
+        if (!::MoveFileExW(temporary.c_str(), path.c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ignored; std::filesystem::remove(temporary, ignored); return false;
+        }
+        return true;
+    } catch (...) { return false; }
+}
+
+bool LoadWorkspaceCatalog(const std::filesystem::path& path,
+                          WorkspaceCatalog& catalog) noexcept {
+    try {
+        std::ifstream input(path, std::ios::binary);
+        if (!input) return false;
+        const std::string bytes{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+        return (input.good() || input.eof()) && DeserializeWorkspaceCatalog(bytes, catalog);
+    } catch (...) { return false; }
+}
 }  // namespace notepad_colon

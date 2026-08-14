@@ -32,5 +32,9 @@ bool RecycleWorkspaceItem(const std::filesystem::path& path,
                           const std::vector<std::filesystem::path>& roots) noexcept;
 std::string SerializeWorkspaceCatalog(const WorkspaceCatalog& catalog);
 bool DeserializeWorkspaceCatalog(std::string_view encoded, WorkspaceCatalog& catalog);
+bool SaveWorkspaceCatalogAtomic(const std::filesystem::path& path,
+                                const WorkspaceCatalog& catalog) noexcept;
+bool LoadWorkspaceCatalog(const std::filesystem::path& path,
+                          WorkspaceCatalog& catalog) noexcept;
 
 }  // namespace notepad_colon

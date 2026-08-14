@@ -275,6 +275,13 @@ int main() {
               notepad_colon::SerializeWorkspaceCatalog(catalog), decoded_catalog) &&
               decoded_catalog.Roots().size() == 1 && decoded_catalog.Favorites().size() == 1,
           "workspace catalog round trip");
+    const auto catalog_path = workspace_path / L"catalog.state";
+    notepad_colon::WorkspaceCatalog file_catalog;
+    Check(notepad_colon::SaveWorkspaceCatalogAtomic(catalog_path, catalog) &&
+              notepad_colon::LoadWorkspaceCatalog(catalog_path, file_catalog) &&
+              file_catalog.Favorites().size() == 1,
+          "workspace catalog must persist atomically");
+    std::filesystem::remove(catalog_path, ignored);
     Check(notepad_colon::IsWithinWorkspaceRoots(workspace_path / L"src" / L"one.txt", {workspace_path}) &&
               !notepad_colon::IsWithinWorkspaceRoots(workspace_path.parent_path() / L"outside.txt", {workspace_path}),
           "workspace root boundary validation");
