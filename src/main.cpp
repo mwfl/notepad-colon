@@ -10,8 +10,10 @@
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/configuration.h>
 #include <notepad_colon/macro.h>
+#include <notepad_colon/mapped_file.h>
 #include <notepad_colon/output.h>
 #include <notepad_colon/editing.h>
+#include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
 #include <notepad_colon/text.h>
@@ -29,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -141,6 +144,15 @@ constexpr mwfl::ControlId kCloseOtherTabs{427};
 constexpr mwfl::ControlId kCloseLeftTabs{428};
 constexpr mwfl::ControlId kCloseRightTabs{429};
 constexpr mwfl::ControlId kOpenNewWindow{430};
+constexpr mwfl::ControlId kEncodingInfo{431};
+constexpr mwfl::ControlId kReopenSystemAnsi{432};
+constexpr mwfl::ControlId kReopenWindows1252{433};
+constexpr mwfl::ControlId kReopenGb18030{434};
+constexpr mwfl::ControlId kSaveSystemAnsi{435};
+constexpr mwfl::ControlId kPreviousLargeWindow{436};
+constexpr mwfl::ControlId kNextLargeWindow{437};
+constexpr mwfl::ControlId kEnglishUi{438};
+constexpr mwfl::ControlId kChineseUi{439};
 
 struct PrintOptions {
     double margin_inches = 0.5;
@@ -185,6 +197,12 @@ struct EditorDocument {
     notepad_colon::Language language = notepad_colon::Language::plain_text;
     notepad_colon::FileState file_state;
     bool external_changed = false;
+    notepad_colon::EncodingKind detected_encoding = notepad_colon::EncodingKind::utf8;
+    unsigned int ansi_code_page = 65001;
+    notepad_colon::EncodingAnalysis encoding_analysis;
+    std::unique_ptr<notepad_colon::MappedFile> mapped_file;
+    std::uint64_t mapped_offset = 0;
+    std::size_t mapped_window_size = 8u * 1024 * 1024;
 };
 
 std::wstring_view EncodingName(mwfl::TextEncoding encoding) noexcept {
@@ -232,6 +250,18 @@ bool SamePath(const std::filesystem::path& left, const std::filesystem::path& ri
     const auto b = right.lexically_normal().native();
     return ::CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
                                   b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+std::optional<std::vector<std::uint8_t>> ReadFileBytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return std::nullopt;
+    const auto end = input.tellg();
+    if (end < 0 || static_cast<std::uintmax_t>(end) >
+        static_cast<std::uintmax_t>((std::numeric_limits<std::size_t>::max)())) return std::nullopt;
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+    input.seekg(0);
+    if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), end)) return std::nullopt;
+    return bytes;
 }
 
 struct CompareScrollSync {
@@ -326,6 +356,7 @@ public:
         }
         ApplyAppearance();
         BuildCommands();
+        ApplyUiLanguage();
         default_shortcuts_ = CaptureShortcuts();
         mwfl::EnableFileDrop(GetHwnd());
 
@@ -339,6 +370,16 @@ public:
         ui.Add(status_);
         for (const auto id : {kNew, kOpen, kSave, kUndo, kRedo, kToggleFindBar})
             mwfl::Must(toolbar_.AddCommand(*commands_.Find(id)), "add toolbar command");
+        const auto toolbar_text = [&](mwfl::ControlId id, std::wstring_view value) {
+            TBBUTTONINFOW information{sizeof(information)};
+            information.dwMask = TBIF_TEXT;
+            information.pszText = const_cast<wchar_t*>(value.data());
+            ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONINFOW, id.value,
+                           reinterpret_cast<LPARAM>(&information));
+        };
+        toolbar_text(kNew, L"＋ New"); toolbar_text(kOpen, L"Open"); toolbar_text(kSave, L"Save");
+        toolbar_text(kUndo, L"↶"); toolbar_text(kRedo, L"↷"); toolbar_text(kToggleFindBar, L"Find");
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(7, 4));
         toolbar_.AutoSize();
         mwfl::Must(mwfl::AddColumns(results_, {{L"File", 330}, {L"Line", 70},
                                                 {L"Column", 70}, {L"Preview", 520}}),
@@ -556,6 +597,15 @@ private:
             .Add(mwfl::Command(kCrlf, L"Windows (&CRLF)", [this] { SetLineEnding(notepad_colon::LineEnding::crlf); }))
             .Add(mwfl::Command(kLf, L"Unix (&LF)", [this] { SetLineEnding(notepad_colon::LineEnding::lf); }));
         commands_
+            .Add(mwfl::Command(kEncodingInfo, L"Document Encoding Information...", [this] { ShowEncodingInformation(); }))
+            .Add(mwfl::Command(kReopenSystemAnsi, L"Reopen with System ANSI", [this] { ReopenActiveWithCodePage(::GetACP()); }))
+            .Add(mwfl::Command(kReopenWindows1252, L"Reopen with Windows-1252", [this] { ReopenActiveWithCodePage(1252); }))
+            .Add(mwfl::Command(kReopenGb18030, L"Reopen with GB18030", [this] { ReopenActiveWithCodePage(54936); }))
+            .Add(mwfl::Command(kSaveSystemAnsi, L"Convert to System ANSI", [this] { SetAnsiEncoding(::GetACP()); }));
+        commands_
+            .Add(mwfl::Command(kEnglishUi, L"English UI", [this] { SetUiLanguage(false); }))
+            .Add(mwfl::Command(kChineseUi, L"简体中文界面", [this] { SetUiLanguage(true); }));
+        commands_
             .Add(mwfl::Command(kRegisterAssociation, L"Register .txt Association",
                 [this] { ReportAssociation(true); }))
             .Add(mwfl::Command(kRemoveAssociation, L"Remove Owned .txt Association",
@@ -654,7 +704,9 @@ private:
             .Add(mwfl::Command(kCloseOtherTabs, L"Close Other Tabs", [this] { CloseRelativeTabs(0); }))
             .Add(mwfl::Command(kCloseLeftTabs, L"Close Tabs to the Left", [this] { CloseRelativeTabs(-1); }))
             .Add(mwfl::Command(kCloseRightTabs, L"Close Tabs to the Right", [this] { CloseRelativeTabs(1); }))
-            .Add(mwfl::Command(kOpenNewWindow, L"Open Active Document in New Window", [this] { OpenActiveInNewWindow(); }));
+            .Add(mwfl::Command(kOpenNewWindow, L"Open Active Document in New Window", [this] { OpenActiveInNewWindow(); }))
+            .Add(mwfl::Command(kPreviousLargeWindow, L"Previous Large-file Window", [this] { MoveLargeFileWindow(false); }))
+            .Add(mwfl::Command(kNextLargeWindow, L"Next Large-file Window", [this] { MoveLargeFileWindow(true); }));
         commands_
             .Add(mwfl::Command(kToggleFindBar, L"Find / Replace Bar", [this] {
                 find_bar_visible_ = !find_bar_visible_; ApplyCompactLayout();
@@ -699,6 +751,34 @@ private:
         RefreshRecentCommands();
     }
 
+    void ApplyUiLanguage() {
+        const auto set = [&](mwfl::ControlId id, std::wstring_view english, std::wstring_view chinese) {
+            if (auto* command = commands_.Find(id)) command->SetText(std::wstring(chinese_ui_ ? chinese : english));
+        };
+        set(kNew, L"&New", L"新建(&N)"); set(kOpen, L"&Open...", L"打开(&O)...");
+        set(kOpenFolder, L"Open &Folder...", L"打开文件夹(&F)...");
+        set(kSave, L"&Save", L"保存(&S)"); set(kSaveAs, L"Save &As...", L"另存为(&A)...");
+        set(kSaveAll, L"Save A&ll", L"全部保存(&L)"); set(kClose, L"&Close", L"关闭(&C)");
+        set(kExit, L"E&xit", L"退出(&X)"); set(kUndo, L"&Undo", L"撤销(&U)");
+        set(kRedo, L"&Redo", L"重做(&R)"); set(kCut, L"Cu&t", L"剪切(&T)");
+        set(kCopy, L"&Copy", L"复制(&C)"); set(kPaste, L"&Paste", L"粘贴(&P)");
+        set(kSelectAll, L"Select &All", L"全选(&A)"); set(kFindNext, L"&Find Next", L"查找下一个(&F)");
+        set(kFindInFiles, L"Find in Files", L"在文件中查找");
+        set(kToggleWorkspace, L"Workspace Panel", L"工作区面板");
+        set(kToggleResults, L"Search Results Panel", L"搜索结果面板");
+        set(kPreferences, L"&Preferences...", L"首选项(&P)...");
+        set(kEncodingInfo, L"Document Encoding Information...", L"文档编码信息...");
+        set(kPrint, L"&Print...", L"打印(&P)...");
+        set(kAbout, L"&About Notepad Colon", L"关于 Notepad Colon(&A)");
+    }
+
+    void SetUiLanguage(bool chinese) {
+        if (chinese_ui_ == chinese) return;
+        chinese_ui_ = chinese; ApplyUiLanguage(); BuildMenu();
+        if (!IsTestMode()) static_cast<void>(SavePreferences());
+        status_.SetText(chinese_ui_ ? L"界面语言已切换为简体中文" : L"UI language changed to English");
+    }
+
     void BuildMenu() {
         mwfl::Menu file, edit, search, encoding, line_endings, view, code, tools, help;
         mwfl::Must(menu_.Create(), "create menu bar");
@@ -726,11 +806,12 @@ private:
         }
         for (const auto id : {kUndo, kRedo, kCut, kCopy, kPaste, kSelectAll,
                               kPinTab, kSortTabs, kCloseOtherTabs, kCloseLeftTabs,
-                              kCloseRightTabs, kOpenNewWindow})
+                              kCloseRightTabs, kOpenNewWindow, kPreviousLargeWindow, kNextLargeWindow})
             mwfl::Must(edit.AppendCommand(*commands_.Find(id)), "append edit command");
         for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kFindInFiles, kCancelSearch})
             mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
-        for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be})
+        for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi,
+                              kEncodingInfo, kReopenSystemAnsi, kReopenWindows1252, kReopenGb18030})
             mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
         for (const auto id : {kCrlf, kLf})
             mwfl::Must(line_endings.AppendCommand(*commands_.Find(id)), "append line ending command");
@@ -757,18 +838,19 @@ private:
                               kShortcutSettings, kExportConfiguration, kImportConfiguration,
                               kDocumentStatistics,
                               kPreferences, kRecoveryManager, kCompareWithFile,
-                              kCompareWithDisk, kRegisterAssociation, kRemoveAssociation})
+                              kCompareWithDisk, kRegisterAssociation, kRemoveAssociation,
+                              kEnglishUi, kChineseUi})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
         mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
-        mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(edit), L"&Edit"), "append edit menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(search), L"&Search"), "append search menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(encoding), L"En&coding"), "append encoding menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), L"&EOL"), "append line endings menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(view), L"&View"), "append view menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(code), L"&Code"), "append code menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(tools), L"&Tools"), "append tools menu");
-        mwfl::Must(menu_.AppendSubmenu(std::move(help), L"&Help"), "append help menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(file), chinese_ui_ ? L"文件(&F)" : L"&File"), "append file menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(edit), chinese_ui_ ? L"编辑(&E)" : L"&Edit"), "append edit menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(search), chinese_ui_ ? L"搜索(&S)" : L"&Search"), "append search menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(encoding), chinese_ui_ ? L"编码(&C)" : L"En&coding"), "append encoding menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), chinese_ui_ ? L"换行符(&O)" : L"&EOL"), "append line endings menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(view), chinese_ui_ ? L"视图(&V)" : L"&View"), "append view menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(code), chinese_ui_ ? L"代码(&D)" : L"&Code"), "append code menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(tools), chinese_ui_ ? L"工具(&T)" : L"&Tools"), "append tools menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(help), chinese_ui_ ? L"帮助(&H)" : L"&Help"), "append help menu");
         mwfl::Must(menu_.AttachToWindow(GetHwnd()), "attach menu");
     }
 
@@ -861,33 +943,73 @@ private:
         if (size_error) return false;
         const auto open_mode = notepad_colon::ClassifyFileSize(size);
         if (open_mode == notepad_colon::FileOpenMode::unsupported) {
-            status_.SetText(L"File exceeds the 256 MiB safety limit");
+            status_.SetText(L"File exceeds the 4 GiB mapped-view limit");
             return false;
         }
-        const auto loaded = mwfl::ReadTextFile(path);
-        if (!loaded.Succeeded()) return false;
+        const bool protected_mode = open_mode == notepad_colon::FileOpenMode::protected_read_only;
+        std::unique_ptr<notepad_colon::MappedFile> mapped;
+        std::optional<std::vector<std::uint8_t>> bytes;
+        if (protected_mode) {
+            mapped = std::make_unique<notepad_colon::MappedFile>();
+            if (!mapped->Open(path)) return false;
+            bytes = mapped->Read(0, 8u * 1024 * 1024);
+        } else bytes = ReadFileBytes(path);
+        if (!bytes) return false;
+        const auto analysis = notepad_colon::AnalyzeEncoding(*bytes);
+        if (analysis.encoding == notepad_colon::EncodingKind::binary) {
+            status_.SetText(L"Binary content detected; use a hex editor"); return false;
+        }
+        const auto loaded = protected_mode ? decltype(mwfl::ReadTextFile(path)){} : mwfl::ReadTextFile(path);
+        std::wstring loaded_text;
+        mwfl::TextEncoding loaded_encoding = mwfl::TextEncoding::utf8;
+        std::optional<mwfl::FileStamp> loaded_stamp;
+        if (analysis.encoding == notepad_colon::EncodingKind::ansi) {
+            const auto decoded = notepad_colon::DecodeBytes(*bytes, analysis.encoding, analysis.code_page);
+            if (!decoded) return false;
+            loaded_text = *decoded;
+        } else if (!protected_mode) {
+            if (!loaded.Succeeded()) return false;
+            loaded_text = loaded.value->text;
+            loaded_encoding = loaded.value->encoding;
+            loaded_stamp = loaded.value->stamp;
+        } else {
+            std::optional<std::wstring> decoded;
+            for (std::size_t trim = 0; trim <= 3 && trim <= bytes->size(); ++trim) {
+                decoded = notepad_colon::DecodeBytes(
+                    std::span<const std::uint8_t>{*bytes}.first(bytes->size() - trim),
+                    analysis.encoding, analysis.code_page);
+                if (decoded) break;
+            }
+            if (!decoded) return false;
+            loaded_text = *decoded;
+        }
         const mwfl::DocumentId id{next_id_++};
         auto editor = std::make_unique<mwfl::ScintillaEditor>();
         if (!editor->Create(GetHwnd(), mwfl::ControlId{static_cast<WORD>(200 + id.value)},
                             mwfl::RectDip{}, runtime_) ||
-            !editor->ConfigureCodeEditing() || !editor->SetText(loaded.value->text)) return false;
+            !editor->ConfigureCodeEditing() || !editor->SetText(loaded_text)) return false;
         notepad_colon::ConfigureAdvancedEditing(*editor);
         notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
         const auto language = notepad_colon::DetectLanguage(path);
         if (!notepad_colon::ConfigureLanguage(*editor, lexilla_, language)) return false;
-        const bool protected_mode = open_mode == notepad_colon::FileOpenMode::protected_read_only;
         if (protected_mode && !editor->SetReadOnly(true)) return false;
         editor->SetSavePoint();
         const auto title = path.filename().wstring();
         if (!workspace_.Add({id, title, path})) return false;
         if (adapter_.BindPage(id, editor->GetHwnd()) != mwfl::DocumentTabStatus::success) return false;
         mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str());
-        documents_.push_back({id, std::move(editor), loaded.value->encoding,
-                              notepad_colon::DetectLineEnding(loaded.value->text), loaded.value->stamp,
+        documents_.push_back({id, std::move(editor), loaded_encoding,
+                              notepad_colon::DetectLineEnding(loaded_text), loaded_stamp,
                               protected_mode, language, notepad_colon::CaptureFileState(path)});
+        documents_.back().detected_encoding = analysis.encoding;
+        documents_.back().ansi_code_page = analysis.code_page;
+        documents_.back().encoding_analysis = analysis;
+        documents_.back().mapped_file = std::move(mapped);
         workspace_.Activate(id);
         SynchronizeTabs(true);
-        SyncPresentation(protected_mode ? L"Opened in large-file read-only mode" : L"Opened");
+        if (analysis.eol.Mixed() || !analysis.unicode_risks.empty()) {
+            status_.SetText(L"Opened with text safety warnings; use Document Encoding Information");
+        } else SyncPresentation(protected_mode ? L"Opened in large-file read-only mode" : L"Opened");
         RememberPath(path);
         static_cast<void>(SaveSessionSnapshot());
         return true;
@@ -944,9 +1066,21 @@ private:
             }
         }
         const auto expected = path == metadata->path ? document.stamp : std::nullopt;
-        const auto saved = mwfl::WriteTextFileAtomic(path, *text, document.encoding, expected);
-        if (!saved.Succeeded() || !saved.stamp) return false;
-        document.stamp = saved.stamp;
+        if (document.detected_encoding == notepad_colon::EncodingKind::ansi) {
+            std::optional<notepad_colon::EncodedWriteExpectation> ansi_expected;
+            if (path == metadata->path) ansi_expected = notepad_colon::EncodedWriteExpectation{
+                document.file_state.size, document.file_state.last_write, document.file_state.exists};
+            if (!notepad_colon::WriteEncodedFileAtomic(path, *text, document.detected_encoding,
+                                                        document.ansi_code_page, ansi_expected)) {
+                status_.SetText(L"ANSI save cancelled: text is not representable or the disk file changed");
+                return false;
+            }
+            document.stamp.reset();
+        } else {
+            const auto saved = mwfl::WriteTextFileAtomic(path, *text, document.encoding, expected);
+            if (!saved.Succeeded() || !saved.stamp) return false;
+            document.stamp = saved.stamp;
+        }
         document.file_state = notepad_colon::CaptureFileState(path);
         document.external_changed = false;
         document.line_ending = notepad_colon::DetectLineEnding(*text);
@@ -1006,7 +1140,8 @@ private:
             mwfl::SettingDefinition{L"AutoSaveSeconds", mwfl::SettingType::dword, 4, false},
             mwfl::SettingDefinition{L"TrimTrailingOnSave", mwfl::SettingType::dword, 4, false},
             mwfl::SettingDefinition{L"CreateBackup", mwfl::SettingType::dword, 4, false},
-            mwfl::SettingDefinition{L"EnsureFinalNewline", mwfl::SettingType::dword, 4, false}};
+            mwfl::SettingDefinition{L"EnsureFinalNewline", mwfl::SettingType::dword, 4, false},
+            mwfl::SettingDefinition{L"ChineseUi", mwfl::SettingType::dword, 4, false}};
         const auto loaded = settings_.Load(schema);
         if (!loaded) return;
         notepad_colon::Preferences candidate;
@@ -1029,6 +1164,8 @@ private:
             candidate.create_backup_before_save = std::get<std::uint32_t>(value->data) != 0;
         if (const auto* value = mwfl::FindSetting(loaded.values, L"EnsureFinalNewline"))
             candidate.ensure_final_newline = std::get<std::uint32_t>(value->data) != 0;
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"ChineseUi"))
+            chinese_ui_ = std::get<std::uint32_t>(value->data) != 0;
         preferences_ = notepad_colon::SanitizePreferences(std::move(candidate));
     }
 
@@ -1042,7 +1179,8 @@ private:
             mwfl::SettingValue{L"AutoSaveSeconds", preferences_.auto_save_seconds},
             mwfl::SettingValue{L"TrimTrailingOnSave", static_cast<std::uint32_t>(preferences_.trim_trailing_whitespace_on_save)},
             mwfl::SettingValue{L"CreateBackup", static_cast<std::uint32_t>(preferences_.create_backup_before_save)},
-            mwfl::SettingValue{L"EnsureFinalNewline", static_cast<std::uint32_t>(preferences_.ensure_final_newline)}};
+            mwfl::SettingValue{L"EnsureFinalNewline", static_cast<std::uint32_t>(preferences_.ensure_final_newline)},
+            mwfl::SettingValue{L"ChineseUi", static_cast<std::uint32_t>(chinese_ui_)}};
         return static_cast<bool>(settings_.Save(values));
     }
 
@@ -2046,6 +2184,50 @@ private:
         } else status_.SetText(L"Could not open a new window");
     }
 
+    void MoveLargeFileWindow(bool forward) {
+        auto* document = ActiveDocument();
+        if (!document || !document->mapped_file) {
+            status_.SetText(L"The active document is not using mapped large-file mode"); return;
+        }
+        const auto size = document->mapped_file->Size();
+        const auto step = static_cast<std::uint64_t>(document->mapped_window_size);
+        const auto offset = forward
+            ? (std::min)(size, document->mapped_offset + step)
+            : (document->mapped_offset > step ? document->mapped_offset - step : 0);
+        if (offset == document->mapped_offset || offset >= size) {
+            status_.SetText(forward ? L"End of large file" : L"Start of large file"); return;
+        }
+        auto bytes = document->mapped_file->Read(offset, document->mapped_window_size);
+        if (bytes.empty()) return;
+        std::size_t prefix = 0;
+        if (document->detected_encoding == notepad_colon::EncodingKind::utf8 ||
+            document->detected_encoding == notepad_colon::EncodingKind::utf8_bom) {
+            while (prefix < (std::min)(bytes.size(), std::size_t{4}) &&
+                   (bytes[prefix] & 0xc0u) == 0x80u) ++prefix;
+        } else if ((document->detected_encoding == notepad_colon::EncodingKind::utf16_le ||
+                    document->detected_encoding == notepad_colon::EncodingKind::utf16_be) && (offset + prefix) % 2)
+            ++prefix;
+        const auto window_encoding = document->detected_encoding == notepad_colon::EncodingKind::utf8_bom
+            ? notepad_colon::EncodingKind::utf8 : document->detected_encoding;
+        std::optional<std::wstring> decoded;
+        for (std::size_t trim = 0; trim <= 3 && prefix + trim <= bytes.size(); ++trim) {
+            decoded = notepad_colon::DecodeBytes(
+                std::span<const std::uint8_t>{bytes}.subspan(prefix, bytes.size() - prefix - trim),
+                window_encoding, document->ansi_code_page);
+            if (decoded) break;
+        }
+        if (!decoded) { status_.SetText(L"Window boundary contains an incomplete character; move again"); return; }
+        document->editor->SetReadOnly(false);
+        const bool replaced = document->editor->SetText(*decoded);
+        document->editor->SetReadOnly(true);
+        if (!replaced) return;
+        document->mapped_offset = offset + prefix;
+        document->editor->SetSavePoint();
+        status_.SetText(L"Large file | bytes " + std::to_wstring(document->mapped_offset) + L"–" +
+            std::to_wstring((std::min)(size, document->mapped_offset + bytes.size())) + L" of " +
+            std::to_wstring(size));
+    }
+
     std::optional<mwfl::ScintillaTextRange> FindNext() {
         auto* editor = ActiveEditor();
         const auto query = search_.GetText();
@@ -2085,10 +2267,79 @@ private:
         status_.SetText(L"Replaced " + std::to_wstring(count) + L" occurrence(s)");
     }
 
+    void ShowEncodingInformation() {
+        const auto* document = ActiveDocument();
+        if (!document) return;
+        std::wstring name = L"UTF-8";
+        switch (document->detected_encoding) {
+        case notepad_colon::EncodingKind::utf8_bom: name = L"UTF-8 with BOM"; break;
+        case notepad_colon::EncodingKind::utf16_le: name = L"UTF-16 LE"; break;
+        case notepad_colon::EncodingKind::utf16_be: name = L"UTF-16 BE"; break;
+        case notepad_colon::EncodingKind::ansi: name = L"ANSI code page " + std::to_wstring(document->ansi_code_page); break;
+        case notepad_colon::EncodingKind::binary: name = L"Binary"; break;
+        case notepad_colon::EncodingKind::utf8: break;
+        }
+        const auto& analysis = document->encoding_analysis;
+        const auto message = L"Encoding: " + name +
+            L"\nInvalid byte sequences: " + std::to_wstring(analysis.invalid_byte_offsets.size()) +
+            L"\nLine endings: " + std::to_wstring(analysis.eol.crlf) + L" CRLF, " +
+            std::to_wstring(analysis.eol.lf) + L" LF, " + std::to_wstring(analysis.eol.cr) + L" CR" +
+            L"\nMixed line endings: " + (analysis.eol.Mixed() ? std::wstring(L"Yes") : std::wstring(L"No")) +
+            L"\nBidi / zero-width controls: " + std::to_wstring(analysis.unicode_risks.size());
+        ::MessageBoxW(GetHwnd(), message.c_str(), L"Document Encoding Information", MB_OK |
+            ((!analysis.invalid_byte_offsets.empty() || analysis.eol.Mixed() || !analysis.unicode_risks.empty())
+                ? MB_ICONWARNING : MB_ICONINFORMATION));
+    }
+
+    void ReopenActiveWithCodePage(unsigned int code_page) {
+        auto* document = ActiveDocument();
+        const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        if (!document || !metadata || metadata->path.empty()) return;
+        if (metadata->dirty && ::MessageBoxW(GetHwnd(),
+            L"Reopening discards unsaved edits. Continue?", L"Reopen with Encoding",
+            MB_YESNO | MB_ICONWARNING) != IDYES) return;
+        const auto bytes = ReadFileBytes(metadata->path);
+        if (!bytes) return;
+        const auto decoded = notepad_colon::DecodeBytes(*bytes, notepad_colon::EncodingKind::ansi, code_page);
+        if (!decoded) { status_.SetText(L"The selected code page cannot decode this file"); return; }
+        const bool was_read_only = document->read_only;
+        if (was_read_only) document->editor->SetReadOnly(false);
+        if (!document->editor->SetText(*decoded)) return;
+        if (was_read_only) document->editor->SetReadOnly(true);
+        document->detected_encoding = notepad_colon::EncodingKind::ansi;
+        document->ansi_code_page = code_page;
+        document->encoding_analysis = notepad_colon::AnalyzeEncoding(*bytes, code_page);
+        document->line_ending = notepad_colon::DetectLineEnding(*decoded);
+        document->file_state = notepad_colon::CaptureFileState(metadata->path);
+        document->stamp.reset(); document->editor->SetSavePoint();
+        workspace_.SetDirty(document->id, false); SyncPresentation(L"Reopened with code page " + std::to_wstring(code_page));
+    }
+
+    void SetAnsiEncoding(unsigned int code_page) {
+        auto* document = ActiveDocument();
+        if (!document) return;
+        const auto text = document->editor->GetText();
+        if (!text || !notepad_colon::EncodeText(*text, notepad_colon::EncodingKind::ansi, code_page)) {
+            ::MessageBoxW(GetHwnd(), L"Some characters cannot be represented by this ANSI code page.",
+                          L"Encoding Conversion", MB_OK | MB_ICONWARNING); return;
+        }
+        document->detected_encoding = notepad_colon::EncodingKind::ansi;
+        document->ansi_code_page = code_page;
+        workspace_.SetDirty(document->id, true);
+        SyncPresentation(L"Will save using ANSI code page " + std::to_wstring(code_page));
+    }
+
     void SetEncoding(mwfl::TextEncoding encoding) {
         auto* document = ActiveDocument();
-        if (!document || document->encoding == encoding) return;
+        if (!document || (document->encoding == encoding &&
+            document->detected_encoding != notepad_colon::EncodingKind::ansi)) return;
         document->encoding = encoding;
+        switch (encoding) {
+        case mwfl::TextEncoding::utf8: document->detected_encoding = notepad_colon::EncodingKind::utf8; break;
+        case mwfl::TextEncoding::utf8_bom: document->detected_encoding = notepad_colon::EncodingKind::utf8_bom; break;
+        case mwfl::TextEncoding::utf16_le: document->detected_encoding = notepad_colon::EncodingKind::utf16_le; break;
+        case mwfl::TextEncoding::utf16_be: document->detected_encoding = notepad_colon::EncodingKind::utf16_be; break;
+        }
         workspace_.SetDirty(document->id, true);
         SyncPresentation(L"Encoding changed");
     }
@@ -2520,7 +2771,8 @@ private:
             notepad_colon::SessionEntry entry;
             entry.path = metadata.path;
             entry.recovery_text = metadata.dirty || metadata.path.empty() ? *text : L"";
-            entry.encoding = ToSessionEncoding(document->encoding);
+            entry.encoding = document->detected_encoding == notepad_colon::EncodingKind::ansi
+                ? notepad_colon::Encoding::ansi : ToSessionEncoding(document->encoding);
             entry.line_ending = document->line_ending;
             const auto selection = document->editor->GetSelection();
             entry.view.anchor = selection.start;
@@ -2589,6 +2841,9 @@ private:
                 if (document && entry.dirty && !entry.recovery_text.empty()) {
                     document->editor->SetText(entry.recovery_text);
                     document->encoding = FromSessionEncoding(entry.encoding);
+                    document->detected_encoding = entry.encoding == notepad_colon::Encoding::ansi
+                        ? notepad_colon::EncodingKind::ansi
+                        : static_cast<notepad_colon::EncodingKind>(entry.encoding);
                     document->line_ending = entry.line_ending;
                     workspace_.SetDirty(document->id, true);
                     document->editor->SetSelection({entry.view.anchor, entry.view.caret});
@@ -2601,6 +2856,9 @@ private:
                     if (!entry.path.empty())
                         workspace_.Rename(document->id, entry.path.filename().wstring(), entry.path);
                     document->encoding = FromSessionEncoding(entry.encoding);
+                    document->detected_encoding = entry.encoding == notepad_colon::Encoding::ansi
+                        ? notepad_colon::EncodingKind::ansi
+                        : static_cast<notepad_colon::EncodingKind>(entry.encoding);
                     document->line_ending = entry.line_ending;
                     if (entry.dirty) workspace_.SetDirty(document->id, true);
                     document->editor->SetSelection({entry.view.anchor, entry.view.caret});
@@ -2839,6 +3097,7 @@ private:
     std::vector<std::filesystem::path> startup_paths_;
     bool self_test_ = false;
     bool activation_test_server_ = false;
+    bool chinese_ui_ = false;
     int activation_test_result_ = 4;
     notepad_colon::Preferences preferences_;
     mwfl::VersionedSettingsStore settings_{HKEY_CURRENT_USER,

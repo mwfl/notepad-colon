@@ -2,6 +2,7 @@
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/configuration.h>
 #include <notepad_colon/editing.h>
+#include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
@@ -29,6 +30,37 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    const std::vector<std::uint8_t> utf8_bytes{'a', '\r', '\n', 0xe2, 0x80, 0xae, 'b', '\n'};
+    const auto utf8_analysis = notepad_colon::AnalyzeEncoding(utf8_bytes);
+    Check(utf8_analysis.encoding == notepad_colon::EncodingKind::utf8 && utf8_analysis.valid &&
+              utf8_analysis.eol.crlf == 1 && utf8_analysis.eol.lf == 1 &&
+              utf8_analysis.eol.Mixed() && utf8_analysis.unicode_risks.size() == 1,
+          "strict UTF-8 analysis must report mixed EOL and bidi controls");
+    const std::vector<std::uint8_t> invalid_utf8{0xc0, 0xaf, 'x'};
+    const auto ansi_analysis = notepad_colon::AnalyzeEncoding(invalid_utf8, 1252);
+    Check(ansi_analysis.encoding == notepad_colon::EncodingKind::ansi &&
+              ansi_analysis.invalid_byte_offsets.size() == 2 && ansi_analysis.code_page == 1252,
+          "invalid UTF-8 must preserve byte offsets and select the requested ANSI code page");
+    const auto encoded_utf16 = notepad_colon::EncodeText(L"alpha Ω", notepad_colon::EncodingKind::utf16_be);
+    Check(encoded_utf16 && encoded_utf16->size() >= 4 && (*encoded_utf16)[0] == 0xfe &&
+              notepad_colon::DecodeBytes(*encoded_utf16, notepad_colon::EncodingKind::utf16_be) == L"alpha Ω",
+          "UTF-16 big-endian conversion must round trip with BOM");
+    Check(!notepad_colon::EncodeText(L"Ω", notepad_colon::EncodingKind::ansi, 1252),
+          "lossy ANSI conversion must be rejected");
+    const auto encoded_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-encoding-test-" + std::to_wstring(::GetCurrentProcessId()) + L".txt");
+    Check(notepad_colon::WriteEncodedFileAtomic(encoded_path, L"café", notepad_colon::EncodingKind::ansi, 1252),
+          "representable ANSI text must save atomically");
+    const auto encoded_state = notepad_colon::CaptureFileState(encoded_path);
+    {
+        std::ofstream(encoded_path, std::ios::binary | std::ios::app) << "external";
+    }
+    Check(!notepad_colon::WriteEncodedFileAtomic(encoded_path, L"overwrite",
+              notepad_colon::EncodingKind::ansi, 1252,
+              notepad_colon::EncodedWriteExpectation{encoded_state.size, encoded_state.last_write,
+                                                       encoded_state.exists}),
+          "ANSI atomic save must reject stale disk expectations");
+    std::error_code encoded_ignored; std::filesystem::remove(encoded_path, encoded_ignored);
     const auto statistics = notepad_colon::CalculateStatistics(L"one two\r\n\r\n三");
     Check(statistics.words == 3 && statistics.lines == 3 && statistics.non_blank_lines == 2 &&
               statistics.characters_without_whitespace == 7 && statistics.utf8_bytes > statistics.characters,
@@ -153,7 +185,7 @@ int main() {
     Check(notepad_colon::ClassifyFileSize(32ull * 1024 * 1024 + 1) ==
               FileOpenMode::protected_read_only,
           "files over the edit limit must be protected");
-    Check(notepad_colon::ClassifyFileSize(256ull * 1024 * 1024 + 1) ==
+    Check(notepad_colon::ClassifyFileSize(4ull * 1024 * 1024 * 1024 + 1) ==
               FileOpenMode::unsupported,
           "files beyond the supported limit must be rejected");
     Check(notepad_colon::ClassifyFileSize(1, {2, 1}) == FileOpenMode::unsupported,

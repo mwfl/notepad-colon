@@ -16,6 +16,8 @@ telemetry, and cloud services.
 - Scintilla/Lexilla editing for 19 common languages with syntax color, folding,
   bookmarks, multiple/rectangular selections, auto-indent, brace matching,
   line operations, whitespace, wrapping, and zoom.
+- Strict UTF-8/BOM/UTF-16/ANSI analysis, selectable ANSI code-page reopening,
+  lossless conversion checks, mixed-EOL reporting, and bidi/zero-width warnings.
 - Workspace tree and cancellable background folder search with ignored build,
   VCS, cache, and dependency directories.
 - Explicit, reversible per-user `.txt` association under **Tools**. Existing
@@ -23,8 +25,10 @@ telemetry, and cloud services.
 - A native Preferences dialog persists System/Light/Dark theme, editor font,
   font size, and tab width. A single running instance accepts multiple file
   paths forwarded from later command-line launches.
-- Files through 32 MiB open normally; files above 32 MiB through 256 MiB open
-  in protected read-only mode. Larger files are rejected before allocation.
+- Compact English and Simplified Chinese core navigation can be switched at
+  runtime and persists with the local UI settings.
+- Files through 32 MiB open normally; files above 32 MiB through 4 GiB use a
+  protected read-only 8 MiB mapped window with previous/next navigation.
 
 Plugins, IDE project systems, accounts, telemetry, and cloud services are
 deliberately out of scope.
