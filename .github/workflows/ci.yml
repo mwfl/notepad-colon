@@ -26,6 +26,16 @@ jobs:
         run: cmake --build --preset ${{ matrix.build }} --parallel
       - name: Test
         run: ctest --preset ${{ matrix.build }}
+      - name: Package portable ZIP
+        if: matrix.configure == 'vs2026-x64'
+        run: cmake --build --preset vs2026-x64-debug --target package
+      - name: Upload portable ZIP
+        if: matrix.configure == 'vs2026-x64'
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: notepad-colon-windows-x64
+          path: build/vs2026-x64/notepad-colon-*.zip
+          if-no-files-found: error
 
   arm64-build:
     runs-on: windows-11-arm
@@ -35,4 +45,3 @@ jobs:
         run: cmake --preset vs2026-arm64 -DMWFL_SOURCE_DIR=
       - name: Build
         run: cmake --build --preset vs2026-arm64-release --parallel
-

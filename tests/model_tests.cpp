@@ -2,6 +2,7 @@
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/large_file.h>
 #include <notepad_colon/workspace.h>
 
 #include <windows.h>
@@ -20,6 +21,17 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    using notepad_colon::FileOpenMode;
+    Check(notepad_colon::ClassifyFileSize(32ull * 1024 * 1024) == FileOpenMode::editable,
+          "32 MiB must remain editable");
+    Check(notepad_colon::ClassifyFileSize(32ull * 1024 * 1024 + 1) ==
+              FileOpenMode::protected_read_only,
+          "files over the edit limit must be protected");
+    Check(notepad_colon::ClassifyFileSize(256ull * 1024 * 1024 + 1) ==
+              FileOpenMode::unsupported,
+          "files beyond the supported limit must be rejected");
+    Check(notepad_colon::ClassifyFileSize(1, {2, 1}) == FileOpenMode::unsupported,
+          "invalid policy must fail closed");
     notepad_colon::Workspace workspace;
     const auto first = workspace.AddUntitled();
     const auto second = workspace.AddUntitled();

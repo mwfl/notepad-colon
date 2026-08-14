@@ -20,6 +20,7 @@ endif()
 
 add_library(notepad_colon_model
     src/document.cpp
+    src/large_file.cpp
     src/language.cpp
     src/session.cpp
     src/text.cpp
@@ -33,7 +34,7 @@ add_executable(notepad-colon WIN32
     app.manifest)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
-target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla oleacc)
+target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell oleacc)
 FetchContent_GetProperties(mwfl_scintilla_binary)
 FetchContent_GetProperties(mwfl_scintilla_source)
 if(mwfl_scintilla_binary_SOURCE_DIR)
@@ -66,6 +67,27 @@ if(BUILD_TESTING)
     add_test(NAME notepad-colon.model COMMAND notepad_colon_model_tests)
     add_test(NAME notepad-colon.gui COMMAND notepad-colon --self-test)
     set_tests_properties(notepad-colon.gui PROPERTIES TIMEOUT 30)
+    add_executable(notepad_colon_performance_tests tests/performance_tests.cpp)
+    target_link_libraries(notepad_colon_performance_tests PRIVATE notepad_colon_model)
+    target_compile_features(notepad_colon_performance_tests PRIVATE cxx_std_20)
+    target_compile_options(notepad_colon_performance_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
+    add_test(NAME notepad-colon.performance COMMAND notepad_colon_performance_tests)
+    set_tests_properties(notepad-colon.performance PROPERTIES TIMEOUT 15 LABELS performance)
 endif()
 
-install(TARGETS notepad-colon RUNTIME DESTINATION .)
+install(TARGETS notepad-colon RUNTIME DESTINATION . COMPONENT product)
+if(mwfl_scintilla_binary_SOURCE_DIR)
+    install(FILES
+        "${mwfl_scintilla_binary_SOURCE_DIR}/Scintilla.dll"
+        "${mwfl_scintilla_binary_SOURCE_DIR}/Lexilla.dll"
+        DESTINATION . COMPONENT product)
+endif()
+install(FILES README.md LICENSE DESTINATION . COMPONENT product)
+
+set(CPACK_GENERATOR ZIP)
+set(CPACK_PACKAGE_NAME "Notepad-Colon")
+set(CPACK_PACKAGE_FILE_NAME "notepad-colon-${PROJECT_VERSION}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+set(CPACK_COMPONENTS_ALL product)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+include(CPack)

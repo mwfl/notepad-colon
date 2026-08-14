@@ -1,5 +1,8 @@
 #include <mwfl/mwfl.h>
 #include <mwfl/scintilla.h>
+#include <mwfl/file_association.h>
+#include <mwfl/shell_integration.h>
+#include <notepad_colon/large_file.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/language.h>
@@ -66,6 +69,8 @@ constexpr mwfl::ControlId kFindInFiles{341};
 constexpr mwfl::ControlId kCancelSearch{342};
 constexpr mwfl::ControlId kTree{350};
 constexpr mwfl::ControlId kResults{351};
+constexpr mwfl::ControlId kRegisterAssociation{360};
+constexpr mwfl::ControlId kRemoveAssociation{361};
 constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
 constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
 constexpr mwfl::TimerId kMonitorTimer{1};
@@ -134,11 +139,31 @@ bool SamePath(const std::filesystem::path& left, const std::filesystem::path& ri
                                   b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
 
+std::filesystem::path ExecutablePath() {
+    std::wstring path(32768, L'\0');
+    const DWORD length = ::GetModuleFileNameW(nullptr, path.data(),
+                                              static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) return {};
+    path.resize(length);
+    return path;
+}
+
+mwfl::FileAssociationSpec TextAssociation() {
+    return {.extension = L".txt",
+            .prog_id = L"mwfl.notepad-colon.text",
+            .owner_id = L"mwfl.notepad-colon",
+            .display_name = L"Text document",
+            .executable = ExecutablePath(),
+            .icon = ExecutablePath(),
+            .verbs = {{L"open", L"Open with Notepad Colon", {}}}};
+}
+
 class MainWindow final : public mwfl::WindowBase {
 public:
     MainWindow() : workspace_({1}, 12) {}
 
     void BuildUI() override {
+        static_cast<void>(mwfl::SetProcessAppUserModelId(L"mwfl.notepad-colon"));
         if (!runtime_.LoadAdjacent())
             throw std::runtime_error("Scintilla.dll is not available beside Notepad Colon");
         if (!lexilla_.LoadAdjacent())
@@ -350,6 +375,11 @@ private:
             .Add(mwfl::Command(kCrlf, L"Windows (&CRLF)", [this] { SetLineEnding(notepad_colon::LineEnding::crlf); }))
             .Add(mwfl::Command(kLf, L"Unix (&LF)", [this] { SetLineEnding(notepad_colon::LineEnding::lf); }));
         commands_
+            .Add(mwfl::Command(kRegisterAssociation, L"Register .txt Association",
+                [this] { ReportAssociation(true); }))
+            .Add(mwfl::Command(kRemoveAssociation, L"Remove Owned .txt Association",
+                [this] { ReportAssociation(false); }));
+        commands_
             .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })
                      .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_4}))
             .Add(mwfl::Command(kToggleBookmark, L"Toggle &Bookmark", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleBookmark(*e); })
@@ -396,7 +426,7 @@ private:
     }
 
     void BuildMenu() {
-        mwfl::Menu file, edit, search, encoding, line_endings, view, code;
+        mwfl::Menu file, edit, search, encoding, line_endings, view, code, tools;
         mwfl::Must(menu_.Create(), "create menu bar");
         mwfl::Must(file.CreatePopup(), "create file menu");
         mwfl::Must(edit.CreatePopup(), "create edit menu");
@@ -405,6 +435,7 @@ private:
         mwfl::Must(line_endings.CreatePopup(), "create line endings menu");
         mwfl::Must(view.CreatePopup(), "create view menu");
         mwfl::Must(code.CreatePopup(), "create code menu");
+        mwfl::Must(tools.CreatePopup(), "create tools menu");
         for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
         mwfl::Must(file.AppendSeparator(), "append file separator");
@@ -429,6 +460,8 @@ private:
         for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
                               kUppercase, kLowercase, kIndent, kOutdent})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
+        for (const auto id : {kRegisterAssociation, kRemoveAssociation})
+            mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(edit), L"&Edit"), "append edit menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(search), L"&Search"), "append search menu");
@@ -436,6 +469,7 @@ private:
         mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), L"&EOL"), "append line endings menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(view), L"&View"), "append view menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(code), L"&Code"), "append code menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(tools), L"&Tools"), "append tools menu");
         mwfl::Must(menu_.AttachToWindow(GetHwnd()), "attach menu");
     }
 
@@ -492,6 +526,14 @@ private:
                 return true;
             }
         }
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(path, size_error);
+        if (size_error) return false;
+        const auto open_mode = notepad_colon::ClassifyFileSize(size);
+        if (open_mode == notepad_colon::FileOpenMode::unsupported) {
+            status_.SetText(L"File exceeds the 256 MiB safety limit");
+            return false;
+        }
         const auto loaded = mwfl::ReadTextFile(path);
         if (!loaded.Succeeded()) return false;
         const mwfl::DocumentId id{next_id_++};
@@ -502,6 +544,8 @@ private:
         notepad_colon::ConfigureAdvancedEditing(*editor);
         const auto language = notepad_colon::DetectLanguage(path);
         if (!notepad_colon::ConfigureLanguage(*editor, lexilla_, language)) return false;
+        const bool protected_mode = open_mode == notepad_colon::FileOpenMode::protected_read_only;
+        if (protected_mode && !editor->SetReadOnly(true)) return false;
         editor->SetSavePoint();
         const auto title = path.filename().wstring();
         if (!workspace_.Add({id, title, path})) return false;
@@ -509,10 +553,10 @@ private:
         mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str());
         documents_.push_back({id, std::move(editor), loaded.value->encoding,
                               notepad_colon::DetectLineEnding(loaded.value->text), loaded.value->stamp,
-                              false, language, notepad_colon::CaptureFileState(path)});
+                              protected_mode, language, notepad_colon::CaptureFileState(path)});
         workspace_.Activate(id);
         SynchronizeTabs(true);
-        SyncPresentation(L"Opened");
+        SyncPresentation(protected_mode ? L"Opened in large-file read-only mode" : L"Opened");
         RememberPath(path);
         static_cast<void>(SaveSessionSnapshot());
         return true;
@@ -526,6 +570,10 @@ private:
     }
 
     bool SaveDocument(EditorDocument& document, bool choose_path) {
+        if (document.read_only) {
+            status_.SetText(L"Large-file protection is read-only");
+            return false;
+        }
         const auto* metadata = workspace_.Find(document.id);
         if (!metadata) return false;
         auto path = metadata->path;
@@ -564,6 +612,14 @@ private:
         SyncPresentation(L"Saved");
         static_cast<void>(SaveSessionSnapshot());
         return true;
+    }
+
+    void ReportAssociation(bool install) {
+        const auto result = install ? mwfl::RegisterPerUserFileAssociation(TextAssociation())
+                                    : mwfl::RemovePerUserFileAssociation(TextAssociation());
+        status_.SetText(result ? (install ? L".txt association registered for this user"
+                                          : L"Owned .txt association removed")
+                               : L"Association unchanged; Windows ownership/conflict protected");
     }
 
     bool SaveActive(bool choose_path) {
@@ -933,7 +989,8 @@ private:
         } else status_.SetText(action);
 
         const bool has_editor = document != nullptr;
-        if (auto* command = commands_.Find(kSave)) command->SetEnabled(has_editor);
+        if (auto* command = commands_.Find(kSave))
+            command->SetEnabled(has_editor && !document->read_only);
         if (auto* command = commands_.Find(kClose)) command->SetEnabled(has_editor);
         if (auto* command = commands_.Find(kUndo)) command->SetEnabled(has_editor && document->editor->CanUndo());
         if (auto* command = commands_.Find(kRedo)) command->SetEnabled(has_editor && document->editor->CanRedo());
@@ -946,6 +1003,17 @@ private:
         int result = 0;
         std::vector<std::filesystem::path> cleanup;
         try {
+            auto association = TextAssociation();
+            association.extension = L".npc-self-test";
+            association.prog_id = L"mwfl.notepad-colon.self-test";
+            const std::wstring isolated = L"Software\\mwfl\\Tests\\NotepadColon-" +
+                                          std::to_wstring(::GetCurrentProcessId());
+            const auto registered = mwfl::RegisterFileAssociation(
+                HKEY_CURRENT_USER, isolated, association, false);
+            const auto removed = mwfl::RemoveFileAssociation(
+                HKEY_CURRENT_USER, isolated, association, false);
+            ::RegDeleteTreeW(HKEY_CURRENT_USER, isolated.c_str());
+            if (!registered || !removed) result = 19;
             auto* first = ActiveDocument();
             if (!first || !first->editor->SetText(L"first 世界\n")) result = 1;
             if (result == 0 && !notepad_colon::ConfigureLanguage(
