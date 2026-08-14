@@ -8,7 +8,7 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "BUILD_TESTING": "ON",
-        "MWFL_SOURCE_DIR": "${sourceDir}/../.."
+        "MWFL_SOURCE_DIR": "${sourceDir}/../mwfl"
       }
     },
     {"name": "vs2026-x64", "inherits": "base", "generator": "Visual Studio 18 2026", "architecture": "x64"},

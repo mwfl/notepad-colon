@@ -1,10 +1,12 @@
 #include <notepad_colon/document.h>
+#include <notepad_colon/comparison.h>
 #include <notepad_colon/editing.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/preferences.h>
+#include <notepad_colon/recovery.h>
 #include <notepad_colon/workspace.h>
 
 #include <windows.h>
@@ -23,6 +25,17 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    const auto comparison = notepad_colon::CompareText(L"same\nold value\ntail", L"same\nnew value\ntail");
+    Check(!comparison.identical && comparison.changed_lines == 1, "one modified line detected");
+    Check(comparison.lines.size() == 3 &&
+              comparison.lines[1].kind == notepad_colon::DifferenceKind::modified,
+          "modified lines aligned");
+    Check(comparison.lines[1].left_change.length == 3 &&
+              comparison.lines[1].right_change.length == 3,
+          "intra-line changed spans detected");
+    Check(notepad_colon::CompareText(L"One  two", L"one two",
+              {.ignore_case = true, .ignore_whitespace = true}).identical,
+          "comparison ignore options");
     using notepad_colon::LineOrder;
     Check(notepad_colon::SortLines(L"beta\nAlpha\nalpha\n", LineOrder::ascending, true, true) ==
               L"Alpha\nbeta\n", "case-folded sort and dedupe");
@@ -49,6 +62,20 @@ int main() {
     Check(!notepad_colon::Base64Decode("bad"), "invalid base64 rejected");
     Check(notepad_colon::EnsureFinalNewline(L"text", L"\r\n") == L"text\r\n",
           "final newline inserted");
+    const auto recovery_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-recovery-test-" + std::to_wstring(::GetCurrentProcessId()));
+    notepad_colon::RecoveryStore recovery(recovery_path, 2);
+    Check(recovery.Save(L"doc", L"Draft", L"C:\\work\\draft.txt", L"first"),
+          "recovery snapshot saves");
+    Check(recovery.Save(L"doc", L"Draft", L"C:\\work\\draft.txt", L"second"),
+          "second recovery snapshot saves");
+    const auto recovery_items = recovery.List();
+    Check(recovery_items.size() == 2, "recovery snapshots listed within retention");
+    if (!recovery_items.empty())
+        Check(recovery.Load(recovery_items.front()) == std::optional<std::wstring>{L"second"},
+              "latest recovery snapshot loads");
+    std::error_code recovery_error;
+    std::filesystem::remove_all(recovery_path, recovery_error);
     notepad_colon::Preferences preferences;
     Check(notepad_colon::ValidatePreferences(preferences), "default preferences must be valid");
     preferences.font_name.clear();
