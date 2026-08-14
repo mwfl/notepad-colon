@@ -20,6 +20,8 @@ struct SessionEntry {
 struct Session {
     std::vector<SessionEntry> documents;
     std::size_t active_index = 0;
+    std::vector<std::filesystem::path> workspace_paths;
+    // Compatibility alias for callers and v1/v2 session files.
     std::filesystem::path workspace_path;
 };
 

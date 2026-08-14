@@ -11,6 +11,7 @@
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
 #include <notepad_colon/workspace.h>
+#include <notepad_colon/workspace_state.h>
 
 #include <windows.h>
 
@@ -176,6 +177,7 @@ int main() {
     notepad_colon::Session original;
     original.active_index = 1;
     original.workspace_path = L"C:\\work";
+    original.workspace_paths = {L"C:\\work", L"D:\\shared"};
     original.documents.push_back({L"C:\\work\\ä½ å¥½.cpp", L"", notepad_colon::Encoding::utf8,
                                   notepad_colon::LineEnding::lf, {4, 9, 2}, false});
     original.documents.push_back({{}, L"unsaved\ntext\tΩ", notepad_colon::Encoding::utf8,
@@ -185,6 +187,7 @@ int main() {
     Check(notepad_colon::DeserializeSession(encoded, decoded), "serialized session must parse");
     Check(decoded.documents.size() == 2 && decoded.active_index == 1, "session shape must round trip");
     Check(decoded.workspace_path == original.workspace_path, "workspace path must round trip");
+    Check(decoded.workspace_paths == original.workspace_paths, "multiple workspace roots must round trip");
     if (decoded.documents.size() == 2) {
         Check(decoded.documents[0].path == original.documents[0].path, "Unicode path must round trip");
     Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
@@ -193,6 +196,9 @@ int main() {
     Check(!notepad_colon::DeserializeSession("bad", decoded), "invalid sessions must be rejected");
     Check(notepad_colon::DeserializeSession("NPCSESSION\t1\t0\n", decoded),
           "version 1 sessions must remain readable");
+    Check(notepad_colon::DeserializeSession("NPCSESSION\t2\t0\tC:\\5c;old\n", decoded) &&
+              decoded.workspace_paths.size() == 1,
+          "version 2 workspace sessions must migrate to multiple roots");
 
     const std::wstring mixed = L"one\r\ntwo\nthree\rfour";
     Check(notepad_colon::DetectLineEnding(mixed) == notepad_colon::LineEnding::crlf,
@@ -226,6 +232,27 @@ int main() {
         (L"notepad-colon-workspace-test-" + std::to_wstring(::GetCurrentProcessId()));
     std::filesystem::create_directories(workspace_path / L"src");
     std::filesystem::create_directories(workspace_path / L"build");
+    notepad_colon::WorkspaceCatalog catalog;
+    Check(catalog.AddRoot(workspace_path) && !catalog.AddRoot(workspace_path),
+          "workspace catalog adds unique roots");
+    catalog.SetFavorite(workspace_path, true);
+    Check(catalog.Roots().size() == 1 && catalog.Recent().size() == 1 && catalog.Favorites().size() == 1,
+          "workspace catalog tracks roots history and favorites");
+    notepad_colon::WorkspaceCatalog decoded_catalog;
+    Check(notepad_colon::DeserializeWorkspaceCatalog(
+              notepad_colon::SerializeWorkspaceCatalog(catalog), decoded_catalog) &&
+              decoded_catalog.Roots().size() == 1 && decoded_catalog.Favorites().size() == 1,
+          "workspace catalog round trip");
+    Check(notepad_colon::IsWithinWorkspaceRoots(workspace_path / L"src" / L"one.txt", {workspace_path}) &&
+              !notepad_colon::IsWithinWorkspaceRoots(workspace_path.parent_path() / L"outside.txt", {workspace_path}),
+          "workspace root boundary validation");
+    Check(!notepad_colon::IsValidWorkspaceName(L"..") &&
+              !notepad_colon::IsValidWorkspaceName(L"bad?.txt") &&
+              notepad_colon::IsValidWorkspaceName(L"good.txt"), "workspace item names validated");
+    Check(notepad_colon::CreateWorkspaceItem(workspace_path / L"src", L"created.txt", false, {workspace_path}) &&
+              notepad_colon::RenameWorkspaceItem(workspace_path / L"src" / L"created.txt", L"renamed.txt", {workspace_path}),
+          "workspace create and rename stay within roots");
+    std::filesystem::remove(workspace_path / L"src" / L"renamed.txt", ignored);
     {
         std::ofstream(workspace_path / L"src" / L"one.txt", std::ios::binary)
             << "alpha needle beta\nNeedlework must not whole-word match\nneedle again\n";

@@ -18,6 +18,7 @@
 #include <notepad_colon/session.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/workspace.h>
+#include <notepad_colon/workspace_state.h>
 #include "scintilla_support.h"
 
 #include <algorithm>
@@ -2026,54 +2027,65 @@ private:
             workspace_worker_.request_stop();
             workspace_worker_.join();
         }
+        static_cast<void>(workspace_catalog_.AddRoot(root));
         workspace_root_ = std::move(root);
         status_.SetText(L"Scanning workspace...");
         const HWND window = GetHwnd();
-        const auto scan_root = workspace_root_;
-        workspace_worker_ = std::jthread([this, window, scan_root](std::stop_token stop) {
-            auto scan = notepad_colon::ScanWorkspace(scan_root, 20000, stop);
+        const auto roots = workspace_catalog_.Roots();
+        workspace_worker_ = std::jthread([this, window, roots](std::stop_token stop) {
+            std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> scans;
+            for (const auto& scan_root : roots) {
+                if (stop.stop_requested()) break;
+                scans.emplace_back(scan_root, notepad_colon::ScanWorkspace(scan_root, 20000, stop));
+            }
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_workspace_scan_ = std::move(scan);
+                pending_workspace_scans_ = std::move(scans);
             }
             ::PostMessageW(window, kWorkspaceCompleteMessage, 0, 0);
         });
     }
 
     void CompleteWorkspaceScan() {
-        std::optional<notepad_colon::WorkspaceScan> scan;
+        std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> scans;
         {
             std::scoped_lock lock{worker_mutex_};
-            scan = std::move(pending_workspace_scan_);
-            pending_workspace_scan_.reset();
+            scans = std::move(pending_workspace_scans_);
+            pending_workspace_scans_.clear();
         }
-        if (!scan) return;
+        if (scans.empty()) return;
         TreeView_DeleteAllItems(tree_.GetHwnd());
         tree_paths_.clear();
-        constexpr mwfl::TreeItemId root_id{1};
-        tree_.AddItem(root_id, workspace_root_.filename().wstring());
-        tree_paths_[root_id.value] = workspace_root_;
-        std::unordered_map<std::wstring, mwfl::TreeItemId> directory_ids;
-        directory_ids[L""] = root_id;
-        std::uint64_t next = 2;
-        for (const auto& entry : scan->entries) {
-            const mwfl::TreeItemId id{next++};
-            const auto parent_text = entry.relative_path.parent_path().wstring();
-            const auto parent = directory_ids.contains(parent_text) ? directory_ids[parent_text] : root_id;
-            tree_.AddChild(id, entry.relative_path.filename().wstring(), parent);
-            tree_paths_[id.value] = workspace_root_ / entry.relative_path;
-            if (entry.directory) directory_ids[entry.relative_path.wstring()] = id;
+        std::uint64_t next = 1;
+        std::size_t entries = 0;
+        bool truncated = false;
+        for (const auto& [root, scan] : scans) {
+            const mwfl::TreeItemId root_id{next++};
+            const auto label = root.filename().empty() ? root.wstring() : root.filename().wstring();
+            tree_.AddItem(root_id, label);
+            tree_paths_[root_id.value] = root;
+            std::unordered_map<std::wstring, mwfl::TreeItemId> directory_ids;
+            directory_ids[L""] = root_id;
+            for (const auto& entry : scan.entries) {
+                const mwfl::TreeItemId id{next++};
+                const auto parent_text = entry.relative_path.parent_path().wstring();
+                const auto parent = directory_ids.contains(parent_text) ? directory_ids[parent_text] : root_id;
+                tree_.AddChild(id, entry.relative_path.filename().wstring(), parent);
+                tree_paths_[id.value] = root / entry.relative_path;
+                if (entry.directory) directory_ids[entry.relative_path.wstring()] = id;
+            }
+            entries += scan.entries.size();
+            truncated = truncated || scan.truncated;
+            tree_.Expand(root_id);
         }
-        tree_.Expand(root_id);
         workspace_visible_ = true;
         ApplyCompactLayout();
-        status_.SetText(L"Workspace: " + workspace_root_.wstring() + L" | " +
-            std::to_wstring(scan->entries.size()) + L" entries" +
-            (scan->truncated ? L" (truncated)" : L""));
+        status_.SetText(L"Workspace: " + std::to_wstring(scans.size()) + L" root(s) | " +
+            std::to_wstring(entries) + L" entries" + (truncated ? L" (truncated)" : L""));
     }
 
     void StartFolderSearch() {
-        if (workspace_root_.empty()) {
+        if (workspace_catalog_.Roots().empty()) {
             OpenFolderInteractive();
             return;
         }
@@ -2088,9 +2100,20 @@ private:
         menu_.UpdateCommand(*commands_.Find(kCancelSearch));
         status_.SetText(L"Searching workspace...");
         const HWND window = GetHwnd();
-        const auto root = workspace_root_;
-        search_worker_ = std::jthread([this, window, root, query](std::stop_token stop) {
-            auto result = notepad_colon::SearchWorkspace(root, query, {}, stop);
+        const auto roots = workspace_catalog_.Roots();
+        search_worker_ = std::jthread([this, window, roots, query](std::stop_token stop) {
+            notepad_colon::SearchResult result;
+            for (const auto& root : roots) {
+                if (stop.stop_requested()) { result.cancelled = true; break; }
+                auto part = notepad_colon::SearchWorkspace(root, query, {}, stop);
+                result.matches.insert(result.matches.end(),
+                                      std::make_move_iterator(part.matches.begin()),
+                                      std::make_move_iterator(part.matches.end()));
+                result.files_searched += part.files_searched;
+                result.files_skipped += part.files_skipped;
+                result.truncated = result.truncated || part.truncated;
+                result.cancelled = result.cancelled || part.cancelled;
+            }
             {
                 std::scoped_lock lock{worker_mutex_};
                 pending_search_result_ = std::move(result);
@@ -2116,7 +2139,12 @@ private:
         for (std::size_t index = 0; index < search_results_.matches.size(); ++index) {
             const auto& match = search_results_.matches[index];
             const mwfl::ListItemId id{index + 1};
-            results_.AddItem(id, match.path.lexically_relative(workspace_root_).wstring());
+            auto display_path = match.path;
+            for (const auto& root : workspace_catalog_.Roots())
+                if (notepad_colon::IsWithinWorkspaceRoots(match.path, {root})) {
+                    display_path = root.filename() / match.path.lexically_relative(root); break;
+                }
+            results_.AddItem(id, display_path.wstring());
             results_.SetItemText(id, 1, std::to_wstring(match.line));
             results_.SetItemText(id, 2, std::to_wstring(match.column));
             results_.SetItemText(id, 3, match.preview);
@@ -2253,7 +2281,8 @@ private:
     bool SaveSessionSnapshot() {
         if (session_path_.empty() || restoring_session_) return true;
         notepad_colon::Session session;
-        session.workspace_path = workspace_root_;
+        session.workspace_paths = workspace_catalog_.Roots();
+        if (!session.workspace_paths.empty()) session.workspace_path = session.workspace_paths.front();
         if (const auto active = workspace_.GetActiveId()) {
             const auto index = workspace_.FindIndex(*active);
             if (index) session.active_index = *index;
@@ -2281,8 +2310,11 @@ private:
         if (session_path_.empty()) return false;
         notepad_colon::Session session;
         if (!notepad_colon::LoadSession(session_path_, session) || session.documents.empty()) return false;
-        if (!session.workspace_path.empty() && std::filesystem::is_directory(session.workspace_path))
-            StartWorkspaceScan(session.workspace_path);
+        const auto roots = !session.workspace_paths.empty()
+            ? session.workspace_paths : std::vector<std::filesystem::path>{session.workspace_path};
+        for (const auto& root : roots)
+            if (!root.empty() && std::filesystem::is_directory(root)) static_cast<void>(workspace_catalog_.AddRoot(root));
+        if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
         restoring_session_ = true;
         for (const auto& entry : session.documents) {
             if (!entry.path.empty() && OpenPath(entry.path)) {
@@ -2450,9 +2482,11 @@ private:
             if (!mwfl::WriteTextFileAtomic(workspace_file, L"folder needle result\n",
                                            mwfl::TextEncoding::utf8).Succeeded()) result = 16;
             workspace_root_ = test_workspace;
+            static_cast<void>(workspace_catalog_.AddRoot(test_workspace));
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_workspace_scan_ = notepad_colon::ScanWorkspace(test_workspace);
+                pending_workspace_scans_.emplace_back(
+                    test_workspace, notepad_colon::ScanWorkspace(test_workspace));
             }
             CompleteWorkspaceScan();
             if (result == 0 && TreeView_GetCount(tree_.GetHwnd()) < 3) result = 17;
@@ -2510,13 +2544,14 @@ private:
     bool results_visible_ = false;
     mwfl::RecentFileList recent_{10};
     std::filesystem::path workspace_root_;
+    notepad_colon::WorkspaceCatalog workspace_catalog_;
     std::unordered_map<std::uint64_t, std::filesystem::path> tree_paths_;
     notepad_colon::SearchResult search_results_;
     std::jthread search_worker_;
     std::jthread workspace_worker_;
     std::mutex worker_mutex_;
     std::optional<notepad_colon::SearchResult> pending_search_result_;
-    std::optional<notepad_colon::WorkspaceScan> pending_workspace_scan_;
+    std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> pending_workspace_scans_;
     mwfl::UiTimer monitor_timer_;
     std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_recovery_snapshot_ =

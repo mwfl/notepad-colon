@@ -42,7 +42,9 @@ add_library(notepad_colon_model
     src/recovery.cpp
     src/session.cpp
     src/text.cpp
-    src/workspace.cpp)
+    src/workspace.cpp
+    src/workspace_state.cpp)
+
 target_include_directories(notepad_colon_model PUBLIC include)
 target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 

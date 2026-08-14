@@ -43,8 +43,13 @@ bool Unescape(std::string_view value, std::wstring& output) {
 
 std::string SerializeSession(const Session& session) {
     std::ostringstream output;
-    output << "NPCSESSION\t2\t" << session.active_index << '\t'
-           << Escape(session.workspace_path.wstring()) << '\n';
+    output << "NPCSESSION\t3\t" << session.active_index;
+    if (!session.workspace_paths.empty()) {
+        for (const auto& path : session.workspace_paths) output << '\t' << Escape(path.wstring());
+    } else if (!session.workspace_path.empty()) {
+        output << '\t' << Escape(session.workspace_path.wstring());
+    }
+    output << '\n';
     for (const auto& entry : session.documents) {
         output << static_cast<int>(entry.encoding) << '\t'
                << static_cast<int>(entry.line_ending) << '\t'
@@ -65,9 +70,11 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
         std::string header_field;
         while (std::getline(header_stream, header_field, '\t')) header_fields.push_back(header_field);
         if (!line.empty() && line.back() == '\t') header_fields.emplace_back();
-        if (header_fields.size() < 3 || header_fields.size() > 4 ||
+        if (header_fields.size() < 3 ||
             header_fields[0] != "NPCSESSION" ||
-            (header_fields[1] != "1" && header_fields[1] != "2")) return false;
+            (header_fields[1] != "1" && header_fields[1] != "2" && header_fields[1] != "3")) return false;
+        if ((header_fields[1] == "1" && header_fields.size() != 3) ||
+            (header_fields[1] == "2" && header_fields.size() != 4)) return false;
         std::size_t active = 0;
         const auto active_text = std::string_view{header_fields[2]};
         const auto active_result = std::from_chars(active_text.data(), active_text.data() + active_text.size(), active);
@@ -76,10 +83,17 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
         Session parsed;
         parsed.active_index = active;
         if (header_fields[1] == "2") {
-            if (header_fields.size() != 4) return false;
             std::wstring workspace;
             if (!Unescape(header_fields[3], workspace)) return false;
             parsed.workspace_path = workspace;
+            if (!workspace.empty()) parsed.workspace_paths.emplace_back(workspace);
+        } else if (header_fields[1] == "3") {
+            for (std::size_t index = 3; index < header_fields.size(); ++index) {
+                std::wstring workspace;
+                if (!Unescape(header_fields[index], workspace) || workspace.empty()) return false;
+                parsed.workspace_paths.emplace_back(workspace);
+            }
+            if (!parsed.workspace_paths.empty()) parsed.workspace_path = parsed.workspace_paths.front();
         }
         while (std::getline(stream, line)) {
             if (line.empty()) continue;
