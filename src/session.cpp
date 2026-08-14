@@ -1,7 +1,9 @@
 #include <notepad_colon/session.h>
 
 #include <charconv>
+#include <fstream>
 #include <sstream>
+#include <windows.h>
 
 namespace notepad_colon {
 namespace {
@@ -96,6 +98,47 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
         if (!parsed.documents.empty() && parsed.active_index >= parsed.documents.size()) return false;
         session = std::move(parsed);
         return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool SaveSessionAtomic(const std::filesystem::path& path, const Session& session) noexcept {
+    try {
+        const auto parent = path.parent_path();
+        if (!parent.empty()) {
+            std::error_code error;
+            std::filesystem::create_directories(parent, error);
+            if (error) return false;
+        }
+        auto temporary = path;
+        temporary += L".tmp";
+        const auto bytes = SerializeSession(session);
+        {
+            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+            if (!output || !output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return false;
+            output.flush();
+            if (!output) return false;
+        }
+        if (::MoveFileExW(temporary.c_str(), path.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool LoadSession(const std::filesystem::path& path, Session& session) noexcept {
+    try {
+        std::ifstream input(path, std::ios::binary);
+        if (!input) return false;
+        const std::string bytes{std::istreambuf_iterator<char>{input},
+                                std::istreambuf_iterator<char>{}};
+        return input.good() || input.eof() ? DeserializeSession(bytes, session) : false;
     } catch (...) {
         return false;
     }

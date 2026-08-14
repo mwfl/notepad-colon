@@ -24,6 +24,7 @@ struct Session {
 
 std::string SerializeSession(const Session& session);
 bool DeserializeSession(std::string_view input, Session& session) noexcept;
+bool SaveSessionAtomic(const std::filesystem::path& path, const Session& session) noexcept;
+bool LoadSession(const std::filesystem::path& path, Session& session) noexcept;
 
 }  // namespace notepad_colon
-

@@ -1,5 +1,8 @@
 #include <notepad_colon/document.h>
 #include <notepad_colon/session.h>
+#include <notepad_colon/text.h>
+
+#include <windows.h>
 
 #include <iostream>
 
@@ -42,9 +45,29 @@ int main() {
     Check(decoded.documents.size() == 2 && decoded.active_index == 1, "session shape must round trip");
     if (decoded.documents.size() == 2) {
         Check(decoded.documents[0].path == original.documents[0].path, "Unicode path must round trip");
-        Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
+    Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
               "recovery text must round trip");
     }
     Check(!notepad_colon::DeserializeSession("bad", decoded), "invalid sessions must be rejected");
+
+    const std::wstring mixed = L"one\r\ntwo\nthree\rfour";
+    Check(notepad_colon::DetectLineEnding(mixed) == notepad_colon::LineEnding::crlf,
+          "CRLF must win mixed line-ending detection");
+    Check(notepad_colon::NormalizeLineEndings(mixed, notepad_colon::LineEnding::lf) ==
+              L"one\ntwo\nthree\nfour",
+          "line endings must normalize to LF");
+    Check(notepad_colon::NormalizeLineEndings(mixed, notepad_colon::LineEnding::crlf) ==
+              L"one\r\ntwo\r\nthree\r\nfour",
+          "line endings must normalize to CRLF");
+    Check(notepad_colon::CountLines(mixed) == 4, "mixed endings must count as four lines");
+
+    const auto session_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-session-test-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
+    Check(notepad_colon::SaveSessionAtomic(session_path, original), "session file must save atomically");
+    notepad_colon::Session file_session;
+    Check(notepad_colon::LoadSession(session_path, file_session), "saved session file must load");
+    Check(file_session.documents.size() == original.documents.size(), "session file shape must round trip");
+    std::error_code ignored;
+    std::filesystem::remove(session_path, ignored);
     return failures == 0 ? 0 : 1;
 }
