@@ -4,6 +4,17 @@ project(notepad_colon VERSION 0.1.0 LANGUAGES CXX)
 include(CTest)
 include(FetchContent)
 
+# Declare Scintilla before mwfl so both projects share the verified source tree
+# and Lexilla can use its required sibling-directory layout on ARM64.
+FetchContent_Declare(mwfl_scintilla_source
+    URL
+        https://github.com/mwfl/vendor-assets/releases/download/scintilla-5.6.5/scintilla565.zip
+        https://www.scintilla.org/scintilla565.zip
+    URL_HASH SHA256=345140A60BF4CEEA3340942E8205E6A8FBDA8DB13EB48F827126B9BE15BD3DA1
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/scintilla"
+    SOURCE_SUBDIR _not_a_cmake_project)
+
 option(NOTEPAD_COLON_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 if(MWFL_SOURCE_DIR)
@@ -40,22 +51,15 @@ FetchContent_GetProperties(mwfl_scintilla_source)
 set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME OFF)
 if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
     set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME ON)
-    FetchContent_Declare(notepad_colon_scintilla_runtime
-        GIT_REPOSITORY https://github.com/ScintillaOrg/scintilla.git
-        GIT_TAG rel-5-6-5
-        GIT_SHALLOW TRUE
-        SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/scintilla"
-        SOURCE_SUBDIR _not_a_cmake_project)
     FetchContent_Declare(notepad_colon_lexilla_runtime
         GIT_REPOSITORY https://github.com/ScintillaOrg/lexilla.git
         GIT_TAG rel-5-5-1
         GIT_SHALLOW TRUE
         SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/lexilla"
         SOURCE_SUBDIR _not_a_cmake_project)
-    FetchContent_MakeAvailable(notepad_colon_scintilla_runtime
-                               notepad_colon_lexilla_runtime)
+    FetchContent_MakeAvailable(notepad_colon_lexilla_runtime)
     include_external_msproject(notepad_colon_scintilla_runtime_project
-        "${notepad_colon_scintilla_runtime_SOURCE_DIR}/win32/Scintilla.vcxproj"
+        "${mwfl_scintilla_source_SOURCE_DIR}/win32/Scintilla.vcxproj"
         PLATFORM ARM64)
     include_external_msproject(notepad_colon_lexilla_runtime_project
         "${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/Lexilla.vcxproj"
@@ -63,7 +67,7 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
     add_dependencies(notepad-colon notepad_colon_scintilla_runtime_project
                                    notepad_colon_lexilla_runtime_project)
     set(NOTEPAD_COLON_SCINTILLA_DLL
-        "${notepad_colon_scintilla_runtime_SOURCE_DIR}/win32/ARM64/$<CONFIG>/Scintilla.dll")
+        "${mwfl_scintilla_source_SOURCE_DIR}/win32/ARM64/$<CONFIG>/Scintilla.dll")
     set(NOTEPAD_COLON_LEXILLA_DLL
         "${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/ARM64/$<CONFIG>/Lexilla.dll")
 elseif(mwfl_scintilla_binary_SOURCE_DIR)
