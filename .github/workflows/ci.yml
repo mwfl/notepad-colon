@@ -1,0 +1,38 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025-vs2026
+            configure: vs2026-x64
+            build: vs2026-x64-debug
+          - runner: windows-2022
+            configure: vs2022-x64
+            build: vs2022-x64-release
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Configure
+        run: cmake --preset ${{ matrix.configure }} -DMWFL_SOURCE_DIR=
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build }} --parallel
+      - name: Test
+        run: ctest --preset ${{ matrix.build }}
+
+  arm64-build:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Configure
+        run: cmake --preset vs2026-arm64 -DMWFL_SOURCE_DIR=
+      - name: Build
+        run: cmake --build --preset vs2026-arm64-release --parallel
+
