@@ -2,6 +2,8 @@
 #include <mwfl/scintilla.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
+#include <notepad_colon/language.h>
+#include "scintilla_support.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -37,6 +39,23 @@ constexpr mwfl::ControlId kUtf16Be{126};
 constexpr mwfl::ControlId kCrlf{127};
 constexpr mwfl::ControlId kLf{128};
 constexpr mwfl::ControlId kRecentBase{300};
+constexpr mwfl::ControlId kToggleFold{320};
+constexpr mwfl::ControlId kToggleBookmark{321};
+constexpr mwfl::ControlId kNextBookmark{322};
+constexpr mwfl::ControlId kRectangular{323};
+constexpr mwfl::ControlId kWhitespace{324};
+constexpr mwfl::ControlId kMoveLineUp{325};
+constexpr mwfl::ControlId kMoveLineDown{326};
+constexpr mwfl::ControlId kDuplicateLine{327};
+constexpr mwfl::ControlId kDeleteLine{328};
+constexpr mwfl::ControlId kUppercase{329};
+constexpr mwfl::ControlId kLowercase{330};
+constexpr mwfl::ControlId kIndent{331};
+constexpr mwfl::ControlId kOutdent{332};
+constexpr mwfl::ControlId kWordWrap{333};
+constexpr mwfl::ControlId kZoomIn{334};
+constexpr mwfl::ControlId kZoomOut{335};
+constexpr mwfl::ControlId kZoomReset{336};
 constexpr std::wstring_view kSettingsKey = L"Software\\mwfl\\Notepad Colon";
 constexpr mwfl::ControlId kSearch{130};
 constexpr mwfl::ControlId kReplacement{131};
@@ -50,6 +69,7 @@ struct EditorDocument {
     notepad_colon::LineEnding line_ending = notepad_colon::LineEnding::crlf;
     std::optional<mwfl::FileStamp> stamp;
     bool read_only = false;
+    notepad_colon::Language language = notepad_colon::Language::plain_text;
 };
 
 std::wstring_view EncodingName(mwfl::TextEncoding encoding) noexcept {
@@ -106,6 +126,8 @@ public:
     void BuildUI() override {
         if (!runtime_.LoadAdjacent())
             throw std::runtime_error("Scintilla.dll is not available beside Notepad Colon");
+        if (!lexilla_.LoadAdjacent())
+            throw std::runtime_error("Lexilla.dll is not available beside Notepad Colon");
         if (!IsSelfTest()) {
             const auto loaded = mwfl::LoadRecentFilesFromRegistry(HKEY_CURRENT_USER, kSettingsKey, 10);
             if (loaded.Succeeded()) recent_ = *loaded.value;
@@ -170,6 +192,10 @@ public:
         } else if (notification->kind == mwfl::ScintillaNotificationKind::modified &&
                    notification->lines_added != 0) {
             static_cast<void>(document->editor->UpdateLineNumberMargin());
+        } else if (notification->kind == mwfl::ScintillaNotificationKind::character_added) {
+            notepad_colon::HandleCharacterAdded(*document->editor, notification->character);
+        } else if (notification->kind == mwfl::ScintillaNotificationKind::update_ui) {
+            notepad_colon::UpdateBraceHighlight(*document->editor);
         }
         workspace_.SetUndoState(document->id, document->editor->CanUndo(), document->editor->CanRedo());
         SyncPresentation(L"Editing");
@@ -259,6 +285,35 @@ private:
             .Add(mwfl::Command(kUtf16Be, L"UTF-16 B&E", [this] { SetEncoding(mwfl::TextEncoding::utf16_be); }))
             .Add(mwfl::Command(kCrlf, L"Windows (&CRLF)", [this] { SetLineEnding(notepad_colon::LineEnding::crlf); }))
             .Add(mwfl::Command(kLf, L"Unix (&LF)", [this] { SetLineEnding(notepad_colon::LineEnding::lf); }));
+        commands_
+            .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_4}))
+            .Add(mwfl::Command(kToggleBookmark, L"Toggle &Bookmark", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleBookmark(*e); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_F2}))
+            .Add(mwfl::Command(kNextBookmark, L"Next Bookmark", [this] { if (auto* e = ActiveEditor()) notepad_colon::GoToNextBookmark(*e); })
+                     .SetShortcut({FVIRTKEY, VK_F2}))
+            .Add(mwfl::Command(kRectangular, L"Rectangular Selection", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleRectangularSelection(*e); }))
+            .Add(mwfl::Command(kWhitespace, L"Show Whitespace", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleWhitespace(*e); }))
+            .Add(mwfl::Command(kMoveLineUp, L"Move Line Up", [this] { if (auto* e = ActiveEditor()) notepad_colon::MoveSelectedLines(*e, false); })
+                     .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, VK_UP}))
+            .Add(mwfl::Command(kMoveLineDown, L"Move Line Down", [this] { if (auto* e = ActiveEditor()) notepad_colon::MoveSelectedLines(*e, true); })
+                     .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, VK_DOWN}))
+            .Add(mwfl::Command(kDuplicateLine, L"Duplicate Line", [this] { if (auto* e = ActiveEditor()) notepad_colon::DuplicateLine(*e); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, 'D'}))
+            .Add(mwfl::Command(kDeleteLine, L"Delete Line", [this] { if (auto* e = ActiveEditor()) notepad_colon::DeleteLine(*e); })
+                     .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'L'}))
+            .Add(mwfl::Command(kUppercase, L"UPPERCASE", [this] { if (auto* e = ActiveEditor()) notepad_colon::ChangeCase(*e, true); }))
+            .Add(mwfl::Command(kLowercase, L"lowercase", [this] { if (auto* e = ActiveEditor()) notepad_colon::ChangeCase(*e, false); }))
+            .Add(mwfl::Command(kIndent, L"Indent", [this] { if (auto* e = ActiveEditor()) notepad_colon::IndentSelection(*e, true); }))
+            .Add(mwfl::Command(kOutdent, L"Outdent", [this] { if (auto* e = ActiveEditor()) notepad_colon::IndentSelection(*e, false); }));
+        commands_
+            .Add(mwfl::Command(kWordWrap, L"Word Wrap", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleWordWrap(*e); }))
+            .Add(mwfl::Command(kZoomIn, L"Zoom In", [this] { if (auto* e = ActiveEditor()) e->SetZoom(e->GetZoom() + 1); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_PLUS}))
+            .Add(mwfl::Command(kZoomOut, L"Zoom Out", [this] { if (auto* e = ActiveEditor()) e->SetZoom(e->GetZoom() - 1); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_MINUS}))
+            .Add(mwfl::Command(kZoomReset, L"Reset Zoom", [this] { if (auto* e = ActiveEditor()) e->SetZoom(0); })
+                     .SetShortcut({FVIRTKEY | FCONTROL, '0'}));
         for (std::size_t index = 0; index < recent_.GetMaximumEntries(); ++index) {
             commands_.Add(mwfl::Command(
                 {static_cast<WORD>(kRecentBase.value + index)}, L"Recent file",
@@ -271,13 +326,15 @@ private:
     }
 
     void BuildMenu() {
-        mwfl::Menu file, edit, search, encoding, line_endings;
+        mwfl::Menu file, edit, search, encoding, line_endings, view, code;
         mwfl::Must(menu_.Create(), "create menu bar");
         mwfl::Must(file.CreatePopup(), "create file menu");
         mwfl::Must(edit.CreatePopup(), "create edit menu");
         mwfl::Must(search.CreatePopup(), "create search menu");
         mwfl::Must(encoding.CreatePopup(), "create encoding menu");
         mwfl::Must(line_endings.CreatePopup(), "create line endings menu");
+        mwfl::Must(view.CreatePopup(), "create view menu");
+        mwfl::Must(code.CreatePopup(), "create code menu");
         for (const auto id : {kNew, kOpen, kSave, kSaveAs, kSaveAll, kClose})
             mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
         mwfl::Must(file.AppendSeparator(), "append file separator");
@@ -296,11 +353,19 @@ private:
             mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
         for (const auto id : {kCrlf, kLf})
             mwfl::Must(line_endings.AppendCommand(*commands_.Find(id)), "append line ending command");
+        for (const auto id : {kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
+                              kRectangular, kToggleFold, kToggleBookmark, kNextBookmark})
+            mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
+        for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
+                              kUppercase, kLowercase, kIndent, kOutdent})
+            mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(edit), L"&Edit"), "append edit menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(search), L"&Search"), "append search menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(encoding), L"En&coding"), "append encoding menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), L"&EOL"), "append line endings menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(view), L"&View"), "append view menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(code), L"&Code"), "append code menu");
         mwfl::Must(menu_.AttachToWindow(GetHwnd()), "attach menu");
     }
 
@@ -332,6 +397,9 @@ private:
         mwfl::Must(editor->Create(GetHwnd(), mwfl::ControlId{static_cast<WORD>(200 + id.value)},
                                   mwfl::RectDip{}, runtime_), "create document editor");
         mwfl::Must(editor->ConfigureCodeEditing(), "configure document editor");
+        notepad_colon::ConfigureAdvancedEditing(*editor);
+        mwfl::Must(notepad_colon::ConfigureLanguage(
+            *editor, lexilla_, notepad_colon::Language::plain_text), "configure plain-text lexer");
         mwfl::Must(editor->SetText(text), "set document text");
         editor->SetSavePoint();
         mwfl::Must(static_cast<bool>(workspace_.Add({id, title, {}})), "add document metadata");
@@ -361,13 +429,17 @@ private:
         if (!editor->Create(GetHwnd(), mwfl::ControlId{static_cast<WORD>(200 + id.value)},
                             mwfl::RectDip{}, runtime_) ||
             !editor->ConfigureCodeEditing() || !editor->SetText(loaded.value->text)) return false;
+        notepad_colon::ConfigureAdvancedEditing(*editor);
+        const auto language = notepad_colon::DetectLanguage(path);
+        if (!notepad_colon::ConfigureLanguage(*editor, lexilla_, language)) return false;
         editor->SetSavePoint();
         const auto title = path.filename().wstring();
         if (!workspace_.Add({id, title, path})) return false;
         if (adapter_.BindPage(id, editor->GetHwnd()) != mwfl::DocumentTabStatus::success) return false;
         mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str());
         documents_.push_back({id, std::move(editor), loaded.value->encoding,
-                              notepad_colon::DetectLineEnding(loaded.value->text), loaded.value->stamp});
+                              notepad_colon::DetectLineEnding(loaded.value->text), loaded.value->stamp,
+                              false, language});
         workspace_.Activate(id);
         SynchronizeTabs(true);
         SyncPresentation(L"Opened");
@@ -409,6 +481,11 @@ private:
         document.line_ending = notepad_colon::DetectLineEnding(*text);
         document.editor->SetSavePoint();
         workspace_.Rename(document.id, path.filename().wstring(), path);
+        const auto language = notepad_colon::DetectLanguage(path);
+        if (language != document.language) {
+            document.language = language;
+            static_cast<void>(notepad_colon::ConfigureLanguage(*document.editor, lexilla_, language));
+        }
         workspace_.SetDirty(document.id, false);
         RememberPath(path);
         SynchronizeTabs(false);
@@ -632,6 +709,7 @@ private:
             status_.SetText(std::wstring(action) + L" | Pos " + std::to_wstring(selection.end) +
                 L" | " + std::wstring(EncodingName(document->encoding)) + L" | " +
                 std::wstring(LineEndingName(document->line_ending)) + L" | " +
+                std::wstring(notepad_colon::LanguageName(document->language)) + L" | " +
                 std::to_wstring(workspace_.GetCount()) + L" document(s)");
         } else status_.SetText(action);
 
@@ -651,6 +729,20 @@ private:
         try {
             auto* first = ActiveDocument();
             if (!first || !first->editor->SetText(L"first 世界\n")) result = 1;
+            if (result == 0 && !notepad_colon::ConfigureLanguage(
+                    *first->editor, lexilla_, notepad_colon::Language::cpp)) result = 11;
+            if (result == 0) {
+                const auto old_length = first->editor->GetLength();
+                notepad_colon::DuplicateLine(*first->editor);
+                if (first->editor->GetLength() <= old_length) result = 12;
+                first->editor->Undo();
+                notepad_colon::ToggleBookmark(*first->editor);
+                if (!notepad_colon::GoToNextBookmark(*first->editor)) result = 13;
+                notepad_colon::ToggleRectangularSelection(*first->editor);
+                notepad_colon::ToggleRectangularSelection(*first->editor);
+                notepad_colon::ToggleWhitespace(*first->editor);
+                notepad_colon::ToggleWhitespace(*first->editor);
+            }
             NewDocument(L"second document\r\n", L"Second");
             if (result == 0 && workspace_.GetCount() != 2) result = 2;
             notepad_colon::Session snapshot;
@@ -692,6 +784,7 @@ private:
     }
 
     mwfl::ScintillaRuntime runtime_;
+    notepad_colon::LexillaRuntime lexilla_;
     mwfl::DocumentWorkspaceModel workspace_;
     mwfl::DocumentTabWorkspaceAdapter adapter_;
     std::vector<EditorDocument> documents_;

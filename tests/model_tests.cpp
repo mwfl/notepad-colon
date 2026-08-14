@@ -1,6 +1,7 @@
 #include <notepad_colon/document.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
+#include <notepad_colon/language.h>
 
 #include <windows.h>
 
@@ -69,5 +70,13 @@ int main() {
     Check(file_session.documents.size() == original.documents.size(), "session file shape must round trip");
     std::error_code ignored;
     std::filesystem::remove(session_path, ignored);
+
+    using notepad_colon::Language;
+    Check(notepad_colon::DetectLanguage(L"sample.CPP") == Language::cpp, "C++ extension detection");
+    Check(notepad_colon::DetectLanguage(L"CMakeLists.txt") == Language::cmake, "CMake filename detection");
+    Check(notepad_colon::DetectLanguage(L"script.ps1") == Language::powershell, "PowerShell detection");
+    Check(notepad_colon::DetectLanguage(L"data.yaml") == Language::yaml, "YAML detection");
+    Check(notepad_colon::DetectLanguage(L"README") == Language::plain_text, "plain text fallback");
+    Check(notepad_colon::LexerName(Language::python) == "python", "Python lexer mapping");
     return failures == 0 ? 0 : 1;
 }

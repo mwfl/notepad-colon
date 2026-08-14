@@ -20,6 +20,7 @@ endif()
 
 add_library(notepad_colon_model
     src/document.cpp
+    src/language.cpp
     src/session.cpp
     src/text.cpp)
 target_include_directories(notepad_colon_model PUBLIC include)
@@ -27,16 +28,26 @@ target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 
 add_executable(notepad-colon WIN32
     src/main.cpp
+    src/scintilla_support.cpp
     app.manifest)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla oleacc)
 FetchContent_GetProperties(mwfl_scintilla_binary)
+FetchContent_GetProperties(mwfl_scintilla_source)
 if(mwfl_scintilla_binary_SOURCE_DIR)
     add_custom_command(TARGET notepad-colon POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${mwfl_scintilla_binary_SOURCE_DIR}/Scintilla.dll"
             "$<TARGET_FILE_DIR:notepad-colon>/Scintilla.dll")
+    add_custom_command(TARGET notepad-colon POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${mwfl_scintilla_binary_SOURCE_DIR}/Lexilla.dll"
+            "$<TARGET_FILE_DIR:notepad-colon>/Lexilla.dll")
+endif()
+if(mwfl_scintilla_source_SOURCE_DIR)
+    target_include_directories(notepad-colon PRIVATE
+        "${mwfl_scintilla_source_SOURCE_DIR}/include")
 endif()
 
 foreach(target notepad_colon_model notepad-colon)
