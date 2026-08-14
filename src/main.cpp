@@ -8,6 +8,7 @@
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/editing.h>
 #include <notepad_colon/preferences.h>
+#include <notepad_colon/recovery.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/language.h>
@@ -93,6 +94,7 @@ constexpr mwfl::ControlId kUrlEncode{390};
 constexpr mwfl::ControlId kUrlDecode{391};
 constexpr mwfl::ControlId kInsertDateTime{392};
 constexpr mwfl::ControlId kInsertSequence{393};
+constexpr mwfl::ControlId kRecoveryManager{394};
 constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
@@ -369,6 +371,7 @@ public:
         if (id != kMonitorTimer) return mwfl::EventResult::Propagate();
         CheckExternalChanges(false);
         AutoSaveIfDue();
+        SaveRecoverySnapshotsIfDue();
         return mwfl::EventResult::Handled();
     }
 
@@ -444,6 +447,8 @@ private:
                 [this] { ReportAssociation(false); }))
             .Add(mwfl::Command(kPreferences, L"&Preferences...",
                 [this] { ShowPreferences(); }))
+            .Add(mwfl::Command(kRecoveryManager, L"Recovery Manager...",
+                [this] { ShowRecoveryManager(); }))
             .Add(mwfl::Command(kAbout, L"&About Notepad Colon",
                 [this] { ::MessageBoxW(GetHwnd(),
                     L"Notepad Colon 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
@@ -577,7 +582,7 @@ private:
                               kBase64Encode, kBase64Decode, kUrlEncode, kUrlDecode,
                               kInsertDateTime, kInsertSequence})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
-        for (const auto id : {kPreferences, kRegisterAssociation, kRemoveAssociation})
+        for (const auto id : {kPreferences, kRecoveryManager, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
         mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), L"&File"), "append file menu");
@@ -957,6 +962,82 @@ private:
         return true;
     }
 
+    void SaveRecoverySnapshotsIfDue() {
+        if (!recovery_store_ || restoring_session_) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_recovery_snapshot_ < std::chrono::seconds{30}) return;
+        last_recovery_snapshot_ = now;
+        for (const auto& metadata : workspace_.GetDocuments()) {
+            if (!metadata.dirty) continue;
+            const auto* document = FindDocument(metadata.id);
+            const auto text = document ? document->editor->GetText() : std::nullopt;
+            if (!text) continue;
+            const auto key = metadata.path.empty()
+                ? L"untitled-" + std::to_wstring(metadata.id.value)
+                : metadata.path.wstring();
+            static_cast<void>(recovery_store_->Save(key, metadata.title, metadata.path, *text));
+        }
+    }
+
+    void ShowRecoveryManager() {
+        if (!recovery_store_) return;
+        auto snapshots = recovery_store_->List();
+        mwfl::ListBox list;
+        mwfl::Label details;
+        mwfl::Button restore, remove, close;
+        std::optional<std::size_t> chosen;
+        mwfl::Dialog* pointer = nullptr;
+        mwfl::Dialog dialog({
+            .owner = GetHwnd(), .title = L"Recovery Manager",
+            .initial_client_size = {620.0_dip, 340.0_dip}, .resizable = true,
+            .callbacks = {
+                .initialize = [&](HWND window) {
+                    mwfl::ControlHost ui{window};
+                    ui.Add(list, {501}, {});
+                    ui.Add(details, {502}, L"Local snapshots, newest first");
+                    ui.Add(restore, {503}, L"Restore as new document");
+                    ui.Add(remove, {504}, L"Delete snapshot");
+                    ui.Add(close, {IDCANCEL}, L"Close");
+                    for (const auto& item : snapshots) {
+                        const auto source = item.original_path.empty() ? L"Unsaved" : item.original_path.wstring();
+                        list.AddItem(item.title + L"  —  " + source + L"  (" +
+                                     std::to_wstring(item.size) + L" bytes)");
+                    }
+                    if (!snapshots.empty()) list.SetSelection(0);
+                    mwfl::SetAccessibleName(list.GetHwnd(), L"Recovery snapshots");
+                    return pointer->SetLayout(mwfl::Column().Margin(10.0_dip).Gap(6.0_dip)
+                        .Add(list, mwfl::Stretch()).Add(details, mwfl::Fixed(24.0_dip))
+                        .Add(mwfl::Row().Gap(6.0_dip).Add(restore, mwfl::Auto())
+                            .Add(remove, mwfl::Auto()).Add(mwfl::Column(), mwfl::Stretch())
+                            .Add(close, mwfl::Fixed(86.0_dip)), mwfl::Fixed(30.0_dip)));
+                },
+                .command = [&](HWND, WORD id, WORD) {
+                    if (id == 503) {
+                        const auto selected = list.GetSelectedIndex();
+                        if (selected && static_cast<std::size_t>(*selected) < snapshots.size()) {
+                            chosen = static_cast<std::size_t>(*selected);
+                            pointer->Accept();
+                            return true;
+                        }
+                    } else if (id == 504) {
+                        const auto selected = list.GetSelectedIndex();
+                        if (selected && static_cast<std::size_t>(*selected) < snapshots.size() &&
+                            recovery_store_->Remove(snapshots[static_cast<std::size_t>(*selected)])) {
+                            snapshots.erase(snapshots.begin() + *selected);
+                            list.RemoveItem(*selected);
+                            if (!snapshots.empty()) list.SetSelection((std::min)(*selected,
+                                static_cast<int>(snapshots.size() - 1)));
+                        }
+                        return true;
+                    }
+                    return false;
+                }}});
+        pointer = &dialog;
+        if (!dialog.ShowModal() || !chosen || *chosen >= snapshots.size()) return;
+        const auto text = recovery_store_->Load(snapshots[*chosen]);
+        if (text) NewDocument(*text, L"Recovered — " + snapshots[*chosen].title);
+    }
+
     void InsertDateTime() {
         SYSTEMTIME time{};
         ::GetLocalTime(&time);
@@ -1242,6 +1323,9 @@ private:
                 (L"notepad-colon-gui-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
             std::error_code ignored;
             std::filesystem::remove(session_path_, ignored);
+            recovery_store_ = std::make_unique<notepad_colon::RecoveryStore>(
+                std::filesystem::temp_directory_path() /
+                (L"notepad-colon-gui-recovery-" + std::to_wstring(::GetCurrentProcessId())), 10);
             return;
         }
         wchar_t local_app_data[32768]{};
@@ -1250,6 +1334,9 @@ private:
         if (length > 0 && length < std::size(local_app_data))
             session_path_ = std::filesystem::path{local_app_data} / L"mwfl" /
                 L"Notepad Colon" / L"session.state";
+        if (!session_path_.empty())
+            recovery_store_ = std::make_unique<notepad_colon::RecoveryStore>(
+                session_path_.parent_path() / L"Recovery", 50);
     }
 
     bool SaveSessionSnapshot() {
@@ -1521,6 +1608,9 @@ private:
     std::optional<notepad_colon::WorkspaceScan> pending_workspace_scan_;
     mwfl::UiTimer monitor_timer_;
     std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_recovery_snapshot_ =
+        std::chrono::steady_clock::now() - std::chrono::seconds{30};
+    std::unique_ptr<notepad_colon::RecoveryStore> recovery_store_;
     mwfl::SingleInstance& instance_;
     std::vector<std::filesystem::path> startup_paths_;
     bool self_test_ = false;
