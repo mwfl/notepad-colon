@@ -1,10 +1,12 @@
 #include <notepad_colon/document.h>
 #include <notepad_colon/comparison.h>
+#include <notepad_colon/configuration.h>
 #include <notepad_colon/editing.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/macro.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
 #include <notepad_colon/workspace.h>
@@ -25,6 +27,34 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    const auto shortcut = notepad_colon::ParseShortcut(7, L"Ctrl+Shift+F5");
+    Check(shortcut && notepad_colon::FormatShortcut(*shortcut) == L"Ctrl+Shift+F5",
+          "shortcut parses and formats");
+    Check(!notepad_colon::ParseShortcut(7, L"Ctrl+NoSuchKey"), "invalid shortcut rejected");
+    Check(notepad_colon::FindShortcutConflicts({{1, FCONTROL, 'A'}, {2, FCONTROL, 'A'}}).size() == 1,
+          "shortcut conflicts detected");
+    notepad_colon::Configuration configuration;
+    configuration.preferences.font_name = L"Cascadia Mono";
+    configuration.shortcuts = {{1, static_cast<std::uint8_t>(FVIRTKEY | FCONTROL), 'N'}};
+    notepad_colon::Configuration decoded_configuration;
+    Check(notepad_colon::DeserializeConfiguration(
+              notepad_colon::SerializeConfiguration(configuration), decoded_configuration) &&
+              decoded_configuration.preferences == configuration.preferences &&
+              decoded_configuration.shortcuts == configuration.shortcuts,
+          "configuration round trip");
+    notepad_colon::MacroRecorder macro_recorder;
+    macro_recorder.Start();
+    macro_recorder.RecordText(L"ab"); macro_recorder.RecordText(L"c");
+    macro_recorder.RecordCommand(42); macro_recorder.RecordDeleteBackward(1);
+    const auto recorded_actions = macro_recorder.Stop();
+    Check(recorded_actions.size() == 3 && recorded_actions[0].text == L"abc" &&
+              recorded_actions[1].command_id == 42, "macro recorder coalesces typed text");
+    const std::vector<notepad_colon::SavedMacro> saved_macros{{L"Unicode 宏", recorded_actions}};
+    const auto encoded_macros = notepad_colon::SerializeMacros(saved_macros);
+    std::vector<notepad_colon::SavedMacro> decoded_macros;
+    Check(notepad_colon::DeserializeMacros(encoded_macros, decoded_macros) &&
+              decoded_macros == saved_macros, "macro serialization round trip");
+    Check(!notepad_colon::DeserializeMacros("bad", decoded_macros), "invalid macro file rejected");
     const auto comparison = notepad_colon::CompareText(L"same\nold value\ntail", L"same\nnew value\ntail");
     Check(!comparison.identical && comparison.changed_lines == 1, "one modified line detected");
     Check(comparison.lines.size() == 3 &&

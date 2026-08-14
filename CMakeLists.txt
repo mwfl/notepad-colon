@@ -31,10 +31,12 @@ endif()
 
 add_library(notepad_colon_model
     src/comparison.cpp
+    src/configuration.cpp
     src/document.cpp
     src/editing.cpp
     src/large_file.cpp
     src/language.cpp
+    src/macro.cpp
     src/preferences.cpp
     src/recovery.cpp
     src/session.cpp
