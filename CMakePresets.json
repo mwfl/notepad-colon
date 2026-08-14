@@ -13,13 +13,15 @@
     },
     {"name": "vs2026-x64", "inherits": "base", "generator": "Visual Studio 18 2026", "architecture": "x64"},
     {"name": "vs2026-arm64", "inherits": "base", "generator": "Visual Studio 18 2026", "architecture": "ARM64"},
-    {"name": "vs2022-x64", "inherits": "base", "generator": "Visual Studio 17 2022", "architecture": "x64"}
+    {"name": "vs2022-x64", "inherits": "base", "generator": "Visual Studio 17 2022", "architecture": "x64"},
+    {"name": "vs2022-arm64", "inherits": "base", "generator": "Visual Studio 17 2022", "architecture": "ARM64"}
   ],
   "buildPresets": [
     {"name": "vs2026-x64-debug", "configurePreset": "vs2026-x64", "configuration": "Debug"},
     {"name": "vs2026-x64-release", "configurePreset": "vs2026-x64", "configuration": "Release"},
     {"name": "vs2026-arm64-release", "configurePreset": "vs2026-arm64", "configuration": "Release"},
-    {"name": "vs2022-x64-release", "configurePreset": "vs2022-x64", "configuration": "Release"}
+    {"name": "vs2022-x64-release", "configurePreset": "vs2022-x64", "configuration": "Release"},
+    {"name": "vs2022-arm64-release", "configurePreset": "vs2022-arm64", "configuration": "Release"}
   ],
   "testPresets": [
     {"name": "vs2026-x64-debug", "configurePreset": "vs2026-x64", "configuration": "Debug", "output": {"outputOnFailure": true}},
@@ -27,4 +29,3 @@
     {"name": "vs2022-x64-release", "configurePreset": "vs2022-x64", "configuration": "Release", "output": {"outputOnFailure": true}}
   ]
 }
-

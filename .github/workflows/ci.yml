@@ -42,6 +42,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Configure
-        run: cmake --preset vs2026-arm64 -DMWFL_SOURCE_DIR=
+        run: cmake --preset vs2022-arm64 -DMWFL_SOURCE_DIR=
       - name: Build
-        run: cmake --build --preset vs2026-arm64-release --parallel
+        run: cmake --build --preset vs2022-arm64-release --parallel
