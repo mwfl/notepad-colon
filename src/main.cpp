@@ -18,6 +18,7 @@
 #include <notepad_colon/recovery.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
+#include <notepad_colon/session_writer.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/workspace_state.h>
@@ -25,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cwctype>
 #include <cstdlib>
@@ -184,6 +186,8 @@ constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
 constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
 constexpr mwfl::TimerId kMonitorTimer{1};
 constexpr mwfl::TimerId kActivationTestTimer{2};
+constexpr mwfl::TimerId kWorkspaceFilterTimer{3};
+constexpr auto kSessionDebounce = std::chrono::milliseconds{1500};
 constexpr std::wstring_view kSettingsKey = L"Software\\mwfl\\Notepad Colon";
 constexpr mwfl::ControlId kSearch{130};
 constexpr mwfl::ControlId kReplacement{131};
@@ -206,6 +210,11 @@ struct EditorDocument {
     std::unique_ptr<notepad_colon::MappedFile> mapped_file;
     std::uint64_t mapped_offset = 0;
     std::size_t mapped_window_size = 8u * 1024 * 1024;
+};
+
+struct BackgroundTask {
+    std::shared_ptr<std::atomic_bool> done;
+    std::jthread thread;
 };
 
 std::wstring_view EncodingName(mwfl::TextEncoding encoding) noexcept {
@@ -265,6 +274,33 @@ std::optional<std::vector<std::uint8_t>> ReadFileBytes(const std::filesystem::pa
     input.seekg(0);
     if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), end)) return std::nullopt;
     return bytes;
+}
+
+std::optional<mwfl::FileStamp> QueryFileStamp(const std::filesystem::path& path) noexcept {
+    const HANDLE file = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+    BY_HANDLE_FILE_INFORMATION information{};
+    const bool succeeded = ::GetFileInformationByHandle(file, &information) != FALSE;
+    ::CloseHandle(file);
+    if (!succeeded) return std::nullopt;
+    ULARGE_INTEGER size{}, write{}, identity{};
+    size.LowPart = information.nFileSizeLow; size.HighPart = information.nFileSizeHigh;
+    write.LowPart = information.ftLastWriteTime.dwLowDateTime;
+    write.HighPart = information.ftLastWriteTime.dwHighDateTime;
+    identity.LowPart = information.nFileIndexLow; identity.HighPart = information.nFileIndexHigh;
+    return mwfl::FileStamp{size.QuadPart, write.QuadPart, identity.QuadPart,
+                           information.dwVolumeSerialNumber};
+}
+
+mwfl::TextEncoding ToMwflEncoding(notepad_colon::EncodingKind encoding) noexcept {
+    switch (encoding) {
+    case notepad_colon::EncodingKind::utf8_bom: return mwfl::TextEncoding::utf8_bom;
+    case notepad_colon::EncodingKind::utf16_le: return mwfl::TextEncoding::utf16_le;
+    case notepad_colon::EncodingKind::utf16_be: return mwfl::TextEncoding::utf16_be;
+    default: return mwfl::TextEncoding::utf8;
+    }
 }
 
 struct CompareScrollSync {
@@ -422,7 +458,7 @@ public:
 
     mwfl::EventResult OnCommand(const mwfl::CommandEvent& event) override {
         if (event.id == kWorkspaceFilter) {
-            RenderWorkspaceTree();
+            ::SetTimer(GetHwnd(), kWorkspaceFilterTimer.value, 150, nullptr);
             return mwfl::EventResult::Handled();
         }
         auto* command = commands_.Find(event.id);
@@ -480,8 +516,10 @@ public:
         }
         workspace_.SetUndoState(document->id, document->editor->CanUndo(), document->editor->CanRedo());
         SyncPresentation(L"Editing");
-        if (notification->kind == mwfl::ScintillaNotificationKind::modified)
-            static_cast<void>(SaveSessionSnapshot());
+        if (notification->kind == mwfl::ScintillaNotificationKind::modified) {
+            session_snapshot_due_ = std::chrono::steady_clock::now() + kSessionDebounce;
+            session_snapshot_pending_ = true;
+        }
         return mwfl::EventResult::Propagate();
     }
 
@@ -537,16 +575,21 @@ public:
             ::PostQuitMessage(activation_test_result_);
             return mwfl::EventResult::Handled();
         }
+        if (id == kWorkspaceFilterTimer) {
+            ::KillTimer(GetHwnd(), kWorkspaceFilterTimer.value);
+            RenderWorkspaceTree();
+            return mwfl::EventResult::Handled();
+        }
         if (id != kMonitorTimer) return mwfl::EventResult::Propagate();
         CheckExternalChanges(false);
         AutoSaveIfDue();
         SaveRecoverySnapshotsIfDue();
+        QueueSessionSnapshotIfDue();
         return mwfl::EventResult::Handled();
     }
 
     mwfl::EventResult OnClose() override {
         monitor_timer_.Stop();
-        StopWorkers();
         if (!IsTestMode()) {
             for (const auto& document : workspace_.GetDocuments()) {
                 if (!document.dirty) continue;
@@ -556,12 +599,13 @@ public:
                     return mwfl::EventResult::Handled();
                 break;
             }
-            if (!SaveSessionSnapshot())
+            if (!SaveSessionSnapshot() || !session_writer_.Flush())
                 return mwfl::EventResult::Handled();
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(
                 HKEY_CURRENT_USER, kSettingsKey, recent_));
             SaveWorkspaceCatalog();
         }
+        StopWorkers();
         adapter_.Detach();
         instance_.UnregisterWindow();
         return mwfl::EventResult::Propagate();
@@ -969,6 +1013,8 @@ private:
             return false;
         }
         const bool protected_mode = open_mode == notepad_colon::FileOpenMode::protected_read_only;
+        const auto stamp_before_read = protected_mode ? std::nullopt : QueryFileStamp(path);
+        if (!protected_mode && !stamp_before_read) return false;
         std::unique_ptr<notepad_colon::MappedFile> mapped;
         std::optional<std::vector<std::uint8_t>> bytes;
         if (protected_mode) {
@@ -981,19 +1027,18 @@ private:
         if (analysis.encoding == notepad_colon::EncodingKind::binary) {
             status_.SetText(L"Binary content detected; use a hex editor"); return false;
         }
-        const auto loaded = protected_mode ? decltype(mwfl::ReadTextFile(path)){} : mwfl::ReadTextFile(path);
         std::wstring loaded_text;
-        mwfl::TextEncoding loaded_encoding = mwfl::TextEncoding::utf8;
+        mwfl::TextEncoding loaded_encoding = ToMwflEncoding(analysis.encoding);
         std::optional<mwfl::FileStamp> loaded_stamp;
-        if (analysis.encoding == notepad_colon::EncodingKind::ansi) {
+        if (!protected_mode) {
+            loaded_stamp = QueryFileStamp(path);
+            if (!loaded_stamp || loaded_stamp != stamp_before_read) {
+                status_.SetText(L"File changed while it was being opened; try again");
+                return false;
+            }
             const auto decoded = notepad_colon::DecodeBytes(*bytes, analysis.encoding, analysis.code_page);
             if (!decoded) return false;
             loaded_text = *decoded;
-        } else if (!protected_mode) {
-            if (!loaded.Succeeded()) return false;
-            loaded_text = loaded.value->text;
-            loaded_encoding = loaded.value->encoding;
-            loaded_stamp = loaded.value->stamp;
         } else {
             std::optional<std::wstring> decoded;
             for (std::size_t trim = 0; trim <= 3 && trim <= bytes->size(); ++trim) {
@@ -2219,34 +2264,18 @@ private:
         if (offset == document->mapped_offset || offset >= size) {
             status_.SetText(forward ? L"End of large file" : L"Start of large file"); return;
         }
-        auto bytes = document->mapped_file->Read(offset, document->mapped_window_size);
-        if (bytes.empty()) return;
-        std::size_t prefix = 0;
-        if (document->detected_encoding == notepad_colon::EncodingKind::utf8 ||
-            document->detected_encoding == notepad_colon::EncodingKind::utf8_bom) {
-            while (prefix < (std::min)(bytes.size(), std::size_t{4}) &&
-                   (bytes[prefix] & 0xc0u) == 0x80u) ++prefix;
-        } else if ((document->detected_encoding == notepad_colon::EncodingKind::utf16_le ||
-                    document->detected_encoding == notepad_colon::EncodingKind::utf16_be) && (offset + prefix) % 2)
-            ++prefix;
-        const auto window_encoding = document->detected_encoding == notepad_colon::EncodingKind::utf8_bom
-            ? notepad_colon::EncodingKind::utf8 : document->detected_encoding;
-        std::optional<std::wstring> decoded;
-        for (std::size_t trim = 0; trim <= 3 && prefix + trim <= bytes.size(); ++trim) {
-            decoded = notepad_colon::DecodeBytes(
-                std::span<const std::uint8_t>{bytes}.subspan(prefix, bytes.size() - prefix - trim),
-                window_encoding, document->ansi_code_page);
-            if (decoded) break;
-        }
-        if (!decoded) { status_.SetText(L"Window boundary contains an incomplete character; move again"); return; }
+        const auto window = document->mapped_file->ReadTextWindow(
+            offset, document->mapped_window_size, document->detected_encoding,
+            document->ansi_code_page);
+        if (!window) { status_.SetText(L"Window boundary contains invalid text"); return; }
         document->editor->SetReadOnly(false);
-        const bool replaced = document->editor->SetText(*decoded);
+        const bool replaced = document->editor->SetText(window->text);
         document->editor->SetReadOnly(true);
         if (!replaced) return;
-        document->mapped_offset = offset + prefix;
+        document->mapped_offset = offset;
         document->editor->SetSavePoint();
         status_.SetText(L"Large file | bytes " + std::to_wstring(document->mapped_offset) + L"–" +
-            std::to_wstring((std::min)(size, document->mapped_offset + bytes.size())) + L" of " +
+            std::to_wstring(window->byte_end) + L" of " +
             std::to_wstring(size));
     }
 
@@ -2584,17 +2613,17 @@ private:
     }
 
     void StartWorkspaceScan(std::filesystem::path root) {
-        if (workspace_worker_.joinable()) {
-            workspace_worker_.request_stop();
-            workspace_worker_.join();
-        }
+        ReapCompletedWorkers(workspace_workers_);
+        for (auto& worker : workspace_workers_) worker.thread.request_stop();
+        const auto generation = ++workspace_generation_;
         static_cast<void>(workspace_catalog_.AddRoot(root));
         SaveWorkspaceCatalog();
         workspace_root_ = std::move(root);
         status_.SetText(L"Scanning workspace...");
         const HWND window = GetHwnd();
         const auto roots = workspace_catalog_.Roots();
-        workspace_worker_ = std::jthread([this, window, roots](std::stop_token stop) {
+        auto done = std::make_shared<std::atomic_bool>(false);
+        workspace_workers_.push_back({done, std::jthread([this, window, roots, generation, done](std::stop_token stop) {
             std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> scans;
             for (const auto& scan_root : roots) {
                 if (stop.stop_requested()) break;
@@ -2602,18 +2631,23 @@ private:
             }
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_workspace_scans_ = std::move(scans);
+                if (generation != workspace_generation_.load()) { done->store(true); return; }
+                pending_workspace_scans_ = {generation, std::move(scans)};
             }
-            ::PostMessageW(window, kWorkspaceCompleteMessage, 0, 0);
-        });
+            ::PostMessageW(window, kWorkspaceCompleteMessage,
+                           static_cast<WPARAM>(generation), 0);
+            done->store(true);
+        })});
     }
 
     void CompleteWorkspaceScan() {
         std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> scans;
         {
             std::scoped_lock lock{worker_mutex_};
-            scans = std::move(pending_workspace_scans_);
-            pending_workspace_scans_.clear();
+            if (!pending_workspace_scans_ ||
+                pending_workspace_scans_->first != workspace_generation_.load()) return;
+            scans = std::move(pending_workspace_scans_->second);
+            pending_workspace_scans_.reset();
         }
         if (scans.empty()) return;
         workspace_scans_ = std::move(scans);
@@ -2644,11 +2678,8 @@ private:
             std::unordered_map<std::wstring, mwfl::TreeItemId> directory_ids;
             directory_ids[L""] = root_id;
             for (const auto& entry : scan.entries) {
-                auto relative = entry.relative_path.wstring();
-                std::ranges::transform(relative, relative.begin(), [](wchar_t value) {
-                    return static_cast<wchar_t>(std::towlower(value));
-                });
-                if (!entry.directory && !filter.empty() && relative.find(filter) == std::wstring::npos) continue;
+                if (!entry.directory && !filter.empty() &&
+                    entry.search_key.find(filter) == std::wstring::npos) continue;
                 const mwfl::TreeItemId id{next++};
                 const auto parent_text = entry.relative_path.parent_path().wstring();
                 const auto parent = directory_ids.contains(parent_text) ? directory_ids[parent_text] : root_id;
@@ -2671,17 +2702,22 @@ private:
             return;
         }
         CancelFolderSearch();
-        if (search_worker_.joinable()) search_worker_.join();
+        ReapCompletedWorkers(search_workers_);
+        const auto generation = ++search_generation_;
         if (auto* command = commands_.Find(kCancelSearch)) command->SetEnabled(true);
         menu_.UpdateCommand(*commands_.Find(kCancelSearch));
         status_.SetText(L"Searching workspace...");
         const HWND window = GetHwnd();
         const auto roots = workspace_catalog_.Roots();
-        search_worker_ = std::jthread([this, window, roots, query](std::stop_token stop) {
+        auto done = std::make_shared<std::atomic_bool>(false);
+        search_workers_.push_back({done, std::jthread([this, window, roots, query, generation, done](std::stop_token stop) {
             notepad_colon::SearchResult result;
             for (const auto& root : roots) {
                 if (stop.stop_requested()) { result.cancelled = true; break; }
-                auto part = notepad_colon::SearchWorkspace(root, query, {}, stop);
+                notepad_colon::SearchOptions options;
+                options.maximum_results = 5000 - result.matches.size();
+                if (options.maximum_results == 0) { result.truncated = true; break; }
+                auto part = notepad_colon::SearchWorkspace(root, query, options, stop);
                 result.matches.insert(result.matches.end(),
                                       std::make_move_iterator(part.matches.begin()),
                                       std::make_move_iterator(part.matches.end()));
@@ -2692,21 +2728,26 @@ private:
             }
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_search_result_ = std::move(result);
+                if (generation != search_generation_.load()) { done->store(true); return; }
+                pending_search_result_ = {generation, std::move(result)};
             }
-            ::PostMessageW(window, kSearchCompleteMessage, 0, 0);
-        });
+            ::PostMessageW(window, kSearchCompleteMessage,
+                           static_cast<WPARAM>(generation), 0);
+            done->store(true);
+        })});
     }
 
     void CancelFolderSearch() {
-        if (search_worker_.joinable()) search_worker_.request_stop();
+        for (auto& worker : search_workers_) worker.thread.request_stop();
     }
 
     void CompleteSearch() {
         std::optional<notepad_colon::SearchResult> result;
         {
             std::scoped_lock lock{worker_mutex_};
-            result = std::move(pending_search_result_);
+            if (!pending_search_result_ ||
+                pending_search_result_->first != search_generation_.load()) return;
+            result = std::move(pending_search_result_->second);
             pending_search_result_.reset();
         }
         if (!result) return;
@@ -2808,11 +2849,14 @@ private:
     }
 
     void StopWorkers() {
-        for (auto* worker : {&search_worker_, &workspace_worker_}) {
-            if (!worker->joinable()) continue;
-            worker->request_stop();
-            worker->join();
-        }
+        for (auto& worker : search_workers_) worker.thread.request_stop();
+        for (auto& worker : workspace_workers_) worker.thread.request_stop();
+        search_workers_.clear();
+        workspace_workers_.clear();
+    }
+
+    static void ReapCompletedWorkers(std::vector<BackgroundTask>& workers) {
+        std::erase_if(workers, [](const auto& worker) { return worker.done->load(); });
     }
 
     void ResolveSessionPath() {
@@ -2890,7 +2934,16 @@ private:
     bool SaveSessionSnapshot() {
         if (session_path_.empty() || restoring_session_) return true;
         const auto session = CaptureSession();
-        return session && notepad_colon::SaveSessionAtomic(session_path_, *session);
+        if (!session) return false;
+        session_writer_.Queue(session_path_, std::move(*session));
+        session_snapshot_pending_ = false;
+        return true;
+    }
+
+    void QueueSessionSnapshotIfDue() {
+        if (!session_snapshot_pending_ || restoring_session_ ||
+            std::chrono::steady_clock::now() < session_snapshot_due_) return;
+        static_cast<void>(SaveSessionSnapshot());
     }
 
     void SaveNamedSession() {
@@ -3070,6 +3123,7 @@ private:
             if (result == 0 && workspace_.GetCount() != 2) result = 2;
             notepad_colon::Session snapshot;
             if (result == 0 && (!SaveSessionSnapshot() ||
+                !session_writer_.Flush() ||
                 !notepad_colon::LoadSession(session_path_, snapshot) ||
                 snapshot.documents.size() != 2)) result = 10;
             search_.SetText(L"document");
@@ -3114,14 +3168,16 @@ private:
             static_cast<void>(workspace_catalog_.AddRoot(test_workspace));
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_workspace_scans_.emplace_back(
-                    test_workspace, notepad_colon::ScanWorkspace(test_workspace));
+                pending_workspace_scans_ = std::pair{workspace_generation_.load(),
+                    std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>>{
+                        {test_workspace, notepad_colon::ScanWorkspace(test_workspace)}}};
             }
             CompleteWorkspaceScan();
             if (result == 0 && TreeView_GetCount(tree_.GetHwnd()) < 3) result = 17;
             {
                 std::scoped_lock lock{worker_mutex_};
-                pending_search_result_ = notepad_colon::SearchWorkspace(test_workspace, L"needle");
+                pending_search_result_ = std::pair{search_generation_.load(),
+                    notepad_colon::SearchWorkspace(test_workspace, L"needle")};
             }
             CompleteSearch();
             if (result == 0 && ListView_GetItemCount(results_.GetHwnd()) != 1) result = 18;
@@ -3169,6 +3225,9 @@ private:
     mwfl::ListView results_;
     mwfl::StatusBar status_;
     std::filesystem::path session_path_;
+    notepad_colon::SessionWriter session_writer_;
+    bool session_snapshot_pending_ = false;
+    std::chrono::steady_clock::time_point session_snapshot_due_{};
     bool restoring_session_ = false;
     bool find_bar_visible_ = false;
     bool workspace_visible_ = false;
@@ -3179,11 +3238,15 @@ private:
     std::unordered_map<std::uint64_t, std::filesystem::path> tree_paths_;
     std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> workspace_scans_;
     notepad_colon::SearchResult search_results_;
-    std::jthread search_worker_;
-    std::jthread workspace_worker_;
+    std::vector<BackgroundTask> search_workers_;
+    std::vector<BackgroundTask> workspace_workers_;
+    std::atomic<std::uint64_t> search_generation_{0};
+    std::atomic<std::uint64_t> workspace_generation_{0};
     std::mutex worker_mutex_;
-    std::optional<notepad_colon::SearchResult> pending_search_result_;
-    std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> pending_workspace_scans_;
+    std::optional<std::pair<std::uint64_t, notepad_colon::SearchResult>> pending_search_result_;
+    std::optional<std::pair<std::uint64_t,
+        std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>>>>
+        pending_workspace_scans_;
     mwfl::UiTimer monitor_timer_;
     std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_recovery_snapshot_ =

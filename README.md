@@ -35,11 +35,9 @@ deliberately out of scope.
 
 ## Supported systems
 
-Windows 10 or newer on x64 and ARM64. Builds use MSVC C++20 with Visual Studio
-2022 or Visual Studio 2026. CI builds, runs the GUI/model/performance tests, and
-creates native portable packages for x64 and ARM64. The ARM64 configuration
-builds matching Scintilla and Lexilla DLLs from their official source projects;
-CI rejects the package if any executable is not PE ARM64.
+Windows 10 or newer on x64. Builds and CI use MSVC C++20 with Visual Studio
+2026. CI runs the GUI, model, single-instance, and performance tests and creates
+the x64 portable package.
 
 ## Local development
 

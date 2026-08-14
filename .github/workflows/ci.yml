@@ -7,61 +7,20 @@ permissions:
 
 jobs:
   windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2025-vs2026
-            configure: vs2026-x64
-            build: vs2026-x64-debug
-          - runner: windows-2022
-            configure: vs2022-x64
-            build: vs2022-x64-release
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Configure
-        run: cmake --preset ${{ matrix.configure }} -DMWFL_SOURCE_DIR=
+        run: cmake --preset vs2026-x64 -DMWFL_SOURCE_DIR=
       - name: Build
-        run: cmake --build --preset ${{ matrix.build }} --parallel
+        run: cmake --build --preset vs2026-x64-debug --parallel
       - name: Test
-        run: ctest --preset ${{ matrix.build }}
+        run: ctest --preset vs2026-x64-debug
       - name: Package portable ZIP
-        if: matrix.configure == 'vs2026-x64'
         run: cmake --build --preset vs2026-x64-debug --target package
       - name: Upload portable ZIP
-        if: matrix.configure == 'vs2026-x64'
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: notepad-colon-windows-x64
           path: build/vs2026-x64/notepad-colon-*.zip
-          if-no-files-found: error
-
-  arm64-build:
-    runs-on: windows-11-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Configure
-        run: cmake --preset vs2022-arm64 -DMWFL_SOURCE_DIR=
-      - name: Build
-        run: cmake --build --preset vs2022-arm64-release --parallel
-      - name: Verify native runtime architecture
-        shell: pwsh
-        run: |
-          foreach ($name in 'notepad-colon.exe','Scintilla.dll','Lexilla.dll') {
-            $path = Join-Path 'build/vs2022-arm64/Release' $name
-            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $path))
-            $offset = [BitConverter]::ToInt32($bytes, 0x3c)
-            $machine = [BitConverter]::ToUInt16($bytes, $offset + 4)
-            if ($machine -ne 0xAA64) { throw "$name is not ARM64: 0x$($machine.ToString('X4'))" }
-          }
-      - name: Test
-        run: ctest --preset vs2022-arm64-release
-      - name: Package portable ZIP
-        run: cmake --build build/vs2022-arm64 --config Release --target package
-      - name: Upload portable ZIP
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
-        with:
-          name: notepad-colon-windows-arm64
-          path: build/vs2022-arm64/notepad-colon-*.zip
           if-no-files-found: error

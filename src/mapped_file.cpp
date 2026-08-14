@@ -83,4 +83,43 @@ std::optional<std::uint64_t> MappedFile::Find(std::span<const std::uint8_t> need
     return std::nullopt;
 }
 
+std::optional<MappedTextWindow> MappedFile::ReadTextWindow(
+    std::uint64_t offset, std::size_t length, EncodingKind encoding,
+    unsigned int ansi_code_page) const {
+    if (!IsOpen() || offset >= size_ || length == 0 || encoding == EncodingKind::binary)
+        return std::nullopt;
+    auto read_offset = offset;
+    if ((encoding == EncodingKind::utf8 || encoding == EncodingKind::utf8_bom) && offset != 0) {
+        const auto probe_start = offset > 3 ? offset - 3 : 0;
+        const auto probe = Read(probe_start, static_cast<std::size_t>(offset - probe_start + 1));
+        if (!probe.empty() && (probe.back() & 0xc0u) == 0x80u) {
+            auto index = probe.size() - 1;
+            while (index > 0 && (probe[index] & 0xc0u) == 0x80u) --index;
+            read_offset = probe_start + index;
+        }
+    } else if ((encoding == EncodingKind::utf16_le || encoding == EncodingKind::utf16_be) &&
+               offset >= 2) {
+        if (offset % 2) --read_offset;
+        const auto probe = Read(read_offset, 2);
+        if (probe.size() == 2) {
+            const auto unit = static_cast<std::uint16_t>(encoding == EncodingKind::utf16_le
+                ? probe[0] | (probe[1] << 8) : (probe[0] << 8) | probe[1]);
+            if (unit >= 0xdc00 && unit <= 0xdfff && read_offset >= 2) read_offset -= 2;
+        }
+    }
+    auto bytes = Read(read_offset, length + static_cast<std::size_t>(offset - read_offset));
+    if (bytes.empty()) return std::nullopt;
+    const auto window_encoding = encoding == EncodingKind::utf8_bom && read_offset != 0
+        ? EncodingKind::utf8 : encoding;
+    for (std::size_t trim = 0; trim <= 4 && trim <= bytes.size(); ++trim) {
+        auto decoded = DecodeBytes(std::span<const std::uint8_t>{bytes}.first(bytes.size() - trim),
+                                   window_encoding, ansi_code_page);
+        if (!decoded) continue;
+        if (!decoded->empty() && decoded->back() >= 0xd800 && decoded->back() <= 0xdbff) continue;
+        return MappedTextWindow{offset, read_offset, read_offset + bytes.size() - trim,
+                                std::move(*decoded)};
+    }
+    return std::nullopt;
+}
+
 }  // namespace notepad_colon

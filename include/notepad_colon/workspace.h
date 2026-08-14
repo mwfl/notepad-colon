@@ -11,6 +11,7 @@ namespace notepad_colon {
 
 struct WorkspaceEntry {
     std::filesystem::path relative_path;
+    std::wstring search_key;
     bool directory = false;
     std::uintmax_t size = 0;
 };

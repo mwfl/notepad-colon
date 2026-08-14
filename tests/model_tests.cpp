@@ -4,10 +4,12 @@
 #include <notepad_colon/editing.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/session.h>
+#include <notepad_colon/session_writer.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/macro.h>
+#include <notepad_colon/mapped_file.h>
 #include <notepad_colon/output.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
@@ -253,6 +255,33 @@ int main() {
     notepad_colon::Session file_session;
     Check(notepad_colon::LoadSession(session_path, file_session), "saved session file must load");
     Check(file_session.documents.size() == original.documents.size(), "session file shape must round trip");
+    {
+        std::ofstream corrupt(session_path, std::ios::binary | std::ios::trunc);
+        corrupt << "NPCSESSION\t3\nD\tbroken";
+    }
+    Check(!notepad_colon::LoadSession(session_path, file_session),
+          "truncated session file must fail closed");
+    {
+        notepad_colon::SessionWriter writer;
+        for (int revision = 0; revision < 20; ++revision) {
+            original.documents.front().recovery_text = L"revision-" + std::to_wstring(revision);
+            writer.Queue(session_path, original);
+        }
+        Check(writer.Flush(), "background session writer must flush the newest snapshot");
+    }
+    Check(notepad_colon::LoadSession(session_path, file_session) &&
+              file_session.documents.front().recovery_text == L"revision-19",
+          "background session writer must coalesce to the newest revision");
+    {
+        notepad_colon::SessionWriter writer;
+        original.documents.front().recovery_text = L"shutdown-flush";
+        writer.Queue(session_path, original);
+    }
+    Check(notepad_colon::LoadSession(session_path, file_session) &&
+              file_session.documents.front().recovery_text == L"shutdown-flush",
+          "session writer destruction must flush an in-flight close snapshot");
+    Check(!notepad_colon::SaveSessionAtomic(std::filesystem::temp_directory_path(), original),
+          "atomic session save must fail cleanly when destination is a directory");
     std::error_code ignored;
     std::filesystem::remove(session_path, ignored);
 
@@ -328,6 +357,32 @@ int main() {
           "pre-cancelled folder search must report cancellation");
     const auto before_state = notepad_colon::CaptureFileState(workspace_path / L"src" / L"one.txt");
     Check(before_state.exists && before_state.size > 0, "file monitor state must capture a file");
+
+    const auto mapped_utf8_path = workspace_path / L"mapped-utf8.txt";
+    {
+        std::ofstream output(mapped_utf8_path, std::ios::binary);
+        const unsigned char value[]{'a', 'b', 'c', 0xe2, 0x82, 0xac, 'z'};
+        output.write(reinterpret_cast<const char*>(value), sizeof(value));
+    }
+    notepad_colon::MappedFile mapped_utf8;
+    Check(mapped_utf8.Open(mapped_utf8_path), "UTF-8 boundary fixture opens");
+    const auto utf8_window = mapped_utf8.ReadTextWindow(4, 3, notepad_colon::EncodingKind::utf8);
+    Check(utf8_window && utf8_window->decoded_offset == 3 && utf8_window->text == L"€z",
+          "mapped UTF-8 window must retain a character crossing the requested boundary");
+    mapped_utf8.Close();
+
+    const auto mapped_utf16_path = workspace_path / L"mapped-utf16.txt";
+    {
+        std::ofstream output(mapped_utf16_path, std::ios::binary);
+        const unsigned char value[]{0xff, 0xfe, 'A', 0, 0x3d, 0xd8, 0x00, 0xde, 'B', 0};
+        output.write(reinterpret_cast<const char*>(value), sizeof(value));
+    }
+    notepad_colon::MappedFile mapped_utf16;
+    Check(mapped_utf16.Open(mapped_utf16_path), "UTF-16 boundary fixture opens");
+    const auto utf16_window = mapped_utf16.ReadTextWindow(6, 4, notepad_colon::EncodingKind::utf16_le);
+    Check(utf16_window && utf16_window->decoded_offset == 4 && utf16_window->text == L"😀B",
+          "mapped UTF-16 window must retain a surrogate pair crossing the requested boundary");
+    mapped_utf16.Close();
     std::filesystem::remove_all(workspace_path, ignored);
     return failures == 0 ? 0 : 1;
 }

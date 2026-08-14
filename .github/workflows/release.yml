@@ -9,38 +9,27 @@ permissions:
 
 jobs:
   package:
-    strategy:
-      matrix:
-        include:
-          - runner: windows-2025-vs2026
-            configure: vs2026-x64
-            build: vs2026-x64-release
-            artifact: notepad-colon-windows-x64
-          - runner: windows-11-arm
-            configure: vs2022-arm64
-            build: vs2022-arm64-release
-            artifact: notepad-colon-windows-arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Configure
-        run: cmake --preset ${{ matrix.configure }} -DMWFL_SOURCE_DIR=
+        run: cmake --preset vs2026-x64 -DMWFL_SOURCE_DIR=
       - name: Build
-        run: cmake --build --preset ${{ matrix.build }} --parallel
+        run: cmake --build --preset vs2026-x64-release --parallel
       - name: Test
-        run: ctest --preset ${{ matrix.build }}
+        run: ctest --preset vs2026-x64-release
       - name: Package
-        run: cmake --build build/${{ matrix.configure }} --config Release --target package
+        run: cmake --build --preset vs2026-x64-release --target package
       - name: Upload package
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
-          name: ${{ matrix.artifact }}
-          path: build/${{ matrix.configure }}/notepad-colon-*.zip
+          name: notepad-colon-windows-x64
+          path: build/vs2026-x64/notepad-colon-*.zip
           if-no-files-found: error
 
   publish:
     needs: package
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

@@ -77,6 +77,8 @@ std::vector<RecoverySnapshot> RecoveryStore::List() const {
     std::vector<RecoverySnapshot> result;
     std::error_code error;
     if (!std::filesystem::is_directory(directory_, error)) return result;
+    const auto file_clock_now = std::filesystem::file_time_type::clock::now();
+    const auto system_clock_now = std::chrono::system_clock::now();
     for (const auto& entry : std::filesystem::directory_iterator(directory_, error)) {
         if (error || !entry.is_regular_file(error) || entry.path().extension() != L".recovery") continue;
         std::ifstream input(entry.path(), std::ios::binary);
@@ -97,8 +99,7 @@ std::vector<RecoverySnapshot> RecoveryStore::List() const {
         if (!input || !wide_title || !wide_path) continue;
         const auto written = entry.last_write_time(error);
         const auto created = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            written - std::filesystem::file_time_type::clock::now() +
-            std::chrono::system_clock::now());
+            written - file_clock_now + system_clock_now);
         result.push_back({entry.path(), *wide_path, *wide_title, created, entry.file_size(error)});
     }
     std::ranges::sort(result, [](const auto& left, const auto& right) {

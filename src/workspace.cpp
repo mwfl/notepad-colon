@@ -87,6 +87,7 @@ WorkspaceScan ScanWorkspace(const std::filesystem::path& root,
         if (result.entries.size() >= maximum_entries) { result.truncated = true; break; }
         WorkspaceEntry entry;
         entry.relative_path = item.path().lexically_relative(root);
+        entry.search_key = Lower(entry.relative_path.wstring());
         entry.directory = directory;
         if (!directory) {
             entry.size = item.file_size(error);

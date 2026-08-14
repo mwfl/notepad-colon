@@ -43,6 +43,7 @@ add_library(notepad_colon_model
     src/preferences.cpp
     src/recovery.cpp
     src/session.cpp
+    src/session_writer.cpp
     src/text.cpp
     src/workspace.cpp
     src/workspace_state.cpp)
