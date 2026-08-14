@@ -86,6 +86,13 @@ constexpr mwfl::ControlId kSentenceCase{383};
 constexpr mwfl::ControlId kJsonEscape{384};
 constexpr mwfl::ControlId kJsonUnescape{385};
 constexpr mwfl::ControlId kToggleComment{386};
+constexpr mwfl::ControlId kBlockComment{387};
+constexpr mwfl::ControlId kBase64Encode{388};
+constexpr mwfl::ControlId kBase64Decode{389};
+constexpr mwfl::ControlId kUrlEncode{390};
+constexpr mwfl::ControlId kUrlDecode{391};
+constexpr mwfl::ControlId kInsertDateTime{392};
+constexpr mwfl::ControlId kInsertSequence{393};
 constexpr mwfl::ControlId kWordWrap{333};
 constexpr mwfl::ControlId kZoomIn{334};
 constexpr mwfl::ControlId kZoomOut{335};
@@ -361,6 +368,7 @@ public:
         }
         if (id != kMonitorTimer) return mwfl::EventResult::Propagate();
         CheckExternalChanges(false);
+        AutoSaveIfDue();
         return mwfl::EventResult::Handled();
     }
 
@@ -481,7 +489,14 @@ private:
             .Add(mwfl::Command(kJsonEscape, L"Escape JSON String", [this] { Transform(notepad_colon::EscapeJsonString); }))
             .Add(mwfl::Command(kJsonUnescape, L"Unescape JSON String", [this] { Transform([](auto s) { const auto value = notepad_colon::UnescapeJsonString(s); return value.value_or(std::wstring{s}); }); }))
             .Add(mwfl::Command(kToggleComment, L"Toggle Line Comment", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleLineComment(*e, "//"); })
-                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_2}));
+                     .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_2}))
+            .Add(mwfl::Command(kBlockComment, L"Wrap in Block Comment", [this] { if (auto* e = ActiveEditor()) notepad_colon::WrapSelection(*e, L"/* ", L" */"); }))
+            .Add(mwfl::Command(kBase64Encode, L"Base64 Encode", [this] { Transform([](auto s) { const auto bytes = mwfl::ToUtf8(s); const auto encoded = bytes ? notepad_colon::Base64Encode(*bytes) : std::string{}; return mwfl::FromUtf8(encoded).value_or(std::wstring{}); }); }))
+            .Add(mwfl::Command(kBase64Decode, L"Base64 Decode", [this] { Transform([](auto s) { const auto bytes = mwfl::ToUtf8(s); const auto decoded = bytes ? notepad_colon::Base64Decode(*bytes) : std::nullopt; return decoded ? mwfl::FromUtf8(*decoded).value_or(std::wstring{s}) : std::wstring{s}; }); }))
+            .Add(mwfl::Command(kUrlEncode, L"URL Encode", [this] { Transform([](auto s) { const auto bytes = mwfl::ToUtf8(s); return bytes ? mwfl::FromUtf8(notepad_colon::UrlEncode(*bytes)).value_or(std::wstring{s}) : std::wstring{s}; }); }))
+            .Add(mwfl::Command(kUrlDecode, L"URL Decode", [this] { Transform([](auto s) { const auto bytes = mwfl::ToUtf8(s); const auto decoded = bytes ? notepad_colon::UrlDecode(*bytes) : std::nullopt; return decoded ? mwfl::FromUtf8(*decoded).value_or(std::wstring{s}) : std::wstring{s}; }); }))
+            .Add(mwfl::Command(kInsertDateTime, L"Insert Date / Time", [this] { InsertDateTime(); }))
+            .Add(mwfl::Command(kInsertSequence, L"Insert Sequence 1-10", [this] { if (auto* e = ActiveEditor()) notepad_colon::InsertText(*e, notepad_colon::GenerateSequence(1, 10, 1)); }));
         commands_
             .Add(mwfl::Command(kWordWrap, L"Word Wrap", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleWordWrap(*e); }))
             .Add(mwfl::Command(kZoomIn, L"Zoom In", [this] { if (auto* e = ActiveEditor()) e->SetZoom(e->GetZoom() + 1); })
@@ -558,7 +573,9 @@ private:
                               kSelectAllOccurrences, kSortAscending, kSortDescending,
                               kUniqueLines, kReverseLines, kRemoveBlankLines, kTrimTrailing,
                               kJoinLines, kSplitLines, kTabsToSpaces, kSpacesToTabs,
-                              kJsonEscape, kJsonUnescape})
+                              kJsonEscape, kJsonUnescape, kBlockComment,
+                              kBase64Encode, kBase64Decode, kUrlEncode, kUrlDecode,
+                              kInsertDateTime, kInsertSequence})
             mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
         for (const auto id : {kPreferences, kRegisterAssociation, kRemoveAssociation})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
@@ -724,8 +741,28 @@ private:
                 path = selected.path;
             }
         }
-        const auto text = document.editor->GetText();
+        auto text = document.editor->GetText();
         if (!text) return false;
+        auto prepared = preferences_.trim_trailing_whitespace_on_save
+            ? notepad_colon::TrimTrailingWhitespace(*text) : *text;
+        if (preferences_.ensure_final_newline) {
+            const auto newline = document.line_ending == notepad_colon::LineEnding::crlf ? L"\r\n" :
+                                 document.line_ending == notepad_colon::LineEnding::cr ? L"\r" : L"\n";
+            prepared = notepad_colon::EnsureFinalNewline(prepared, newline);
+        }
+        if (prepared != *text) {
+            const auto selection = document.editor->GetSelection();
+            if (!notepad_colon::ReplaceDocumentText(*document.editor, prepared, selection)) return false;
+            text = std::move(prepared);
+        }
+        if (preferences_.create_backup_before_save && std::filesystem::exists(path)) {
+            auto backup = path;
+            backup += L".bak";
+            if (!::CopyFileW(path.c_str(), backup.c_str(), FALSE)) {
+                status_.SetText(L"Backup could not be created; save cancelled");
+                return false;
+            }
+        }
         const auto expected = path == metadata->path ? document.stamp : std::nullopt;
         const auto saved = mwfl::WriteTextFileAtomic(path, *text, document.encoding, expected);
         if (!saved.Succeeded() || !saved.stamp) return false;
@@ -784,7 +821,12 @@ private:
             mwfl::SettingDefinition{L"FontName", mwfl::SettingType::string, 256, true},
             mwfl::SettingDefinition{L"FontSize", mwfl::SettingType::dword, 4, true},
             mwfl::SettingDefinition{L"TabWidth", mwfl::SettingType::dword, 4, true},
-            mwfl::SettingDefinition{L"Theme", mwfl::SettingType::dword, 4, true}};
+            mwfl::SettingDefinition{L"Theme", mwfl::SettingType::dword, 4, true},
+            mwfl::SettingDefinition{L"AutoSave", mwfl::SettingType::dword, 4, false},
+            mwfl::SettingDefinition{L"AutoSaveSeconds", mwfl::SettingType::dword, 4, false},
+            mwfl::SettingDefinition{L"TrimTrailingOnSave", mwfl::SettingType::dword, 4, false},
+            mwfl::SettingDefinition{L"CreateBackup", mwfl::SettingType::dword, 4, false},
+            mwfl::SettingDefinition{L"EnsureFinalNewline", mwfl::SettingType::dword, 4, false}};
         const auto loaded = settings_.Load(schema);
         if (!loaded) return;
         notepad_colon::Preferences candidate;
@@ -797,6 +839,16 @@ private:
         if (const auto* value = mwfl::FindSetting(loaded.values, L"Theme"))
             candidate.theme = static_cast<notepad_colon::ThemePreference>(
                 std::get<std::uint32_t>(value->data));
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"AutoSave"))
+            candidate.auto_save = std::get<std::uint32_t>(value->data) != 0;
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"AutoSaveSeconds"))
+            candidate.auto_save_seconds = std::get<std::uint32_t>(value->data);
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"TrimTrailingOnSave"))
+            candidate.trim_trailing_whitespace_on_save = std::get<std::uint32_t>(value->data) != 0;
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"CreateBackup"))
+            candidate.create_backup_before_save = std::get<std::uint32_t>(value->data) != 0;
+        if (const auto* value = mwfl::FindSetting(loaded.values, L"EnsureFinalNewline"))
+            candidate.ensure_final_newline = std::get<std::uint32_t>(value->data) != 0;
         preferences_ = notepad_colon::SanitizePreferences(std::move(candidate));
     }
 
@@ -805,7 +857,12 @@ private:
             mwfl::SettingValue{L"FontName", preferences_.font_name},
             mwfl::SettingValue{L"FontSize", preferences_.font_size},
             mwfl::SettingValue{L"TabWidth", preferences_.tab_width},
-            mwfl::SettingValue{L"Theme", static_cast<std::uint32_t>(preferences_.theme)}};
+            mwfl::SettingValue{L"Theme", static_cast<std::uint32_t>(preferences_.theme)},
+            mwfl::SettingValue{L"AutoSave", static_cast<std::uint32_t>(preferences_.auto_save)},
+            mwfl::SettingValue{L"AutoSaveSeconds", preferences_.auto_save_seconds},
+            mwfl::SettingValue{L"TrimTrailingOnSave", static_cast<std::uint32_t>(preferences_.trim_trailing_whitespace_on_save)},
+            mwfl::SettingValue{L"CreateBackup", static_cast<std::uint32_t>(preferences_.create_backup_before_save)},
+            mwfl::SettingValue{L"EnsureFinalNewline", static_cast<std::uint32_t>(preferences_.ensure_final_newline)}};
         return static_cast<bool>(settings_.Save(values));
     }
 
@@ -813,11 +870,12 @@ private:
         mwfl::Label font_label, size_label, tab_label, theme_label, theme_value;
         mwfl::TextBox font, size, tab;
         mwfl::Button system, light, dark, accept, cancel;
+        mwfl::CheckBox auto_save, trim_trailing, create_backup, final_newline;
         auto candidate = preferences_;
         mwfl::Dialog* pointer = nullptr;
         mwfl::Dialog dialog({
             .owner = GetHwnd(), .title = L"Notepad Colon Preferences",
-            .initial_client_size = {500.0_dip, 310.0_dip}, .resizable = false,
+            .initial_client_size = {500.0_dip, 390.0_dip}, .resizable = false,
             .callbacks = {
                 .initialize = [&](HWND window) {
                     mwfl::ControlHost ui{window};
@@ -826,6 +884,14 @@ private:
                     ui.Add(tab_label, {405}, L"Tab width (1-16)"); ui.Add(tab, {406}, std::to_wstring(candidate.tab_width));
                     ui.Add(theme_label, {407}, L"Theme"); ui.Add(theme_value, {408}, L"");
                     ui.Add(system, {409}, L"System"); ui.Add(light, {410}, L"Light"); ui.Add(dark, {411}, L"Dark");
+                    ui.Add(auto_save, {412}, L"Auto-save named documents every 30 seconds");
+                    ui.Add(trim_trailing, {413}, L"Trim trailing whitespace when saving");
+                    ui.Add(create_backup, {414}, L"Create .bak file before overwriting");
+                    ui.Add(final_newline, {415}, L"Ensure final newline when saving");
+                    auto_save.SetChecked(candidate.auto_save);
+                    trim_trailing.SetChecked(candidate.trim_trailing_whitespace_on_save);
+                    create_backup.SetChecked(candidate.create_backup_before_save);
+                    final_newline.SetChecked(candidate.ensure_final_newline);
                     ui.Add(accept, {IDOK}, L"Save"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
                     const auto update_theme = [&] { theme_value.SetText(
                         candidate.theme == notepad_colon::ThemePreference::system ? L"System" :
@@ -840,6 +906,10 @@ private:
                         .Add(mwfl::Row().Gap(8.0_dip).Add(size_label, mwfl::Fixed(150.0_dip)).Add(size, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
                         .Add(mwfl::Row().Gap(8.0_dip).Add(tab_label, mwfl::Fixed(150.0_dip)).Add(tab, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
                         .Add(mwfl::Row().Gap(8.0_dip).Add(theme_label, mwfl::Fixed(80.0_dip)).Add(theme_value, mwfl::Fixed(70.0_dip)).Add(system, mwfl::Auto()).Add(light, mwfl::Auto()).Add(dark, mwfl::Auto()), mwfl::Fixed(36.0_dip))
+                        .Add(auto_save, mwfl::Fixed(28.0_dip))
+                        .Add(trim_trailing, mwfl::Fixed(28.0_dip))
+                        .Add(create_backup, mwfl::Fixed(28.0_dip))
+                        .Add(final_newline, mwfl::Fixed(28.0_dip))
                         .Add(mwfl::Row().Gap(8.0_dip).Add(mwfl::Column(), mwfl::Stretch()).Add(accept, mwfl::Fixed(100.0_dip)).Add(cancel, mwfl::Fixed(100.0_dip)), mwfl::Fixed(36.0_dip)));
                 },
                 .command = [&](HWND, WORD id, WORD) {
@@ -854,6 +924,10 @@ private:
                         wchar_t* end{};
                         candidate.font_size = static_cast<std::uint32_t>(std::wcstoul(size.GetText().c_str(), &end, 10));
                         candidate.tab_width = static_cast<std::uint32_t>(std::wcstoul(tab.GetText().c_str(), &end, 10));
+                        candidate.auto_save = auto_save.IsChecked();
+                        candidate.trim_trailing_whitespace_on_save = trim_trailing.IsChecked();
+                        candidate.create_backup_before_save = create_backup.IsChecked();
+                        candidate.ensure_final_newline = final_newline.IsChecked();
                         if (!notepad_colon::ValidatePreferences(candidate)) {
                             ::MessageBoxW(pointer->GetHwnd(), L"Enter a valid font, size (8-40), and tab width (1-16).", L"Preferences", MB_OK | MB_ICONWARNING);
                             return true;
@@ -881,6 +955,31 @@ private:
             if (metadata && metadata->dirty && !SaveDocument(document, false)) return false;
         }
         return true;
+    }
+
+    void InsertDateTime() {
+        SYSTEMTIME time{};
+        ::GetLocalTime(&time);
+        wchar_t value[64]{};
+        swprintf_s(value, L"%04u-%02u-%02u %02u:%02u:%02u",
+                   time.wYear, time.wMonth, time.wDay,
+                   time.wHour, time.wMinute, time.wSecond);
+        if (auto* editor = ActiveEditor()) static_cast<void>(notepad_colon::InsertText(*editor, value));
+    }
+
+    void AutoSaveIfDue() {
+        if (!preferences_.auto_save || IsTestMode()) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_auto_save_ < std::chrono::seconds{preferences_.auto_save_seconds}) return;
+        last_auto_save_ = now;
+        std::size_t saved = 0;
+        for (auto& document : documents_) {
+            const auto* metadata = workspace_.Find(document.id);
+            if (!metadata || metadata->path.empty() || !metadata->dirty || document.read_only ||
+                document.external_changed) continue;
+            saved += SaveDocument(document, false) ? 1u : 0u;
+        }
+        if (saved) status_.SetText(L"Auto-saved " + std::to_wstring(saved) + L" document(s)");
     }
 
     bool CloseActive(bool discard = false) {
@@ -1322,7 +1421,20 @@ private:
             if (result == 0 && (!second || !SaveDocument(*second, true))) result = 4;
             if (second) {
                 const auto* metadata = workspace_.Find(second->id);
-                if (metadata) cleanup.push_back(metadata->path);
+                if (metadata) {
+                    cleanup.push_back(metadata->path);
+                    auto backup = metadata->path; backup += L".bak"; cleanup.push_back(backup);
+                    const auto saved_preferences = preferences_;
+                    preferences_.trim_trailing_whitespace_on_save = true;
+                    preferences_.ensure_final_newline = true;
+                    preferences_.create_backup_before_save = true;
+                    second->editor->SetText(L"clean  \t");
+                    if (!SaveDocument(*second, false)) result = 22;
+                    const auto cleaned = mwfl::ReadTextFile(metadata->path);
+                    if (result == 0 && (!cleaned.Succeeded() || cleaned.value->text != L"clean\r\n" ||
+                        !std::filesystem::is_regular_file(backup))) result = 23;
+                    preferences_ = saved_preferences;
+                }
             }
             if (result == 0 && second) {
                 const auto* metadata = workspace_.Find(second->id);
@@ -1408,6 +1520,7 @@ private:
     std::optional<notepad_colon::SearchResult> pending_search_result_;
     std::optional<notepad_colon::WorkspaceScan> pending_workspace_scan_;
     mwfl::UiTimer monitor_timer_;
+    std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
     mwfl::SingleInstance& instance_;
     std::vector<std::filesystem::path> startup_paths_;
     bool self_test_ = false;

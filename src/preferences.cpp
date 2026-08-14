@@ -6,6 +6,7 @@ bool ValidatePreferences(const Preferences& preferences) noexcept {
     return !preferences.font_name.empty() && preferences.font_name.size() <= LF_FACESIZE - 1 &&
            preferences.font_size >= 8 && preferences.font_size <= 40 &&
            preferences.tab_width >= 1 && preferences.tab_width <= 16 &&
+           preferences.auto_save_seconds >= 5 && preferences.auto_save_seconds <= 3600 &&
            static_cast<std::uint32_t>(preferences.theme) <=
                static_cast<std::uint32_t>(ThemePreference::dark);
 }
@@ -18,6 +19,8 @@ Preferences SanitizePreferences(Preferences preferences) noexcept {
         preferences.font_size = defaults.font_size;
     if (preferences.tab_width < 1 || preferences.tab_width > 16)
         preferences.tab_width = defaults.tab_width;
+    if (preferences.auto_save_seconds < 5 || preferences.auto_save_seconds > 3600)
+        preferences.auto_save_seconds = defaults.auto_save_seconds;
     if (static_cast<std::uint32_t>(preferences.theme) >
         static_cast<std::uint32_t>(ThemePreference::dark))
         preferences.theme = defaults.theme;

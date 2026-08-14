@@ -42,8 +42,13 @@ void IndentSelection(mwfl::ScintillaEditor& editor, bool indent) noexcept;
 bool TransformSelectionOrDocument(
     mwfl::ScintillaEditor& editor,
     const std::function<std::wstring(std::wstring_view)>& transform) noexcept;
+bool ReplaceDocumentText(mwfl::ScintillaEditor& editor, std::wstring_view text,
+                         mwfl::ScintillaTextRange restore_selection) noexcept;
 bool SelectNextOccurrence(mwfl::ScintillaEditor& editor, bool all) noexcept;
 void ToggleLineComment(mwfl::ScintillaEditor& editor, std::string_view prefix) noexcept;
+bool WrapSelection(mwfl::ScintillaEditor& editor, std::wstring_view before,
+                   std::wstring_view after) noexcept;
+bool InsertText(mwfl::ScintillaEditor& editor, std::wstring_view text) noexcept;
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept;
 void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept;
 void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept;

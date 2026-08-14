@@ -1,6 +1,7 @@
 #include <notepad_colon/editing.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <vector>
 
@@ -243,6 +244,52 @@ std::optional<std::string> Base64Decode(std::string_view encoded) {
         result += static_cast<char>((value >> 16) & 0xff);
         if (padding < 2) result += static_cast<char>((value >> 8) & 0xff);
         if (padding < 1) result += static_cast<char>(value & 0xff);
+    }
+    return result;
+}
+
+std::string UrlEncode(std::string_view bytes) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string result;
+    for (const auto byte : bytes) {
+        const auto value = static_cast<unsigned char>(byte);
+        if (std::isalnum(value) || value == '-' || value == '_' || value == '.' || value == '~')
+            result += static_cast<char>(value);
+        else {
+            result += '%'; result += hex[value >> 4]; result += hex[value & 15];
+        }
+    }
+    return result;
+}
+
+std::optional<std::string> UrlDecode(std::string_view encoded) {
+    const auto digit = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string result;
+    for (std::size_t i = 0; i < encoded.size(); ++i) {
+        if (encoded[i] == '+') { result += ' '; continue; }
+        if (encoded[i] != '%') { result += encoded[i]; continue; }
+        if (i + 2 >= encoded.size()) return std::nullopt;
+        const auto high = digit(encoded[i + 1]), low = digit(encoded[i + 2]);
+        if (high < 0 || low < 0) return std::nullopt;
+        result += static_cast<char>((high << 4) | low);
+        i += 2;
+    }
+    return result;
+}
+
+std::wstring GenerateSequence(long long start, std::size_t count, long long step,
+                              std::wstring_view separator) {
+    std::wstring result;
+    auto value = start;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index) result += separator;
+        result += std::to_wstring(value);
+        value += step;
     }
     return result;
 }

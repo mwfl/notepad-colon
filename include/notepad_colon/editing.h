@@ -23,6 +23,10 @@ std::wstring EscapeJsonString(std::wstring_view text);
 std::optional<std::wstring> UnescapeJsonString(std::wstring_view text);
 std::string Base64Encode(std::string_view bytes);
 std::optional<std::string> Base64Decode(std::string_view encoded);
+std::string UrlEncode(std::string_view bytes);
+std::optional<std::string> UrlDecode(std::string_view encoded);
+std::wstring GenerateSequence(long long start, std::size_t count, long long step,
+                              std::wstring_view separator = L"\r\n");
 std::wstring EnsureFinalNewline(std::wstring_view text, std::wstring_view newline);
 
 }  // namespace notepad_colon

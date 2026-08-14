@@ -60,6 +60,11 @@ int main() {
     Check(notepad_colon::Base64Decode("aGVsbG8=") == std::optional<std::string>{"hello"},
           "base64 decode");
     Check(!notepad_colon::Base64Decode("bad"), "invalid base64 rejected");
+    Check(notepad_colon::UrlEncode("hello world/\xE4") == "hello%20world%2F%E4", "URL encode bytes");
+    Check(notepad_colon::UrlDecode("hello%20world%2F") == std::optional<std::string>{"hello world/"},
+          "URL decode bytes");
+    Check(!notepad_colon::UrlDecode("%Q0"), "invalid URL escape rejected");
+    Check(notepad_colon::GenerateSequence(3, 3, 2, L",") == L"3,5,7", "sequence generation");
     Check(notepad_colon::EnsureFinalNewline(L"text", L"\r\n") == L"text\r\n",
           "final newline inserted");
     const auto recovery_path = std::filesystem::temp_directory_path() /
@@ -81,6 +86,7 @@ int main() {
     preferences.font_name.clear();
     preferences.font_size = 100;
     preferences.tab_width = 0;
+    preferences.auto_save_seconds = 1;
     preferences.theme = static_cast<notepad_colon::ThemePreference>(99);
     Check(!notepad_colon::ValidatePreferences(preferences), "invalid preferences must be rejected");
     Check(notepad_colon::SanitizePreferences(preferences) == notepad_colon::Preferences{},

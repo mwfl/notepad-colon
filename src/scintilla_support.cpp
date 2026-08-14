@@ -190,6 +190,20 @@ bool TransformSelectionOrDocument(
         static_cast<mwfl::ScintillaPosition>(replacement->size())});
 }
 
+bool ReplaceDocumentText(mwfl::ScintillaEditor& editor, std::wstring_view text,
+                         mwfl::ScintillaTextRange restore_selection) noexcept {
+    const auto replacement = mwfl::ToUtf8(text);
+    if (!replacement) return false;
+    editor.Send(SCI_BEGINUNDOACTION);
+    editor.Send(SCI_SETTARGETRANGE, 0, editor.GetLength());
+    editor.Send(SCI_REPLACETARGET, replacement->size(), reinterpret_cast<LPARAM>(replacement->data()));
+    editor.Send(SCI_ENDUNDOACTION);
+    const auto length = static_cast<mwfl::ScintillaPosition>(replacement->size());
+    restore_selection.start = (std::min)(restore_selection.start, length);
+    restore_selection.end = (std::min)(restore_selection.end, length);
+    return editor.SetSelection(restore_selection);
+}
+
 bool SelectNextOccurrence(mwfl::ScintillaEditor& editor, bool all) noexcept {
     auto selection = editor.GetSelection();
     if (selection.start == selection.end) {
@@ -245,6 +259,37 @@ void ToggleLineComment(mwfl::ScintillaEditor& editor, std::string_view prefix) n
         }
     }
     editor.Send(SCI_ENDUNDOACTION);
+}
+
+bool WrapSelection(mwfl::ScintillaEditor& editor, std::wstring_view before,
+                   std::wstring_view after) noexcept {
+    const auto selection = editor.GetSelection();
+    if (selection.start == selection.end) return false;
+    const auto before_utf8 = mwfl::ToUtf8(before);
+    const auto after_utf8 = mwfl::ToUtf8(after);
+    if (!before_utf8 || !after_utf8) return false;
+    editor.Send(SCI_BEGINUNDOACTION);
+    editor.Send(SCI_INSERTTEXT, selection.end,
+                reinterpret_cast<LPARAM>(after_utf8->c_str()));
+    editor.Send(SCI_INSERTTEXT, selection.start,
+                reinterpret_cast<LPARAM>(before_utf8->c_str()));
+    editor.Send(SCI_ENDUNDOACTION);
+    const auto before_size = static_cast<mwfl::ScintillaPosition>(before_utf8->size());
+    const auto after_size = static_cast<mwfl::ScintillaPosition>(after_utf8->size());
+    return editor.SetSelection({selection.start,
+                                selection.end + before_size + after_size});
+}
+
+bool InsertText(mwfl::ScintillaEditor& editor, std::wstring_view text) noexcept {
+    const auto utf8 = mwfl::ToUtf8(text);
+    if (!utf8) return false;
+    const auto selection = editor.GetSelection();
+    editor.Send(SCI_BEGINUNDOACTION);
+    editor.Send(SCI_SETTARGETRANGE, selection.start, selection.end);
+    editor.Send(SCI_REPLACETARGET, utf8->size(), reinterpret_cast<LPARAM>(utf8->data()));
+    editor.Send(SCI_ENDUNDOACTION);
+    const auto end = selection.start + static_cast<mwfl::ScintillaPosition>(utf8->size());
+    return editor.SetSelection({end, end});
 }
 
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept {
