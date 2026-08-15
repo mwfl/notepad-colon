@@ -10,6 +10,8 @@
 
 namespace notepad_colon {
 
+enum class SyntaxPerformanceMode { full, lightweight };
+
 class LexillaRuntime final {
 public:
     LexillaRuntime() noexcept = default;
@@ -26,7 +28,8 @@ private:
 };
 
 bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runtime,
-                       Language language) noexcept;
+                       Language language, bool dark = false,
+                       SyntaxPerformanceMode mode = SyntaxPerformanceMode::full) noexcept;
 void ConfigureAdvancedEditing(mwfl::ScintillaEditor& editor) noexcept;
 void ToggleBookmark(mwfl::ScintillaEditor& editor) noexcept;
 bool GoToNextBookmark(mwfl::ScintillaEditor& editor) noexcept;

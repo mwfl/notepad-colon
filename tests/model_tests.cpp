@@ -292,6 +292,26 @@ int main() {
     Check(notepad_colon::DetectLanguage(L"data.yaml") == Language::yaml, "YAML detection");
     Check(notepad_colon::DetectLanguage(L"README") == Language::plain_text, "plain text fallback");
     Check(notepad_colon::LexerName(Language::python) == "python", "Python lexer mapping");
+    const auto languages = notepad_colon::AllLanguages();
+    Check(languages.size() == 19, "all supported languages are enumerable");
+    for (const auto language : languages) {
+        const auto& profile = notepad_colon::GetLanguageProfile(language);
+        Check(profile.language == language && !profile.name.empty(),
+              "language profiles retain their identity and display name");
+        Check(language == Language::plain_text || !profile.lexer.empty(),
+              "source language profiles provide a lexer");
+        Check(profile.lexer == notepad_colon::LexerName(language),
+              "language profile and lexer lookup agree");
+    }
+    Check(notepad_colon::GetLanguageProfile(Language::javascript).primary_keywords.find("function") !=
+              std::string_view::npos,
+          "JavaScript receives language-specific keywords");
+    Check(notepad_colon::GetLanguageProfile(Language::csharp).primary_keywords.find("namespace") !=
+              std::string_view::npos,
+          "C# receives language-specific keywords");
+    Check(notepad_colon::GetLanguageProfile(Language::rust).primary_keywords.find(" fn ") !=
+              std::string_view::npos,
+          "Rust receives language-specific keywords");
 
     const auto workspace_path = std::filesystem::temp_directory_path() /
         (L"notepad-colon-workspace-test-" + std::to_wstring(::GetCurrentProcessId()));

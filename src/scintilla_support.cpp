@@ -3,6 +3,7 @@
 #include <Scintilla.h>
 
 #include <array>
+#include <initializer_list>
 #include <climits>
 #include <limits>
 #include <string>
@@ -11,57 +12,109 @@
 namespace notepad_colon {
 namespace {
 constexpr int kBookmarkMarker = 0;
-// Lexilla style numbers are part of the pinned Lexilla 5.6.5 lexer contract.
-constexpr int kCComment = 1, kCCommentLine = 2, kCCommentDoc = 3, kCNumber = 4,
-              kCWord = 5, kCString = 6, kCCharacter = 7, kCPreprocessor = 9,
-              kCStringEol = 12, kCWord2 = 16;
-constexpr int kPCommentLine = 1, kPNumber = 2, kPString = 3, kPCharacter = 4,
-              kPWord = 5, kPTriple = 6, kPTripleDouble = 7, kPCommentBlock = 12;
-constexpr int kJsonNumber = 1, kJsonString = 2, kJsonPropertyName = 4, kJsonKeyword = 11;
-constexpr int kSqlComment = 1, kSqlCommentLine = 2, kSqlNumber = 4,
-              kSqlWord = 5, kSqlString = 6;
 
 void SetProperty(mwfl::ScintillaEditor& editor, const char* name, const char* value) noexcept {
     editor.Send(SCI_SETPROPERTY, reinterpret_cast<WPARAM>(name), reinterpret_cast<LPARAM>(value));
 }
 
-void SetKeywords(mwfl::ScintillaEditor& editor, const char* words) noexcept {
-    editor.Send(SCI_SETKEYWORDS, 0, reinterpret_cast<LPARAM>(words));
+void SetKeywords(mwfl::ScintillaEditor& editor, int set, std::string_view words) noexcept {
+    editor.Send(SCI_SETKEYWORDS, set,
+                reinterpret_cast<LPARAM>(words.empty() ? "" : words.data()));
 }
 
 void Fore(mwfl::ScintillaEditor& editor, int style, COLORREF colour) noexcept {
     editor.Send(SCI_STYLESETFORE, style, colour);
 }
 
-void ConfigureCommonStyles(mwfl::ScintillaEditor& editor, Language language) noexcept {
-    constexpr COLORREF blue = RGB(0, 92, 197);
-    constexpr COLORREF green = RGB(0, 128, 0);
-    constexpr COLORREF red = RGB(163, 21, 21);
-    constexpr COLORREF purple = RGB(128, 0, 128);
-    constexpr COLORREF teal = RGB(43, 145, 175);
+void Back(mwfl::ScintillaEditor& editor, int style, COLORREF colour) noexcept {
+    editor.Send(SCI_STYLESETBACK, style, colour);
+}
+
+void Bold(mwfl::ScintillaEditor& editor, int style) noexcept {
+    editor.Send(SCI_STYLESETBOLD, style, 1);
+}
+
+void Colour(mwfl::ScintillaEditor& editor, std::initializer_list<int> styles,
+            COLORREF colour) noexcept {
+    for (const auto style : styles) Fore(editor, style, colour);
+}
+
+void ConfigureCommonStyles(mwfl::ScintillaEditor& editor, Language language, bool dark) noexcept {
+    const COLORREF keyword = dark ? RGB(86, 156, 214) : RGB(0, 92, 197);
+    const COLORREF comment = dark ? RGB(106, 153, 85) : RGB(0, 128, 0);
+    const COLORREF string = dark ? RGB(206, 145, 120) : RGB(163, 21, 21);
+    const COLORREF number = dark ? RGB(181, 206, 168) : RGB(43, 145, 175);
+    const COLORREF type = dark ? RGB(78, 201, 176) : RGB(128, 0, 128);
+    const COLORREF preprocessor = dark ? RGB(197, 134, 192) : RGB(128, 0, 128);
+    const COLORREF property = dark ? RGB(156, 220, 254) : RGB(0, 92, 197);
+    const COLORREF muted = dark ? RGB(128, 128, 128) : RGB(100, 100, 100);
+    const COLORREF link = dark ? RGB(78, 148, 206) : RGB(0, 70, 180);
+    const COLORREF heading = dark ? RGB(220, 220, 170) : RGB(70, 70, 130);
     switch (language) {
     case Language::cpp: case Language::csharp: case Language::java:
     case Language::javascript: case Language::typescript:
-        for (int style : {kCComment, kCCommentLine, kCCommentDoc}) Fore(editor, style, green);
-        for (int style : {kCString, kCCharacter, kCStringEol}) Fore(editor, style, red);
-        Fore(editor, kCNumber, teal); Fore(editor, kCWord, blue);
-        Fore(editor, kCWord2, purple); Fore(editor, kCPreprocessor, purple);
-        SetKeywords(editor, "alignas alignof and asm auto bool break case catch char class const constexpr continue default delete do double else enum explicit export extern false float for friend goto if inline int long namespace new noexcept nullptr operator private protected public register reinterpret_cast return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile wchar_t while");
+        Colour(editor, {1, 2, 3, 15, 17, 18, 24}, comment);
+        Colour(editor, {6, 7, 12, 20, 27}, string);
+        Fore(editor, 4, number); Fore(editor, 5, keyword); Bold(editor, 5);
+        Fore(editor, 16, type); Fore(editor, 9, preprocessor);
         break;
     case Language::python:
-        for (int style : {kPCommentLine, kPCommentBlock}) Fore(editor, style, green);
-        for (int style : {kPString, kPCharacter, kPTriple, kPTripleDouble}) Fore(editor, style, red);
-        Fore(editor, kPNumber, teal); Fore(editor, kPWord, blue);
-        SetKeywords(editor, "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield");
+        Colour(editor, {1, 12}, comment); Colour(editor, {3, 4, 6, 7, 16, 17, 18, 19}, string);
+        Fore(editor, 2, number); Fore(editor, 5, keyword); Bold(editor, 5);
+        Fore(editor, 8, type); Bold(editor, 8); Fore(editor, 14, property);
         break;
     case Language::json:
-        Fore(editor, kJsonPropertyName, blue); Fore(editor, kJsonString, red);
-        Fore(editor, kJsonNumber, teal); Fore(editor, kJsonKeyword, purple);
+        Fore(editor, 1, number); Fore(editor, 2, string); Fore(editor, 4, property);
+        Colour(editor, {5, 6, 7}, comment); Fore(editor, 11, keyword); Bold(editor, 11);
+        Fore(editor, 13, RGB(255, 255, 255)); Back(editor, 13, RGB(180, 40, 40));
+        break;
+    case Language::xml: case Language::html:
+        Colour(editor, {1, 11}, keyword); Colour(editor, {3, 8, 17}, property);
+        Colour(editor, {6, 7, 19}, string); Colour(editor, {9, 20, 29}, comment);
+        Fore(editor, 5, number); Colour(editor, {2, 12, 13}, type);
+        break;
+    case Language::css:
+        Colour(editor, {1, 6, 15, 17}, keyword); Colour(editor, {8, 13, 14}, string);
+        Fore(editor, 9, comment); Fore(editor, 10, number); Colour(editor, {11, 12, 22}, preprocessor);
+        Colour(editor, {2, 3, 16, 18}, property);
+        break;
+    case Language::markdown:
+        Colour(editor, {2, 3, 6, 7, 8, 9, 10, 11}, heading);
+        for (int style = 2; style <= 11; ++style) Bold(editor, style);
+        Colour(editor, {4, 5, 13, 14, 17}, muted); Colour(editor, {15, 18}, link);
+        Colour(editor, {16, 19, 20, 21}, string);
+        break;
+    case Language::cmake:
+        Fore(editor, 1, comment); Colour(editor, {2, 3, 4, 6, 13}, string);
+        Colour(editor, {5, 9, 10, 11, 12}, keyword); Fore(editor, 7, property); Fore(editor, 14, number);
+        break;
+    case Language::powershell:
+        Colour(editor, {1, 13}, comment); Colour(editor, {2, 3, 12}, string);
+        Fore(editor, 4, number); Fore(editor, 5, property); Fore(editor, 8, keyword); Bold(editor, 8);
+        Colour(editor, {9, 10, 11}, type);
+        break;
+    case Language::batch:
+        Fore(editor, 1, comment); Fore(editor, 2, keyword); Bold(editor, 2);
+        Fore(editor, 4, preprocessor); Fore(editor, 5, property); Fore(editor, 6, type);
+        break;
+    case Language::ini:
+        Fore(editor, 1, comment); Fore(editor, 2, heading); Bold(editor, 2);
+        Fore(editor, 3, type); Fore(editor, 4, property);
+        break;
+    case Language::yaml:
+        Fore(editor, 1, comment); Fore(editor, 2, property); Bold(editor, 2);
+        Fore(editor, 3, number); Fore(editor, 4, string); Fore(editor, 5, type);
+        Fore(editor, 6, heading); Fore(editor, 7, muted); Fore(editor, 8, RGB(255, 80, 80));
         break;
     case Language::sql:
-        Fore(editor, kSqlComment, green); Fore(editor, kSqlCommentLine, green);
-        Fore(editor, kSqlString, red); Fore(editor, kSqlNumber, teal); Fore(editor, kSqlWord, blue);
-        SetKeywords(editor, "select from where join inner outer left right on insert update delete create alter drop table view index into values set group by order having union all distinct as and or not null is case when then else end limit offset");
+        Colour(editor, {1, 2, 3, 13, 15, 17, 18}, comment); Colour(editor, {6, 7}, string);
+        Fore(editor, 4, number); Fore(editor, 5, keyword); Bold(editor, 5); Fore(editor, 16, type);
+        break;
+    case Language::rust:
+        Colour(editor, {1, 2, 3, 4}, comment); Fore(editor, 5, number);
+        Colour(editor, {6, 7, 9, 10, 11, 12}, keyword); Fore(editor, 8, type);
+        Colour(editor, {13, 14, 21, 22}, string); Colour(editor, {15, 23}, string);
+        Fore(editor, 19, preprocessor);
         break;
     default:
         break;
@@ -93,17 +146,22 @@ void* LexillaRuntime::CreateLexer(Language language) const noexcept {
 }
 
 bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runtime,
-                       Language language) noexcept {
+                       Language language, bool dark, SyntaxPerformanceMode mode) noexcept {
+    const auto& profile = GetLanguageProfile(language);
     void* lexer = runtime.CreateLexer(language);
     editor.Send(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(lexer));
-    SetProperty(editor, "fold", "1");
-    SetProperty(editor, "fold.compact", "1");
+    SetKeywords(editor, 0, profile.primary_keywords);
+    SetKeywords(editor, 1, profile.secondary_keywords);
+    const bool folding = lexer && profile.supports_folding && mode == SyntaxPerformanceMode::full;
+    SetProperty(editor, "fold", folding ? "1" : "0");
+    SetProperty(editor, "fold.compact", folding ? "1" : "0");
+    SetProperty(editor, "lexer.cpp.track.preprocessor", mode == SyntaxPerformanceMode::full ? "1" : "0");
     editor.Send(SCI_SETMARGINTYPEN, 1, SC_MARGIN_SYMBOL);
     editor.Send(SCI_SETMARGINMASKN, 1, SC_MASK_FOLDERS);
     editor.Send(SCI_SETMARGINSENSITIVEN, 1, 1);
-    editor.Send(SCI_SETMARGINWIDTHN, 1, lexer ? 14 : 0);
+    editor.Send(SCI_SETMARGINWIDTHN, 1, folding ? 14 : 0);
     editor.Send(SCI_SETFOLDFLAGS, SC_FOLDFLAG_LINEAFTER_CONTRACTED);
-    ConfigureCommonStyles(editor, language);
+    ConfigureCommonStyles(editor, language, dark);
     editor.Send(SCI_COLOURISE, 0, -1);
     return language == Language::plain_text || lexer != nullptr;
 }

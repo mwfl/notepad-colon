@@ -158,6 +158,7 @@ constexpr mwfl::ControlId kChineseUi{439};
 constexpr mwfl::ControlId kWorkspaceFilter{440};
 constexpr mwfl::ControlId kWorkspaceManager{441};
 constexpr mwfl::ControlId kFavoriteWorkspace{442};
+constexpr mwfl::ControlId kLanguageBase{500};
 
 struct PrintOptions {
     double margin_inches = 0.5;
@@ -809,7 +810,17 @@ private:
                     if (index < paths.size()) static_cast<void>(OpenPath(paths[index]));
                 }));
         }
+        AddLanguageCommands();
         RefreshRecentCommands();
+    }
+
+    void AddLanguageCommands() {
+        for (const auto language : notepad_colon::AllLanguages()) {
+            const auto id = mwfl::ControlId{static_cast<WORD>(
+                kLanguageBase.value + static_cast<WORD>(language))};
+            commands_.Add(mwfl::Command(id, std::wstring(notepad_colon::LanguageName(language)),
+                [this, language] { SetActiveLanguage(language); }));
+        }
     }
 
     void ApplyUiLanguage() {
@@ -841,13 +852,14 @@ private:
     }
 
     void BuildMenu() {
-        mwfl::Menu file, edit, search, encoding, line_endings, view, code, tools, help;
+        mwfl::Menu file, edit, search, encoding, line_endings, language, view, code, tools, help;
         mwfl::Must(menu_.Create(), "create menu bar");
         mwfl::Must(file.CreatePopup(), "create file menu");
         mwfl::Must(edit.CreatePopup(), "create edit menu");
         mwfl::Must(search.CreatePopup(), "create search menu");
         mwfl::Must(encoding.CreatePopup(), "create encoding menu");
         mwfl::Must(line_endings.CreatePopup(), "create line endings menu");
+        mwfl::Must(language.CreatePopup(), "create language menu");
         mwfl::Must(view.CreatePopup(), "create view menu");
         mwfl::Must(code.CreatePopup(), "create code menu");
         mwfl::Must(tools.CreatePopup(), "create tools menu");
@@ -876,6 +888,11 @@ private:
             mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
         for (const auto id : {kCrlf, kLf})
             mwfl::Must(line_endings.AppendCommand(*commands_.Find(id)), "append line ending command");
+        for (const auto value : notepad_colon::AllLanguages()) {
+            const auto id = mwfl::ControlId{static_cast<WORD>(
+                kLanguageBase.value + static_cast<WORD>(value))};
+            mwfl::Must(language.AppendCommand(*commands_.Find(id)), "append language command");
+        }
         for (const auto id : {kToggleFindBar, kToggleWorkspace, kToggleResults,
                               kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
                               kRectangular, kToggleFold, kToggleBookmark, kNextBookmark})
@@ -909,6 +926,7 @@ private:
         mwfl::Must(menu_.AppendSubmenu(std::move(search), chinese_ui_ ? L"搜索(&S)" : L"&Search"), "append search menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(encoding), chinese_ui_ ? L"编码(&C)" : L"En&coding"), "append encoding menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), chinese_ui_ ? L"换行符(&O)" : L"&EOL"), "append line endings menu");
+        mwfl::Must(menu_.AppendSubmenu(std::move(language), chinese_ui_ ? L"语言(&L)" : L"&Language"), "append language menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(view), chinese_ui_ ? L"视图(&V)" : L"&View"), "append view menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(code), chinese_ui_ ? L"代码(&D)" : L"&Code"), "append code menu");
         mwfl::Must(menu_.AppendSubmenu(std::move(tools), chinese_ui_ ? L"工具(&T)" : L"&Tools"), "append tools menu");
@@ -981,7 +999,7 @@ private:
         notepad_colon::ConfigureAdvancedEditing(*editor);
         notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
         mwfl::Must(notepad_colon::ConfigureLanguage(
-            *editor, lexilla_, notepad_colon::Language::plain_text), "configure plain-text lexer");
+            *editor, lexilla_, notepad_colon::Language::plain_text, IsDark()), "configure plain-text lexer");
         mwfl::Must(editor->SetText(text), "set document text");
         editor->SetSavePoint();
         mwfl::Must(static_cast<bool>(workspace_.Add({id, title, {}})), "add document metadata");
@@ -1058,7 +1076,10 @@ private:
         notepad_colon::ConfigureAdvancedEditing(*editor);
         notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
         const auto language = notepad_colon::DetectLanguage(path);
-        if (!notepad_colon::ConfigureLanguage(*editor, lexilla_, language)) return false;
+        if (!notepad_colon::ConfigureLanguage(
+                *editor, lexilla_, language, IsDark(),
+                protected_mode ? notepad_colon::SyntaxPerformanceMode::lightweight
+                               : notepad_colon::SyntaxPerformanceMode::full)) return false;
         if (protected_mode && !editor->SetReadOnly(true)) return false;
         editor->SetSavePoint();
         const auto title = path.filename().wstring();
@@ -1156,7 +1177,8 @@ private:
         const auto language = notepad_colon::DetectLanguage(path);
         if (language != document.language) {
             document.language = language;
-            static_cast<void>(notepad_colon::ConfigureLanguage(*document.editor, lexilla_, language));
+            static_cast<void>(notepad_colon::ConfigureLanguage(
+                *document.editor, lexilla_, language, IsDark()));
         }
         workspace_.SetDirty(document.id, false);
         RememberPath(path);
@@ -1193,8 +1215,24 @@ private:
         for (auto& document : documents_) {
             notepad_colon::ApplyPreferences(*document.editor, preferences_, dark);
             static_cast<void>(notepad_colon::ConfigureLanguage(
-                *document.editor, lexilla_, document.language));
+                *document.editor, lexilla_, document.language, dark,
+                document.mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
+                                     : notepad_colon::SyntaxPerformanceMode::full));
         }
+    }
+
+    void SetActiveLanguage(notepad_colon::Language language) {
+        auto* document = ActiveDocument();
+        if (!document || document->language == language) return;
+        if (!notepad_colon::ConfigureLanguage(
+                *document->editor, lexilla_, language, IsDark(),
+                document->mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
+                                      : notepad_colon::SyntaxPerformanceMode::full)) {
+            status_.SetText(L"Could not load the selected syntax lexer");
+            return;
+        }
+        document->language = language;
+        status_.SetText(L"Language: " + std::wstring(notepad_colon::LanguageName(language)));
     }
 
     void LoadPreferences() {
@@ -3106,7 +3144,25 @@ private:
             auto* first = ActiveDocument();
             if (!first || !first->editor->SetText(L"first 世界\n")) result = 1;
             if (result == 0 && !notepad_colon::ConfigureLanguage(
-                    *first->editor, lexilla_, notepad_colon::Language::cpp)) result = 11;
+                    *first->editor, lexilla_, notepad_colon::Language::cpp, true)) result = 11;
+            if (result == 0 && !first->editor->SetText(
+                    L"int value = 42; // syntax colour\n")) result = 24;
+            if (result == 0) {
+                first->editor->Send(SCI_COLOURISE, 0, -1);
+                if (first->editor->Send(SCI_GETSTYLEAT, 0) != 5 ||
+                    first->editor->Send(SCI_STYLEGETFORE, 5) != RGB(86, 156, 214)) result = 24;
+            }
+            if (result == 0) {
+                for (const auto language : notepad_colon::AllLanguages()) {
+                    if (!notepad_colon::ConfigureLanguage(
+                            *first->editor, lexilla_, language, false)) {
+                        result = 25;
+                        break;
+                    }
+                }
+                static_cast<void>(notepad_colon::ConfigureLanguage(
+                    *first->editor, lexilla_, notepad_colon::Language::cpp, IsDark()));
+            }
             if (result == 0) {
                 const auto old_length = first->editor->GetLength();
                 notepad_colon::DuplicateLine(*first->editor);
