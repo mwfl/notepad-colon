@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -413,6 +414,22 @@ std::filesystem::path ExecutablePath() {
     return path;
 }
 
+std::filesystem::path CommandProcessorPath() {
+    std::wstring executable(32768, L'\0');
+    const DWORD length = ::GetEnvironmentVariableW(
+        L"ComSpec", executable.data(), static_cast<DWORD>(executable.size()));
+    if (length != 0 && length < executable.size()) {
+        executable.resize(length);
+        return executable;
+    }
+    executable.resize(MAX_PATH);
+    const UINT system_length = ::GetSystemDirectoryW(
+        executable.data(), static_cast<UINT>(executable.size()));
+    if (system_length == 0 || system_length >= executable.size()) return {};
+    executable.resize(system_length);
+    return std::filesystem::path{executable} / L"cmd.exe";
+}
+
 mwfl::FileAssociationSpec TextAssociation() {
     return {.extension = L".txt",
             .prog_id = L"mwfl.notepad-colon.text",
@@ -463,7 +480,7 @@ public:
             ::GetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE));
         ::SetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE,
                             toolbar_style & ~static_cast<DWORD>(TBSTYLE_LIST));
-        mwfl::Must(toolbar_images_.Create(20, 20, ILC_COLOR24 | ILC_MASK, 7, 1),
+        mwfl::Must(toolbar_images_.Create(24, 24, ILC_COLOR24 | ILC_MASK, 7, 1),
                    "create toolbar image list");
         const auto strip = reinterpret_cast<HBITMAP>(::LoadImageW(
             ::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDB_TOOLBAR), IMAGE_BITMAP,
@@ -503,8 +520,9 @@ public:
         add_separator(); add_button(kUndo); add_button(kRedo);
         add_separator(); add_button(kToggleFindBar);
         ::SendMessageW(toolbar_.GetHwnd(), TB_SETMAXTEXTROWS, 0, 0);
-        ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONSIZE, 0, MAKELPARAM(32, 30));
-        ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(6, 5));
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETINDENT, 6, 0);
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONSIZE, 0, MAKELPARAM(40, 36));
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(8, 6));
         toolbar_.AutoSize();
         mwfl::Must(mwfl::SetAccessibleName(toolbar_.GetHwnd(), L"Primary commands"),
                    "name toolbar");
@@ -514,6 +532,7 @@ public:
         results_.SetExtendedListStyle(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
         mwfl::Must(adapter_.Attach(tabs_) == mwfl::DocumentTabStatus::success,
                    "attach document tab adapter");
+        ::SendMessageW(tabs_.GetHwnd(), TCM_SETPADDING, 0, MAKELPARAM(14, 5));
         BuildMenu();
         mwfl::Must(accelerators_.Create(commands_), "create accelerators");
         SetAccelerators(accelerators_.GetHandle());
@@ -1145,17 +1164,17 @@ private:
             .Add(mwfl::Row().Gap(4.0_dip).Margin(3.0_dip)
                 .Add(search_, mwfl::Stretch())
                 .Add(replacement_, mwfl::Stretch()),
-                mwfl::Fixed(find_bar_visible_ ? 30.0_dip : 0.0_dip))
+                mwfl::Fixed(find_bar_visible_ ? 36.0_dip : 0.0_dip))
             .Add(mwfl::Row().Gap(workspace_visible_ ? 3.0_dip : 0.0_dip)
                 .Add(mwfl::Column().Gap(3.0_dip)
-                    .Add(workspace_filter_, mwfl::Fixed(workspace_visible_ ? 26.0_dip : 0.0_dip))
+                    .Add(workspace_filter_, mwfl::Fixed(workspace_visible_ ? 30.0_dip : 0.0_dip))
                     .Add(tree_, mwfl::Stretch()),
-                    mwfl::Fixed(workspace_visible_ ? 220.0_dip : 0.0_dip))
+                    mwfl::Fixed(workspace_visible_ ? 240.0_dip : 0.0_dip))
                 .Add(mwfl::Column().Gap(results_visible_ ? 3.0_dip : 0.0_dip)
                     .Add(tabs_, mwfl::Stretch())
-                    .Add(results_, mwfl::Fixed(results_visible_ ? 135.0_dip : 0.0_dip)),
+                    .Add(results_, mwfl::Fixed(results_visible_ ? 160.0_dip : 0.0_dip)),
                     mwfl::Stretch()), mwfl::Stretch())
-            .Add(status_, mwfl::Fixed(22.0_dip)));
+            .Add(status_, mwfl::Fixed(24.0_dip)));
         adapter_.ArrangePages();
         ::InvalidateRect(GetHwnd(), nullptr, TRUE);
     }
@@ -2168,14 +2187,46 @@ private:
         if (const auto* document = ActiveDocument())
             if (const auto* metadata = workspace_.Find(document->id); metadata && !metadata->path.empty())
                 directory = metadata->path.parent_path();
-        if (directory.empty()) { status_.SetText(L"Open a workspace or saved document first"); return; }
-        auto command = L"cmd.exe /K cd /d \"" + directory.wstring() + L"\"";
+        if (directory.empty()) {
+            status_.SetText(L"Open a folder or save the active document before opening a terminal");
+            if (!IsTestMode())
+                ::MessageBoxW(GetHwnd(),
+                    L"Open a folder or save the active document first.",
+                    L"Open Terminal Here", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        const auto path = directory.wstring();
+        auto parameters = L"-d \"" + path + L"\"";
+        SHELLEXECUTEINFOW shell{sizeof(shell)};
+        shell.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+        shell.hwnd = GetHwnd();
+        shell.lpVerb = L"open";
+        shell.lpFile = L"wt.exe";
+        shell.lpParameters = parameters.c_str();
+        shell.lpDirectory = path.c_str();
+        shell.nShow = SW_SHOWNORMAL;
+        if (::ShellExecuteExW(&shell) != FALSE) {
+            if (shell.hProcess) ::CloseHandle(shell.hProcess);
+            status_.SetText(L"Terminal opened at " + path);
+            return;
+        }
+
+        const auto executable = CommandProcessorPath();
+        if (executable.empty()) {
+            status_.SetText(L"Could not locate a terminal executable");
+            return;
+        }
+        auto command = L"\"" + executable.wstring() + L"\" /K cd /d \"" + path + L"\"";
         STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
-        if (::CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-                             CREATE_NEW_CONSOLE, nullptr, directory.c_str(), &startup, &process)) {
+        if (::CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
+                             CREATE_NEW_CONSOLE, nullptr, path.c_str(), &startup, &process)) {
             ::CloseHandle(process.hThread); ::CloseHandle(process.hProcess);
-            status_.SetText(L"Terminal opened");
-        } else status_.SetText(L"Could not open terminal");
+            status_.SetText(L"Command Prompt opened at " + path);
+        } else {
+            status_.SetText(L"Could not open terminal (Windows error " +
+                            std::to_wstring(::GetLastError()) + L")");
+        }
     }
 
     void ShowQuickOpen() {
@@ -4067,8 +4118,12 @@ private:
     void SyncPresentation(std::wstring_view action) {
         const auto* metadata = workspace_.GetActiveId() ? workspace_.Find(*workspace_.GetActiveId()) : nullptr;
         const auto* document = ActiveDocument();
-        SetTitle((metadata ? metadata->title : L"Notepad::") +
-                 std::wstring(metadata && metadata->dirty ? L" * — Notepad::" : L" — Notepad::"));
+        const auto title = (metadata ? metadata->title : L"Notepad::") +
+            std::wstring(metadata && metadata->dirty ? L" * — Notepad::" : L" — Notepad::");
+        if (title != presentation_title_) {
+            SetTitle(title);
+            presentation_title_ = title;
+        }
         if (metadata && document) {
             const auto selection = document->editor->GetSelection();
             status_.SetText(std::wstring(action) + L" | Pos " + std::to_wstring(selection.end) +
@@ -4079,14 +4134,20 @@ private:
         } else status_.SetText(action);
 
         const bool has_editor = document != nullptr;
-        if (auto* command = commands_.Find(kSave))
-            command->SetEnabled(has_editor && !document->read_only);
-        if (auto* command = commands_.Find(kClose)) command->SetEnabled(has_editor);
-        if (auto* command = commands_.Find(kUndo)) command->SetEnabled(has_editor && document->editor->CanUndo());
-        if (auto* command = commands_.Find(kRedo)) command->SetEnabled(has_editor && document->editor->CanRedo());
-        for (const auto id : {kSave, kClose, kUndo, kRedo})
-            if (const auto* command = commands_.Find(id)) toolbar_.UpdateCommand(*command);
-        ::DrawMenuBar(GetHwnd());
+        bool menu_changed = false;
+        const auto set_enabled = [&](mwfl::ControlId id, bool enabled, bool on_toolbar) {
+            auto* command = commands_.Find(id);
+            if (!command || command->IsEnabled() == enabled) return;
+            command->SetEnabled(enabled);
+            static_cast<void>(menu_.UpdateCommand(*command));
+            if (on_toolbar) static_cast<void>(toolbar_.UpdateCommand(*command));
+            menu_changed = true;
+        };
+        set_enabled(kSave, has_editor && !document->read_only, true);
+        set_enabled(kClose, has_editor, false);
+        set_enabled(kUndo, has_editor && document->editor->CanUndo(), true);
+        set_enabled(kRedo, has_editor && document->editor->CanRedo(), true);
+        if (menu_changed) ::DrawMenuBar(GetHwnd());
     }
 
     void RunSelfTest() noexcept {
@@ -4097,6 +4158,64 @@ private:
         int result = 0;
         std::vector<std::filesystem::path> cleanup;
         try {
+            if (::SendMessageW(GetHwnd(), WM_GETICON, ICON_BIG, 0) == 0 ||
+                ::SendMessageW(GetHwnd(), WM_GETICON, ICON_SMALL, 0) == 0)
+                result = 42;
+            std::function<bool(HMENU)> validate_menu;
+            validate_menu = [&](HMENU menu) -> bool {
+                const int count = ::GetMenuItemCount(menu);
+                if (count < 0) return false;
+                for (int index = 0; index < count; ++index) {
+                    if (const auto submenu = ::GetSubMenu(menu, index)) {
+                        if (!validate_menu(submenu)) return false;
+                        continue;
+                    }
+                    const UINT id = ::GetMenuItemID(menu, index);
+                    if (id == 0 || id == static_cast<UINT>(-1)) continue;
+                    if (id > (std::numeric_limits<WORD>::max)() ||
+                        !commands_.Find(mwfl::ControlId{static_cast<WORD>(id)}))
+                        return false;
+                }
+                return true;
+            };
+            if (::GetMenuItemCount(menu_.GetHandle()) != 10 ||
+                !validate_menu(menu_.GetHandle()))
+                result = 43;
+            const auto toolbar_count = static_cast<int>(
+                ::SendMessageW(toolbar_.GetHwnd(), TB_BUTTONCOUNT, 0, 0));
+            if (toolbar_count != 9) result = 44;
+            SIZE toolbar_image_size{};
+            if (!toolbar_images_.GetIconSize(toolbar_image_size) ||
+                toolbar_image_size.cx != 24 || toolbar_image_size.cy != 24)
+                result = 44;
+            for (int index = 0; index < toolbar_count; ++index) {
+                TBBUTTON button{};
+                if (::SendMessageW(toolbar_.GetHwnd(), TB_GETBUTTON, index,
+                                   reinterpret_cast<LPARAM>(&button)) == FALSE ||
+                    ((button.fsStyle & BTNS_SEP) == 0 &&
+                     !commands_.Find(mwfl::ControlId{static_cast<WORD>(button.idCommand)})))
+                    result = 44;
+            }
+            const auto command_processor = CommandProcessorPath();
+            auto command_line = L"\"" + command_processor.wstring() + L"\" /D /C exit";
+            STARTUPINFOW terminal_startup{sizeof(terminal_startup)};
+            PROCESS_INFORMATION terminal_process{};
+            if (command_processor.empty() ||
+                ::CreateProcessW(command_processor.c_str(), command_line.data(), nullptr,
+                                 nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                                 std::filesystem::temp_directory_path().c_str(),
+                                 &terminal_startup, &terminal_process) == FALSE) {
+                result = 45;
+            } else {
+                ::CloseHandle(terminal_process.hThread);
+                const DWORD waited = ::WaitForSingleObject(terminal_process.hProcess, 5000);
+                DWORD exit_code = 1;
+                if (waited != WAIT_OBJECT_0 ||
+                    ::GetExitCodeProcess(terminal_process.hProcess, &exit_code) == FALSE ||
+                    exit_code != 0)
+                    result = 45;
+                ::CloseHandle(terminal_process.hProcess);
+            }
             const notepad_colon::Preferences test_preferences{
                 L"Consolas", 13, 3, notepad_colon::ThemePreference::dark};
             if (auto* editor = ActiveEditor()) {
@@ -4353,6 +4472,7 @@ private:
     mwfl::ListView results_;
     mwfl::StatusBar status_;
     std::filesystem::path session_path_;
+    std::wstring presentation_title_;
     notepad_colon::SessionWriter session_writer_;
     bool session_snapshot_pending_ = false;
     std::chrono::steady_clock::time_point session_snapshot_due_{};
@@ -4457,10 +4577,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         return 0;
     }
     if (activation_test_client) return 3;
-    return mwfl::RunApplication<MainWindow>(instance,
+    const auto large_icon = reinterpret_cast<HICON>(::LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    const auto small_icon = reinterpret_cast<HICON>(::LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    const int result = mwfl::RunApplication<MainWindow>(instance,
         (self_test || large_file_self_test) ? SW_HIDE : show_command,
         {.title = L"Notepad::", .initial_bounds = {{}, {900.0_dip, 650.0_dip}},
-         .use_default_bounds = false}, {.com_apartment = mwfl::ComApartment::sta},
+         .use_default_bounds = false, .icon = large_icon, .small_icon = small_icon},
+        {.com_apartment = mwfl::ComApartment::sta},
          single_instance, std::move(paths), self_test, activation_test_server,
          large_file_self_test);
+    if (small_icon) ::DestroyIcon(small_icon);
+    if (large_icon) ::DestroyIcon(large_icon);
+    return result;
 }

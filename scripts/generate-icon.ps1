@@ -78,12 +78,13 @@ finally {
 Write-Host "Generated $icoPath"
 
 $toolbar = [System.Drawing.Bitmap]::new(
-    140, 20, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    168, 24, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
 $canvas = [System.Drawing.Graphics]::FromImage($toolbar)
 $canvas.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 $key = [System.Drawing.Color]::FromArgb(255, 0, 255)
 $ink = [System.Drawing.Color]::FromArgb(42, 55, 70)
 $canvas.Clear($key)
+$canvas.ScaleTransform(1.2, 1.2)
 $pen = [System.Drawing.Pen]::new($ink, 1.6)
 $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
 $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
