@@ -6,6 +6,7 @@
 #include <cwctype>
 #include <fstream>
 #include <iterator>
+#include <regex>
 
 namespace notepad_colon {
 namespace {
@@ -57,6 +58,89 @@ bool MatchAt(std::wstring_view line, std::wstring_view query, std::size_t offset
     return (offset == 0 || !IsWord(line[offset - 1])) &&
            (offset + query.size() == line.size() || !IsWord(line[offset + query.size()]));
 }
+
+std::wstring GlobRegex(std::wstring_view pattern, bool directory) {
+    std::wstring expression;
+    const bool anchored = !pattern.empty() && pattern.front() == L'/';
+    if (anchored) pattern.remove_prefix(1);
+    const bool has_slash = pattern.find(L'/') != std::wstring_view::npos;
+    expression = anchored || has_slash ? L"^" : L"(^|.*/)";
+    for (std::size_t index = 0; index < pattern.size(); ++index) {
+        const auto value = pattern[index];
+        if (value == L'*') {
+            if (index + 1 < pattern.size() && pattern[index + 1] == L'*') {
+                ++index;
+                if (index + 1 < pattern.size() && pattern[index + 1] == L'/') {
+                    ++index; expression += L"(.*/)?";
+                } else expression += L".*";
+            } else expression += L"[^/]*";
+        } else if (value == L'?') expression += L"[^/]";
+        else {
+            if (std::wstring_view{L".^$|()[]{}+\\"}.find(value) != std::wstring_view::npos)
+                expression.push_back(L'\\');
+            expression.push_back(value == L'\\' ? L'/' : value);
+        }
+    }
+    expression += directory ? L"(/.*)?$" : L"$";
+    return expression;
+}
+
+struct IgnoreRule {
+    std::wregex expression;
+    bool negated = false;
+    bool directory = false;
+};
+
+std::vector<IgnoreRule> LoadIgnoreRules(const std::filesystem::path& root) {
+    std::vector<IgnoreRule> rules;
+    std::wifstream input(root / L".gitignore");
+    std::wstring line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.empty() || line.front() == L'#') continue;
+        bool negated = line.front() == L'!';
+        if (negated) line.erase(line.begin());
+        bool directory = !line.empty() && line.back() == L'/';
+        if (directory) line.pop_back();
+        if (line.empty()) continue;
+        try {
+            rules.push_back({std::wregex{GlobRegex(line, directory),
+                std::regex_constants::ECMAScript | std::regex_constants::icase},
+                negated, directory});
+        } catch (const std::regex_error&) {}
+    }
+    return rules;
+}
+
+bool IsIgnored(const std::filesystem::path& relative, bool directory,
+               const std::vector<IgnoreRule>& rules) {
+    auto value = relative.generic_wstring();
+    bool ignored = false;
+    for (const auto& rule : rules) {
+        if (rule.directory && !directory && value.find(L'/') == std::wstring::npos) continue;
+        if (std::regex_match(value, rule.expression)) ignored = !rule.negated;
+    }
+    return ignored;
+}
+
+std::pair<std::size_t, std::size_t> LineColumn(std::wstring_view text, std::size_t offset) {
+    std::size_t line = 1, column = 1;
+    for (std::size_t index = 0; index < offset && index < text.size(); ++index) {
+        if (text[index] == L'\n') { ++line; column = 1; }
+        else if (text[index] != L'\r') ++column;
+    }
+    return {line, column};
+}
+
+std::wstring Preview(std::wstring_view text, std::size_t offset) {
+    const auto begin = text.rfind(L'\n', offset);
+    const auto start = begin == std::wstring_view::npos ? 0 : begin + 1;
+    const auto end = text.find(L'\n', offset);
+    auto value = std::wstring{text.substr(start,
+        (std::min)(std::size_t{300}, (end == std::wstring_view::npos ? text.size() : end) - start))};
+    if (!value.empty() && value.back() == L'\r') value.pop_back();
+    return value;
+}
 }  // namespace
 
 bool IsExcludedWorkspaceDirectory(std::wstring_view name) noexcept {
@@ -66,10 +150,12 @@ bool IsExcludedWorkspaceDirectory(std::wstring_view name) noexcept {
 }
 
 WorkspaceScan ScanWorkspace(const std::filesystem::path& root,
-                            std::size_t maximum_entries, std::stop_token stop) {
+                            std::size_t maximum_entries, std::stop_token stop,
+                            bool use_gitignore) {
     WorkspaceScan result;
     std::error_code error;
     if (!std::filesystem::is_directory(root, error) || error) return result;
+    const auto ignore_rules = use_gitignore ? LoadIgnoreRules(root) : std::vector<IgnoreRule>{};
     std::filesystem::recursive_directory_iterator iterator{
         root, std::filesystem::directory_options::skip_permission_denied, error};
     const std::filesystem::recursive_directory_iterator end;
@@ -80,6 +166,12 @@ WorkspaceScan ScanWorkspace(const std::filesystem::path& root,
         if (error) { error.clear(); ++result.skipped; iterator.increment(error); continue; }
         if (directory && IsExcludedWorkspaceDirectory(item.path().filename().wstring())) {
             iterator.disable_recursion_pending();
+            ++result.skipped;
+            iterator.increment(error);
+            continue;
+        }
+        const auto relative = item.path().lexically_relative(root);
+        if (IsIgnored(relative, directory, ignore_rules)) {
             ++result.skipped;
             iterator.increment(error);
             continue;
@@ -107,7 +199,18 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
                              const SearchOptions& options, std::stop_token stop) {
     SearchResult result;
     if (query.empty() || options.maximum_results == 0) return result;
-    const auto scan = ScanWorkspace(root, 100000, stop);
+    std::optional<std::wregex> regular_expression;
+    if (options.regular_expression) {
+        try {
+            auto flags = std::regex_constants::ECMAScript;
+            if (!options.match_case) flags |= std::regex_constants::icase;
+            regular_expression.emplace(std::wstring{query}, flags);
+        } catch (const std::regex_error&) {
+            result.error = L"Invalid regular expression";
+            return result;
+        }
+    }
+    const auto scan = ScanWorkspace(root, 100000, stop, options.use_gitignore);
     result.files_skipped += scan.skipped;
     if (stop.stop_requested()) {
         result.cancelled = true;
@@ -123,6 +226,32 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
             continue;
         }
         ++result.files_searched;
+        if (options.multiline && !options.regular_expression) {
+            for (std::size_t offset = 0; offset < text.size();) {
+                if (MatchAt(text, query, offset, options)) {
+                    const auto [line, column] = LineColumn(text, offset);
+                    result.matches.push_back({path, line, column, Preview(text, offset)});
+                    if (result.matches.size() >= options.maximum_results) {
+                        result.truncated = true; return result;
+                    }
+                    offset += query.size();
+                } else ++offset;
+            }
+            continue;
+        }
+        if (options.regular_expression) {
+            for (std::wsregex_iterator match{text.begin(), text.end(), *regular_expression}, end;
+                 match != end; ++match) {
+                if (stop.stop_requested()) { result.cancelled = true; return result; }
+                const auto offset = static_cast<std::size_t>(match->position());
+                const auto [line, column] = LineColumn(text, offset);
+                result.matches.push_back({path, line, column, Preview(text, offset)});
+                if (result.matches.size() >= options.maximum_results) {
+                    result.truncated = true; return result;
+                }
+            }
+            continue;
+        }
         std::size_t line_number = 1;
         std::size_t start = 0;
         while (start <= text.size()) {

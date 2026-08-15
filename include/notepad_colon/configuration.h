@@ -21,6 +21,7 @@ struct ShortcutBinding {
 struct Configuration {
     Preferences preferences;
     std::vector<ShortcutBinding> shortcuts;
+    std::vector<std::wstring> search_history;
 };
 
 std::wstring FormatShortcut(const ShortcutBinding& binding);

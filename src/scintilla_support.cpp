@@ -12,6 +12,7 @@
 namespace notepad_colon {
 namespace {
 constexpr int kBookmarkMarker = 0;
+constexpr int kTreeSitterStyleBase = 40;
 
 void SetProperty(mwfl::ScintillaEditor& editor, const char* name, const char* value) noexcept {
     editor.Send(SCI_SETPROPERTY, reinterpret_cast<WPARAM>(name), reinterpret_cast<LPARAM>(value));
@@ -120,6 +121,10 @@ void ConfigureCommonStyles(mwfl::ScintillaEditor& editor, Language language, boo
         break;
     }
 }
+
+int TreeSitterStyle(SyntaxKind kind) noexcept {
+    return kTreeSitterStyleBase + static_cast<int>(kind);
+}
 }  // namespace
 
 LexillaRuntime::~LexillaRuntime() noexcept {
@@ -141,8 +146,13 @@ bool LexillaRuntime::LoadAdjacent() noexcept {
 
 void* LexillaRuntime::CreateLexer(Language language) const noexcept {
     const auto name = LexerName(language);
+    return CreateLexer(name);
+}
+
+void* LexillaRuntime::CreateLexer(std::string_view name) const noexcept {
     if (!create_ || name.empty()) return nullptr;
-    return create_(name.data());
+    const std::string terminated{name};
+    return create_(terminated.c_str());
 }
 
 bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runtime,
@@ -246,6 +256,62 @@ bool TransformSelectionOrDocument(
     editor.Send(SCI_ENDUNDOACTION);
     return editor.SetSelection({range.start, range.start +
         static_cast<mwfl::ScintillaPosition>(replacement->size())});
+}
+
+bool ConfigureRegisteredLanguage(mwfl::ScintillaEditor& editor,
+                                 const LexillaRuntime& runtime,
+                                 const RegisteredLanguage& language,
+                                 bool dark) noexcept {
+    if (language.builtin)
+        return ConfigureLanguage(editor, runtime, *language.builtin, dark);
+    void* lexer = runtime.CreateLexer(language.fallback_lexer);
+    editor.Send(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(lexer));
+    SetProperty(editor, "fold", "0");
+    editor.Send(SCI_SETMARGINWIDTHN, 1, 0);
+    ConfigureCommonStyles(editor, Language::plain_text, dark);
+    return language.fallback_lexer.empty() || lexer != nullptr;
+}
+
+void ConfigureTreeSitterStyles(mwfl::ScintillaEditor& editor, bool dark) noexcept {
+    editor.Send(SCI_SETILEXER, 0, 0);
+    const auto set = [&](SyntaxKind kind, COLORREF foreground, bool bold = false) {
+        const auto style = TreeSitterStyle(kind);
+        editor.Send(SCI_STYLESETFORE, style, foreground);
+        editor.Send(SCI_STYLESETBOLD, style, bold ? 1 : 0);
+    };
+    set(SyntaxKind::comment, dark ? RGB(106, 153, 85) : RGB(0, 128, 0));
+    set(SyntaxKind::string, dark ? RGB(206, 145, 120) : RGB(163, 21, 21));
+    set(SyntaxKind::number, dark ? RGB(181, 206, 168) : RGB(43, 145, 175));
+    set(SyntaxKind::keyword, dark ? RGB(86, 156, 214) : RGB(0, 92, 197), true);
+    set(SyntaxKind::type, dark ? RGB(78, 201, 176) : RGB(128, 0, 128));
+    set(SyntaxKind::function, dark ? RGB(220, 220, 170) : RGB(121, 94, 38));
+    set(SyntaxKind::property, dark ? RGB(156, 220, 254) : RGB(0, 92, 197));
+    set(SyntaxKind::variable, dark ? RGB(220, 220, 220) : RGB(30, 30, 30));
+    set(SyntaxKind::constant, dark ? RGB(86, 156, 214) : RGB(0, 92, 197));
+    set(SyntaxKind::preprocessor, dark ? RGB(197, 134, 192) : RGB(128, 0, 128));
+}
+
+void ApplyTreeSitterHighlights(mwfl::ScintillaEditor& editor,
+                               const TreeSitterDocument& document,
+                               std::uint32_t start_byte,
+                               std::uint32_t end_byte) noexcept {
+    const auto length = static_cast<std::uint32_t>((std::max<LRESULT>)(0, editor.GetLength()));
+    start_byte = (std::min)(start_byte, length);
+    end_byte = (std::min)(end_byte, length);
+    if (start_byte >= end_byte) return;
+    const auto spans = document.Highlights(start_byte, end_byte);
+    std::uint32_t cursor = start_byte;
+    editor.Send(SCI_STARTSTYLING, start_byte);
+    for (const auto& span : spans) {
+        const auto begin = (std::max)(start_byte, span.start_byte);
+        const auto end = (std::min)(end_byte, span.end_byte);
+        if (begin >= end || end <= cursor) continue;
+        if (begin > cursor) editor.Send(SCI_SETSTYLING, begin - cursor, STYLE_DEFAULT);
+        const auto styled_begin = (std::max)(begin, cursor);
+        editor.Send(SCI_SETSTYLING, end - styled_begin, TreeSitterStyle(span.kind));
+        cursor = end;
+    }
+    if (cursor < end_byte) editor.Send(SCI_SETSTYLING, end_byte - cursor, STYLE_DEFAULT);
 }
 
 bool ReplaceDocumentText(mwfl::ScintillaEditor& editor, std::wstring_view text,
@@ -363,6 +429,30 @@ void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept
         editor.Send(SCI_GOTOPOS, editor.Send(SCI_GETLINEINDENTPOSITION, line));
         return;
     }
+    const auto position = editor.Send(SCI_GETCURRENTPOS);
+    if ((character == ')' || character == ']' || character == '}' ||
+         character == '"' || character == '\'') &&
+        editor.Send(SCI_GETCHARAT, position) == character) {
+        editor.Send(SCI_DELETERANGE, position - 1, 1);
+        editor.Send(SCI_GOTOPOS, position);
+        return;
+    }
+    if (character == '}') {
+        const auto line = editor.Send(SCI_LINEFROMPOSITION, position);
+        const auto line_start = editor.Send(SCI_POSITIONFROMLINE, line);
+        bool only_whitespace = true;
+        for (auto cursor = line_start; cursor + 1 < position; ++cursor) {
+            const auto value = editor.Send(SCI_GETCHARAT, cursor);
+            if (value != ' ' && value != '\t') { only_whitespace = false; break; }
+        }
+        if (only_whitespace) {
+            const auto indent = editor.Send(SCI_GETLINEINDENTATION, line);
+            editor.Send(SCI_SETLINEINDENTATION, line,
+                (std::max<LRESULT>)(0, indent - editor.Send(SCI_GETTABWIDTH)));
+            editor.Send(SCI_GOTOPOS, editor.Send(SCI_GETLINEENDPOSITION, line));
+        }
+        return;
+    }
     const char* closing = nullptr;
     switch (character) {
     case '(': closing = ")"; break;
@@ -372,7 +462,6 @@ void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept
     case '\'': closing = "'"; break;
     default: return;
     }
-    const auto position = editor.Send(SCI_GETCURRENTPOS);
     editor.Send(SCI_INSERTTEXT, position, reinterpret_cast<LPARAM>(closing));
     editor.Send(SCI_GOTOPOS, position);
 }

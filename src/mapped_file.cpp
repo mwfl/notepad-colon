@@ -116,7 +116,9 @@ std::optional<MappedTextWindow> MappedFile::ReadTextWindow(
                                    window_encoding, ansi_code_page);
         if (!decoded) continue;
         if (!decoded->empty() && decoded->back() >= 0xd800 && decoded->back() <= 0xdbff) continue;
-        return MappedTextWindow{offset, read_offset, read_offset + bytes.size() - trim,
+        const auto decoded_offset = encoding == EncodingKind::utf8_bom && read_offset == 0
+            ? std::uint64_t{3} : read_offset;
+        return MappedTextWindow{offset, decoded_offset, read_offset + bytes.size() - trim,
                                 std::move(*decoded)};
     }
     return std::nullopt;

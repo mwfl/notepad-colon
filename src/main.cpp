@@ -7,12 +7,15 @@
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/configuration.h>
 #include <notepad_colon/macro.h>
 #include <notepad_colon/mapped_file.h>
 #include <notepad_colon/output.h>
 #include <notepad_colon/editing.h>
+#include <notepad_colon/editor_config.h>
+#include <notepad_colon/git_status.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
@@ -20,6 +23,7 @@
 #include <notepad_colon/session.h>
 #include <notepad_colon/session_writer.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/language_registry.h>
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/workspace_state.h>
 #include "scintilla_support.h"
@@ -71,6 +75,17 @@ constexpr mwfl::ControlId kUtf16Le{125};
 constexpr mwfl::ControlId kUtf16Be{126};
 constexpr mwfl::ControlId kCrlf{127};
 constexpr mwfl::ControlId kLf{128};
+constexpr mwfl::ControlId kSearchMatchCase{444};
+constexpr mwfl::ControlId kSearchWholeWord{445};
+constexpr mwfl::ControlId kSearchRegex{446};
+constexpr mwfl::ControlId kSearchSelection{447};
+constexpr mwfl::ControlId kGoToLineColumn{448};
+constexpr mwfl::ControlId kDocumentSymbols{449};
+constexpr mwfl::ControlId kQuickOpen{450};
+constexpr mwfl::ControlId kPreviousSearch{451};
+constexpr mwfl::ControlId kFollowTail{452};
+constexpr mwfl::ControlId kRefreshGitChanges{453};
+constexpr mwfl::ControlId kOpenTerminal{454};
 constexpr mwfl::ControlId kRecentBase{300};
 constexpr mwfl::ControlId kToggleFold{320};
 constexpr mwfl::ControlId kToggleBookmark{321};
@@ -158,7 +173,9 @@ constexpr mwfl::ControlId kChineseUi{439};
 constexpr mwfl::ControlId kWorkspaceFilter{440};
 constexpr mwfl::ControlId kWorkspaceManager{441};
 constexpr mwfl::ControlId kFavoriteWorkspace{442};
+constexpr mwfl::ControlId kReloadLanguages{443};
 constexpr mwfl::ControlId kLanguageBase{500};
+constexpr mwfl::ControlId kCustomLanguageBase{600};
 
 struct PrintOptions {
     double margin_inches = 0.5;
@@ -209,8 +226,15 @@ struct EditorDocument {
     unsigned int ansi_code_page = 65001;
     notepad_colon::EncodingAnalysis encoding_analysis;
     std::unique_ptr<notepad_colon::MappedFile> mapped_file;
+    std::unique_ptr<notepad_colon::LargeFileBuffer> large_buffer;
     std::uint64_t mapped_offset = 0;
+    std::uint64_t mapped_decoded_offset = 0;
     std::size_t mapped_window_size = 8u * 1024 * 1024;
+    bool loading_large_window = false;
+    std::unique_ptr<notepad_colon::TreeSitterDocument> syntax_tree;
+    std::string language_id = "plain-text";
+    notepad_colon::EditorConfigSettings editor_config;
+    bool follow_tail = false;
 };
 
 struct BackgroundTask {
@@ -378,10 +402,11 @@ class MainWindow final : public mwfl::WindowBase {
 public:
     MainWindow(mwfl::SingleInstance& instance,
                std::vector<std::filesystem::path> startup_paths,
-               bool self_test, bool activation_test_server)
+               bool self_test, bool activation_test_server, bool large_file_self_test)
         : workspace_({1}, 12), instance_(instance),
           startup_paths_(std::move(startup_paths)), self_test_(self_test),
-          activation_test_server_(activation_test_server) {}
+          activation_test_server_(activation_test_server),
+          large_file_self_test_(large_file_self_test) {}
 
     void BuildUI() override {
         static_cast<void>(mwfl::SetProcessAppUserModelId(L"mwfl.notepad-colon"));
@@ -453,7 +478,8 @@ public:
         for (const auto& path : startup_paths_) static_cast<void>(OpenPath(path));
         mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
                    "start external-file monitor");
-        if (IsSelfTest() && !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
+        if ((IsSelfTest() || large_file_self_test_) &&
+            !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
             throw std::runtime_error("could not schedule GUI self-test");
     }
 
@@ -514,7 +540,12 @@ public:
             notepad_colon::HandleCharacterAdded(*document->editor, notification->character);
         } else if (notification->kind == mwfl::ScintillaNotificationKind::update_ui) {
             notepad_colon::UpdateBraceHighlight(*document->editor);
+            StyleVisibleSyntax(*document);
         }
+        if (notification->kind == mwfl::ScintillaNotificationKind::modified)
+            UpdateLargeBuffer(*document, *reinterpret_cast<const SCNotification*>(&event.header));
+        if (notification->kind == mwfl::ScintillaNotificationKind::modified)
+            UpdateSyntaxTree(*document, *reinterpret_cast<const SCNotification*>(&event.header));
         workspace_.SetUndoState(document->id, document->editor->CanUndo(), document->editor->CanRedo());
         SyncPresentation(L"Editing");
         if (notification->kind == mwfl::ScintillaNotificationKind::modified) {
@@ -605,6 +636,7 @@ public:
             static_cast<void>(mwfl::SaveRecentFilesToRegistry(
                 HKEY_CURRENT_USER, kSettingsKey, recent_));
             SaveWorkspaceCatalog();
+            static_cast<void>(SaveConfigurationFile(configuration_path_));
         }
         StopWorkers();
         adapter_.Detach();
@@ -616,9 +648,12 @@ private:
     bool IsSelfTest() const noexcept {
         return self_test_;
     }
-    bool IsTestMode() const noexcept { return self_test_ || activation_test_server_; }
+    bool IsTestMode() const noexcept {
+        return self_test_ || activation_test_server_ || large_file_self_test_;
+    }
 
     void BuildCommands() {
+        LoadLanguageDefinitions();
         commands_
             .Add(mwfl::Command(kNew, L"&New", [this] { NewDocument(); })
                      .SetShortcut({FVIRTKEY | FCONTROL, 'N'}))
@@ -649,6 +684,36 @@ private:
             .Add(mwfl::Command(kReplaceNext, L"&Replace Next", [this] { ReplaceNext(); })
                      .SetShortcut({FVIRTKEY | FCONTROL, 'H'}))
             .Add(mwfl::Command(kReplaceAll, L"Replace &All", [this] { ReplaceAll(); }))
+            .Add(mwfl::Command(kSearchMatchCase, L"Match Case", [this] {
+                ToggleSearchOption(kSearchMatchCase, search_match_case_); }))
+            .Add(mwfl::Command(kSearchWholeWord, L"Whole Word", [this] {
+                ToggleSearchOption(kSearchWholeWord, search_whole_word_); }))
+            .Add(mwfl::Command(kSearchRegex, L"Regular Expression", [this] {
+                ToggleSearchOption(kSearchRegex, search_regex_); }))
+            .Add(mwfl::Command(kSearchSelection, L"In Selection", [this] {
+                ToggleSearchSelection(); }))
+            .Add(mwfl::Command(kGoToLineColumn, L"Go to Line / Column...", [this] {
+                ShowGoToLineColumn(); }).SetShortcut({FVIRTKEY | FCONTROL, 'G'}))
+            .Add(mwfl::Command(kDocumentSymbols, L"Document Symbols...", [this] {
+                ShowDocumentSymbols(); }).SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'O'}))
+            .Add(mwfl::Command(kQuickOpen, L"Quick Open File...", [this] {
+                ShowQuickOpen(); }).SetShortcut({FVIRTKEY | FCONTROL, 'P'}))
+            .Add(mwfl::Command(kPreviousSearch, L"Use Previous Search", [this] {
+                if (search_history_.empty()) status_.SetText(L"Search history is empty");
+                else { search_.SetText(search_history_.front()); search_.Focus(); }
+            }))
+            .Add(mwfl::Command(kFollowTail, L"Follow Growing File", [this] {
+                auto* document = ActiveDocument();
+                if (!document || !document->large_buffer) {
+                    status_.SetText(L"Follow mode is available for large files"); return;
+                }
+                document->follow_tail = !document->follow_tail;
+                status_.SetText(document->follow_tail ? L"Following appended data" : L"Follow mode stopped");
+            }))
+            .Add(mwfl::Command(kRefreshGitChanges, L"Refresh Git Change Markers", [this] {
+                RefreshGitChangeMarkers(); }))
+            .Add(mwfl::Command(kOpenTerminal, L"Open Terminal Here", [this] {
+                OpenWorkspaceTerminal(); }))
             .Add(mwfl::Command(kUtf8, L"UTF-&8", [this] { SetEncoding(mwfl::TextEncoding::utf8); }))
             .Add(mwfl::Command(kUtf8Bom, L"UTF-8 &BOM", [this] { SetEncoding(mwfl::TextEncoding::utf8_bom); }))
             .Add(mwfl::Command(kUtf16Le, L"UTF-16 &LE", [this] { SetEncoding(mwfl::TextEncoding::utf16_le); }))
@@ -664,6 +729,8 @@ private:
         commands_
             .Add(mwfl::Command(kEnglishUi, L"English UI", [this] { SetUiLanguage(false); }))
             .Add(mwfl::Command(kChineseUi, L"简体中文界面", [this] { SetUiLanguage(true); }));
+        commands_.Add(mwfl::Command(kReloadLanguages, L"Reload Language Definitions",
+            [this] { ReloadLanguageDefinitions(); }));
         commands_
             .Add(mwfl::Command(kRegisterAssociation, L"Register .txt Association",
                 [this] { ReportAssociation(true); }))
@@ -821,6 +888,16 @@ private:
             commands_.Add(mwfl::Command(id, std::wstring(notepad_colon::LanguageName(language)),
                 [this, language] { SetActiveLanguage(language); }));
         }
+        std::size_t custom_index = 0;
+        for (const auto& language : language_registry_.Languages()) {
+            if (language.builtin) continue;
+            const auto id = mwfl::ControlId{static_cast<WORD>(
+                kCustomLanguageBase.value + custom_index)};
+            const auto language_id = language.id;
+            commands_.Add(mwfl::Command(id, language.name,
+                [this, language_id] { SetActiveRegisteredLanguage(language_id); }));
+            ++custom_index;
+        }
     }
 
     void ApplyUiLanguage() {
@@ -881,7 +958,10 @@ private:
                               kPinTab, kSortTabs, kCloseOtherTabs, kCloseLeftTabs,
                               kCloseRightTabs, kOpenNewWindow, kPreviousLargeWindow, kNextLargeWindow})
             mwfl::Must(edit.AppendCommand(*commands_.Find(id)), "append edit command");
-        for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kFindInFiles, kCancelSearch})
+        for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kSearchMatchCase,
+                              kSearchWholeWord, kSearchRegex, kSearchSelection,
+                              kGoToLineColumn, kDocumentSymbols, kQuickOpen, kPreviousSearch,
+                              kFindInFiles, kCancelSearch})
             mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
         for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi,
                               kEncodingInfo, kReopenSystemAnsi, kReopenWindows1252, kReopenGb18030})
@@ -893,9 +973,22 @@ private:
                 kLanguageBase.value + static_cast<WORD>(value))};
             mwfl::Must(language.AppendCommand(*commands_.Find(id)), "append language command");
         }
+        std::size_t custom_index = 0;
+        for (const auto& definition : language_registry_.Languages()) {
+            if (definition.builtin) continue;
+            const auto id = mwfl::ControlId{static_cast<WORD>(
+                kCustomLanguageBase.value + custom_index)};
+            mwfl::Must(language.AppendCommand(*commands_.Find(id)), "append custom language command");
+            ++custom_index;
+        }
+        if (custom_index != 0)
+            mwfl::Must(language.AppendSeparator(), "append custom language separator");
+        mwfl::Must(language.AppendCommand(*commands_.Find(kReloadLanguages)),
+                   "append reload languages command");
         for (const auto id : {kToggleFindBar, kToggleWorkspace, kToggleResults,
                               kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
-                              kRectangular, kToggleFold, kToggleBookmark, kNextBookmark})
+                              kRectangular, kToggleFold, kToggleBookmark, kNextBookmark,
+                              kFollowTail, kRefreshGitChanges})
             mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
         for (const auto id : {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,
                               kWorkspaceRename, kWorkspaceRecycle, kWorkspaceReveal,
@@ -918,7 +1011,7 @@ private:
                               kDocumentStatistics,
                               kPreferences, kRecoveryManager, kCompareWithFile,
                               kCompareWithDisk, kRegisterAssociation, kRemoveAssociation,
-                              kEnglishUi, kChineseUi})
+                              kEnglishUi, kChineseUi, kOpenTerminal})
             mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
         mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
         mwfl::Must(menu_.AppendSubmenu(std::move(file), chinese_ui_ ? L"文件(&F)" : L"&File"), "append file menu");
@@ -1007,6 +1100,7 @@ private:
                    "bind document page");
         mwfl::Must(mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str()), "name document editor");
         documents_.push_back({id, std::move(editor)});
+        InitializeSyntaxTree(documents_.back());
         workspace_.Activate(id);
         SynchronizeTabs(true);
         SyncPresentation(L"New document");
@@ -1034,17 +1128,25 @@ private:
         const auto stamp_before_read = protected_mode ? std::nullopt : QueryFileStamp(path);
         if (!protected_mode && !stamp_before_read) return false;
         std::unique_ptr<notepad_colon::MappedFile> mapped;
+        std::unique_ptr<notepad_colon::LargeFileBuffer> large_buffer;
         std::optional<std::vector<std::uint8_t>> bytes;
         if (protected_mode) {
             mapped = std::make_unique<notepad_colon::MappedFile>();
             if (!mapped->Open(path)) return false;
+            large_buffer = std::make_unique<notepad_colon::LargeFileBuffer>();
+            if (!large_buffer->Open(path)) return false;
             bytes = mapped->Read(0, 8u * 1024 * 1024);
         } else bytes = ReadFileBytes(path);
         if (!bytes) return false;
-        const auto analysis = notepad_colon::AnalyzeEncoding(*bytes);
+        const auto editor_config = notepad_colon::ResolveEditorConfig(path);
+        auto analysis = notepad_colon::AnalyzeEncoding(*bytes);
+        if (editor_config.encoding) analysis.encoding = *editor_config.encoding;
         if (analysis.encoding == notepad_colon::EncodingKind::binary) {
             status_.SetText(L"Binary content detected; use a hex editor"); return false;
         }
+        const bool large_editable = protected_mode &&
+            (analysis.encoding == notepad_colon::EncodingKind::utf8 ||
+             analysis.encoding == notepad_colon::EncodingKind::utf8_bom);
         std::wstring loaded_text;
         mwfl::TextEncoding loaded_encoding = ToMwflEncoding(analysis.encoding);
         std::optional<mwfl::FileStamp> loaded_stamp;
@@ -1075,12 +1177,21 @@ private:
             !editor->ConfigureCodeEditing() || !editor->SetText(loaded_text)) return false;
         notepad_colon::ConfigureAdvancedEditing(*editor);
         notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
-        const auto language = notepad_colon::DetectLanguage(path);
-        if (!notepad_colon::ConfigureLanguage(
-                *editor, lexilla_, language, IsDark(),
-                protected_mode ? notepad_colon::SyntaxPerformanceMode::lightweight
-                               : notepad_colon::SyntaxPerformanceMode::full)) return false;
-        if (protected_mode && !editor->SetReadOnly(true)) return false;
+        if (editor_config.indent_size) {
+            editor->Send(SCI_SETTABWIDTH, *editor_config.indent_size);
+            editor->Send(SCI_SETINDENT, *editor_config.indent_size);
+        }
+        if (editor_config.use_tabs) editor->Send(SCI_SETUSETABS, *editor_config.use_tabs);
+        const auto* registered_language = language_registry_.Detect(path);
+        const auto language = registered_language && registered_language->builtin
+            ? *registered_language->builtin : notepad_colon::Language::plain_text;
+        const bool configured = registered_language && !registered_language->builtin
+            ? notepad_colon::ConfigureRegisteredLanguage(*editor, lexilla_, *registered_language, IsDark())
+            : notepad_colon::ConfigureLanguage(*editor, lexilla_, language, IsDark(),
+                  protected_mode ? notepad_colon::SyntaxPerformanceMode::lightweight
+                                 : notepad_colon::SyntaxPerformanceMode::full);
+        if (!configured) return false;
+        if (protected_mode && !large_editable && !editor->SetReadOnly(true)) return false;
         editor->SetSavePoint();
         const auto title = path.filename().wstring();
         if (!workspace_.Add({id, title, path})) return false;
@@ -1088,16 +1199,29 @@ private:
         mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str());
         documents_.push_back({id, std::move(editor), loaded_encoding,
                               notepad_colon::DetectLineEnding(loaded_text), loaded_stamp,
-                              protected_mode, language, notepad_colon::CaptureFileState(path)});
+                              protected_mode && !large_editable, language,
+                              notepad_colon::CaptureFileState(path)});
         documents_.back().detected_encoding = analysis.encoding;
         documents_.back().ansi_code_page = analysis.code_page;
+        documents_.back().editor_config = editor_config;
+        if (editor_config.line_ending) documents_.back().line_ending = *editor_config.line_ending;
+        if (editor_config.encoding) {
+            documents_.back().detected_encoding = *editor_config.encoding;
+            documents_.back().encoding = ToMwflEncoding(*editor_config.encoding);
+        }
         documents_.back().encoding_analysis = analysis;
         documents_.back().mapped_file = std::move(mapped);
+        documents_.back().large_buffer = std::move(large_buffer);
+        if (registered_language) documents_.back().language_id = registered_language->id;
+        InitializeSyntaxTree(documents_.back());
         workspace_.Activate(id);
         SynchronizeTabs(true);
         if (analysis.eol.Mixed() || !analysis.unicode_risks.empty()) {
             status_.SetText(L"Opened with text safety warnings; use Document Encoding Information");
-        } else SyncPresentation(protected_mode ? L"Opened in large-file read-only mode" : L"Opened");
+        } else SyncPresentation(protected_mode
+            ? (large_editable ? L"Opened in large-file streaming edit mode"
+                              : L"Opened in large-file read-only mode")
+            : L"Opened");
         RememberPath(path);
         static_cast<void>(SaveSessionSnapshot());
         return true;
@@ -1131,11 +1255,19 @@ private:
                 path = selected.path;
             }
         }
+        if (document.large_buffer) return SaveLargeDocument(document, path, *metadata);
         auto text = document.editor->GetText();
         if (!text) return false;
-        auto prepared = preferences_.trim_trailing_whitespace_on_save
+        const auto trim_trailing = document.editor_config.trim_trailing_whitespace
+            .value_or(preferences_.trim_trailing_whitespace_on_save);
+        const auto final_newline = document.editor_config.insert_final_newline
+            .value_or(preferences_.ensure_final_newline);
+        auto prepared = trim_trailing
             ? notepad_colon::TrimTrailingWhitespace(*text) : *text;
-        if (preferences_.ensure_final_newline) {
+        if (document.editor_config.line_ending)
+            prepared = notepad_colon::NormalizeLineEndings(
+                prepared, *document.editor_config.line_ending);
+        if (final_newline) {
             const auto newline = document.line_ending == notepad_colon::LineEnding::crlf ? L"\r\n" :
                                  document.line_ending == notepad_colon::LineEnding::cr ? L"\r" : L"\n";
             prepared = notepad_colon::EnsureFinalNewline(prepared, newline);
@@ -1174,11 +1306,19 @@ private:
         document.line_ending = notepad_colon::DetectLineEnding(*text);
         document.editor->SetSavePoint();
         workspace_.Rename(document.id, path.filename().wstring(), path);
-        const auto language = notepad_colon::DetectLanguage(path);
-        if (language != document.language) {
+        const auto* registered_language = language_registry_.Detect(path);
+        const auto language = registered_language && registered_language->builtin
+            ? *registered_language->builtin : notepad_colon::Language::plain_text;
+        const auto language_id = registered_language ? registered_language->id : std::string{"plain-text"};
+        if (language_id != document.language_id) {
             document.language = language;
-            static_cast<void>(notepad_colon::ConfigureLanguage(
-                *document.editor, lexilla_, language, IsDark()));
+            document.language_id = language_id;
+            if (registered_language && !registered_language->builtin)
+                static_cast<void>(notepad_colon::ConfigureRegisteredLanguage(
+                    *document.editor, lexilla_, *registered_language, IsDark()));
+            else static_cast<void>(notepad_colon::ConfigureLanguage(
+                    *document.editor, lexilla_, language, IsDark()));
+            InitializeSyntaxTree(document);
         }
         workspace_.SetDirty(document.id, false);
         RememberPath(path);
@@ -1214,10 +1354,18 @@ private:
         const bool dark = IsDark();
         for (auto& document : documents_) {
             notepad_colon::ApplyPreferences(*document.editor, preferences_, dark);
-            static_cast<void>(notepad_colon::ConfigureLanguage(
-                *document.editor, lexilla_, document.language, dark,
-                document.mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
-                                     : notepad_colon::SyntaxPerformanceMode::full));
+            const auto* registered = language_registry_.Find(document.language_id);
+            if (registered && !registered->builtin)
+                static_cast<void>(notepad_colon::ConfigureRegisteredLanguage(
+                    *document.editor, lexilla_, *registered, dark));
+            else static_cast<void>(notepad_colon::ConfigureLanguage(
+                    *document.editor, lexilla_, document.language, dark,
+                    document.mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
+                                         : notepad_colon::SyntaxPerformanceMode::full));
+            if (document.syntax_tree) {
+                notepad_colon::ConfigureTreeSitterStyles(*document.editor, dark);
+                StyleVisibleSyntax(document);
+            }
         }
     }
 
@@ -1232,7 +1380,175 @@ private:
             return;
         }
         document->language = language;
+        for (const auto& definition : language_registry_.Languages())
+            if (definition.builtin == language) { document->language_id = definition.id; break; }
+        InitializeSyntaxTree(*document);
         status_.SetText(L"Language: " + std::wstring(notepad_colon::LanguageName(language)));
+    }
+
+    static std::filesystem::path LanguageDirectory(bool test_mode) {
+        if (test_mode) return std::filesystem::temp_directory_path() /
+            (L"notepad-colon-gui-languages-" + std::to_wstring(::GetCurrentProcessId()));
+        wchar_t local_app_data[32768]{};
+        const DWORD length = ::GetEnvironmentVariableW(
+            L"LOCALAPPDATA", local_app_data, static_cast<DWORD>(std::size(local_app_data)));
+        return length > 0 && length < std::size(local_app_data)
+            ? std::filesystem::path{local_app_data} / L"mwfl" / L"Notepad Colon" / L"languages"
+            : std::filesystem::path{};
+    }
+
+    void LoadLanguageDefinitions() {
+        language_registry_.ResetBuiltins();
+        const auto directory = LanguageDirectory(IsTestMode());
+        if (!directory.empty()) static_cast<void>(language_registry_.LoadDirectory(directory));
+    }
+
+    void ReloadLanguageDefinitions() {
+        LoadLanguageDefinitions();
+        AddLanguageCommands();
+        BuildMenu();
+        mwfl::Must(accelerators_.Create(commands_), "recreate language accelerators");
+        SetAccelerators(accelerators_.GetHandle());
+        const auto custom = std::ranges::count_if(language_registry_.Languages(),
+            [](const auto& language) { return !language.builtin.has_value(); });
+        status_.SetText(L"Language definitions reloaded: " + std::to_wstring(custom) +
+            L" custom, " + std::to_wstring(language_registry_.Errors().size()) + L" error(s)");
+    }
+
+    void SetActiveRegisteredLanguage(std::string_view id) {
+        const auto* language = language_registry_.Find(id);
+        auto* document = ActiveDocument();
+        if (!language || !document) return;
+        if (language->builtin) { SetActiveLanguage(*language->builtin); return; }
+        if (!notepad_colon::ConfigureRegisteredLanguage(
+                *document->editor, lexilla_, *language, IsDark())) {
+            status_.SetText(L"Could not load the custom language fallback lexer");
+            return;
+        }
+        document->language = notepad_colon::Language::plain_text;
+        document->language_id = language->id;
+        InitializeSyntaxTree(*document);
+        status_.SetText(L"Language: " + language->name);
+    }
+
+    static std::optional<std::string> EditorUtf8(const mwfl::ScintillaEditor& editor) noexcept {
+        try {
+            const auto length = editor.GetLength();
+            if (length < 0 || length > static_cast<mwfl::ScintillaPosition>(UINT32_MAX))
+                return std::nullopt;
+            std::string text(static_cast<std::size_t>(length) + 1, '\0');
+            editor.Send(SCI_GETTEXT, text.size(), reinterpret_cast<LPARAM>(text.data()));
+            text.resize(static_cast<std::size_t>(length));
+            return text;
+        } catch (...) { return std::nullopt; }
+    }
+
+    void InitializeSyntaxTree(EditorDocument& document) noexcept {
+        document.syntax_tree.reset();
+        if (document.mapped_file) return;
+        const auto text = EditorUtf8(*document.editor);
+        if (!text || text->size() > 8u * 1024 * 1024) return;
+        try {
+            auto syntax = std::make_unique<notepad_colon::TreeSitterDocument>();
+            bool configured = false;
+            if (document.language == notepad_colon::Language::cpp) configured = syntax->ConfigureCpp();
+            else if (document.language == notepad_colon::Language::json) configured = syntax->ConfigureJson();
+            else if (const auto* language = language_registry_.Find(document.language_id);
+                     language && language->tree_sitter) {
+                if (language->tree_sitter->grammar == "cpp")
+                    configured = syntax->ConfigureCpp(language->tree_sitter->highlights_query,
+                                                       language->tree_sitter->symbols_query);
+                else if (language->tree_sitter->grammar == "json")
+                    configured = syntax->ConfigureJson(language->tree_sitter->highlights_query,
+                                                        language->tree_sitter->symbols_query);
+            }
+            if (!configured || !syntax->Parse(*text)) return;
+            document.syntax_tree = std::move(syntax);
+            notepad_colon::ConfigureTreeSitterStyles(*document.editor, IsDark());
+            StyleVisibleSyntax(document);
+        } catch (...) { document.syntax_tree.reset(); }
+    }
+
+    void StyleVisibleSyntax(EditorDocument& document) noexcept {
+        if (!document.syntax_tree) return;
+        const auto first_visible = document.editor->Send(SCI_GETFIRSTVISIBLELINE);
+        const auto visible_count = document.editor->Send(SCI_LINESONSCREEN);
+        const auto first_line = document.editor->Send(
+            SCI_DOCLINEFROMVISIBLE, (std::max<LRESULT>)(0, first_visible - 64));
+        const auto last_line = document.editor->Send(
+            SCI_DOCLINEFROMVISIBLE, first_visible + visible_count + 64);
+        const auto start = document.editor->Send(SCI_POSITIONFROMLINE, first_line);
+        auto end = document.editor->Send(SCI_GETLINEENDPOSITION, last_line);
+        if (end < 0) end = document.editor->GetLength();
+        notepad_colon::ApplyTreeSitterHighlights(*document.editor, *document.syntax_tree,
+            static_cast<std::uint32_t>((std::max<LRESULT>)(0, start)),
+            static_cast<std::uint32_t>((std::max<LRESULT>)(0, end)));
+    }
+
+    void UpdateLargeBuffer(EditorDocument& document, const SCNotification& notification) noexcept {
+        if (!document.large_buffer || document.loading_large_window ||
+            (document.detected_encoding != notepad_colon::EncodingKind::utf8 &&
+             document.detected_encoding != notepad_colon::EncodingKind::utf8_bom) ||
+            (notification.modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) == 0)
+            return;
+        const auto position = static_cast<std::uint64_t>((std::max<Sci_Position>)(
+            0, notification.position));
+        const auto length = static_cast<std::size_t>((std::max<Sci_Position>)(
+            0, notification.length));
+        const auto logical = document.mapped_decoded_offset + position;
+        bool updated = false;
+        if ((notification.modificationType & SC_MOD_INSERTTEXT) != 0 && notification.text)
+            updated = document.large_buffer->Insert(logical,
+                {reinterpret_cast<const std::uint8_t*>(notification.text), length});
+        else if ((notification.modificationType & SC_MOD_DELETETEXT) != 0)
+            updated = document.large_buffer->Erase(logical, length);
+        if (!updated) {
+            static_cast<void>(document.editor->SetReadOnly(true));
+            document.read_only = true;
+            status_.SetText(L"Large-file edit could not be recorded; switched to read-only protection");
+        } else workspace_.SetDirty(document.id, true);
+    }
+
+    void UpdateSyntaxTree(EditorDocument& document, const SCNotification& notification) noexcept {
+        if (!document.syntax_tree ||
+            (notification.modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) == 0)
+            return;
+        const auto text = EditorUtf8(*document.editor);
+        if (!text) return;
+        const auto start = static_cast<std::uint32_t>((std::max<Sci_Position>)(0, notification.position));
+        const auto length = static_cast<std::uint32_t>((std::max<Sci_Position>)(0, notification.length));
+        const auto line = static_cast<std::uint32_t>((std::max<Sci_Position>)(0,
+            document.editor->Send(SCI_LINEFROMPOSITION, start)));
+        const auto line_start = document.editor->Send(SCI_POSITIONFROMLINE, line);
+        const auto column = start - static_cast<std::uint32_t>((std::max<LRESULT>)(0, line_start));
+        auto advanced_row = line;
+        auto advanced_column = column;
+        if (notification.text) {
+            for (std::uint32_t index = 0; index < length; ++index) {
+                if (notification.text[index] == '\n') { ++advanced_row; advanced_column = 0; }
+                else ++advanced_column;
+            }
+        }
+        notepad_colon::SyntaxEdit edit;
+        edit.start_byte = start;
+        edit.start_row = line;
+        edit.start_column = column;
+        if ((notification.modificationType & SC_MOD_INSERTTEXT) != 0) {
+            edit.old_end_byte = start;
+            edit.new_end_byte = start + length;
+            edit.old_end_row = line;
+            edit.old_end_column = column;
+            edit.new_end_row = advanced_row;
+            edit.new_end_column = advanced_column;
+        } else {
+            edit.old_end_byte = start + length;
+            edit.new_end_byte = start;
+            edit.old_end_row = advanced_row;
+            edit.old_end_column = advanced_column;
+            edit.new_end_row = line;
+            edit.new_end_column = column;
+        }
+        if (document.syntax_tree->Reparse(*text, edit)) StyleVisibleSyntax(document);
     }
 
     void LoadPreferences() {
@@ -1378,6 +1694,47 @@ private:
             const auto* metadata = workspace_.Find(document.id);
             if (metadata && metadata->dirty && !SaveDocument(document, false)) return false;
         }
+        return true;
+    }
+
+    bool SaveLargeDocument(EditorDocument& document, const std::filesystem::path& path,
+                           const mwfl::WorkspaceDocument& metadata) {
+        if (!document.large_buffer ||
+            (document.detected_encoding != notepad_colon::EncodingKind::utf8 &&
+             document.detected_encoding != notepad_colon::EncodingKind::utf8_bom))
+            return false;
+        if (path == metadata.path && notepad_colon::CaptureFileState(path) != document.file_state) {
+            status_.SetText(L"Large-file save cancelled because the disk file changed");
+            return false;
+        }
+        if (preferences_.create_backup_before_save && std::filesystem::exists(path)) {
+            auto backup = path;
+            backup += L".bak";
+            if (!::CopyFileW(path.c_str(), backup.c_str(), FALSE)) {
+                status_.SetText(L"Large-file backup could not be created; save cancelled");
+                return false;
+            }
+        }
+        if (document.mapped_file) document.mapped_file->Close();
+        if (!document.large_buffer->SaveAs(path)) {
+            if (document.mapped_file) static_cast<void>(document.mapped_file->Open(metadata.path));
+            status_.SetText(L"Large-file streaming save failed; the original file was retained");
+            return false;
+        }
+        if (document.mapped_file && !document.mapped_file->Open(path)) {
+            status_.SetText(L"Saved, but the mapped view could not be reopened");
+            return false;
+        }
+        document.file_state = notepad_colon::CaptureFileState(path);
+        document.stamp = QueryFileStamp(path);
+        document.external_changed = false;
+        document.editor->SetSavePoint();
+        workspace_.Rename(document.id, path.filename().wstring(), path);
+        workspace_.SetDirty(document.id, false);
+        RememberPath(path);
+        SynchronizeTabs(false);
+        SyncPresentation(L"Large file saved by streaming modified pieces");
+        static_cast<void>(SaveSessionSnapshot());
         return true;
     }
 
@@ -1649,6 +2006,163 @@ private:
         if (recent_commands_.size() > 20) recent_commands_.resize(20);
     }
 
+    void ShowGoToLineColumn() {
+        const auto value = PromptWorkspaceName(L"Go to Line / Column", L"1:1", false);
+        auto* editor = ActiveEditor();
+        if (!value || !editor) return;
+        wchar_t* end = nullptr;
+        const auto line = std::wcstoull(value->c_str(), &end, 10);
+        std::uint64_t column = 1;
+        if (end && (*end == L':' || *end == L',')) column = std::wcstoull(end + 1, nullptr, 10);
+        if (line == 0 || column == 0) { status_.SetText(L"Line and column must be positive"); return; }
+        const auto line_index = static_cast<LRESULT>((std::min<std::uint64_t>)(
+            line - 1, static_cast<std::uint64_t>((std::max<LRESULT>)(0, editor->Send(SCI_GETLINECOUNT) - 1))));
+        const auto position = editor->Send(SCI_FINDCOLUMN, line_index,
+            static_cast<LPARAM>((std::min<std::uint64_t>)(column - 1, INT_MAX)));
+        editor->SetSelection({position, position}); editor->Send(SCI_SCROLLCARET); editor->Focus();
+        status_.SetText(L"Moved to line " + std::to_wstring(line_index + 1));
+    }
+
+    void RefreshGitChangeMarkers() {
+        auto* document = ActiveDocument();
+        const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        if (!document || !metadata || metadata->path.empty()) {
+            status_.SetText(L"Save the document before reading Git changes"); return;
+        }
+        const auto changes = notepad_colon::QueryGitChangedLines(metadata->path);
+        document->editor->Send(SCI_MARKERDEFINE, 3, SC_MARK_LEFTRECT);
+        document->editor->Send(SCI_MARKERSETBACK, 3, RGB(70, 180, 90));
+        document->editor->Send(SCI_MARKERDELETEALL, 3);
+        for (const auto line : changes.added_or_modified)
+            if (line > 0) document->editor->Send(SCI_MARKERADD, line - 1, 3);
+        status_.SetText(changes.repository
+            ? L"Git markers: " + std::to_wstring(changes.added_or_modified.size()) + L" changed line(s)"
+            : L"Git is unavailable or the file is not in a repository");
+    }
+
+    void OpenWorkspaceTerminal() {
+        auto directory = workspace_root_;
+        if (const auto* document = ActiveDocument())
+            if (const auto* metadata = workspace_.Find(document->id); metadata && !metadata->path.empty())
+                directory = metadata->path.parent_path();
+        if (directory.empty()) { status_.SetText(L"Open a workspace or saved document first"); return; }
+        auto command = L"cmd.exe /K cd /d \"" + directory.wstring() + L"\"";
+        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+        if (::CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+                             CREATE_NEW_CONSOLE, nullptr, directory.c_str(), &startup, &process)) {
+            ::CloseHandle(process.hThread); ::CloseHandle(process.hProcess);
+            status_.SetText(L"Terminal opened");
+        } else status_.SetText(L"Could not open terminal");
+    }
+
+    void ShowQuickOpen() {
+        std::vector<std::filesystem::path> paths;
+        for (const auto& [root, scan] : workspace_scans_)
+            for (const auto& entry : scan.entries)
+                if (!entry.directory) paths.push_back(root / entry.relative_path);
+        if (paths.empty()) { status_.SetText(L"Open a workspace before Quick Open"); return; }
+        mwfl::TextBox query; mwfl::ListBox list; mwfl::Button open, cancel;
+        std::vector<std::size_t> visible; std::optional<std::size_t> chosen;
+        mwfl::Dialog* pointer = nullptr;
+        const auto refresh = [&] {
+            list.ClearItems(); visible.clear();
+            auto filter = query.GetText();
+            std::ranges::transform(filter, filter.begin(), [](wchar_t ch) {
+                return static_cast<wchar_t>(std::towlower(ch));
+            });
+            for (std::size_t index = 0; index < paths.size() && visible.size() < 1000; ++index) {
+                auto label = paths[index].wstring(); auto folded = label;
+                std::ranges::transform(folded, folded.begin(), [](wchar_t ch) {
+                    return static_cast<wchar_t>(std::towlower(ch));
+                });
+                std::size_t cursor = 0;
+                for (const auto ch : filter) {
+                    cursor = folded.find(ch, cursor);
+                    if (cursor == std::wstring::npos) break;
+                    ++cursor;
+                }
+                if (!filter.empty() && cursor == std::wstring::npos) continue;
+                visible.push_back(index); list.AddItem(label);
+            }
+            if (!visible.empty()) list.SetSelection(0);
+        };
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Quick Open File",
+            .initial_client_size = {620.0_dip, 430.0_dip}, .resizable = true,
+            .callbacks = {.initialize = [&](HWND window) {
+                mwfl::ControlHost ui{window}; ui.Add(query, {743}, L""); ui.Add(list, {744}, {});
+                ui.Add(open, {IDOK}, L"Open"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
+                const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)
+                    .Add(query, mwfl::Fixed(30.0_dip)).Add(list, mwfl::Stretch())
+                    .Add(mwfl::Row().Gap(6.0_dip).Add(mwfl::Column(), mwfl::Stretch())
+                        .Add(open, mwfl::Fixed(80.0_dip)).Add(cancel, mwfl::Fixed(80.0_dip)),
+                        mwfl::Fixed(30.0_dip)));
+                refresh(); query.Focus(); return layout;
+            }, .command = [&](HWND, WORD id, WORD notification) {
+                if (id == 743 && notification == EN_CHANGE) { refresh(); return true; }
+                if (id == IDOK || (id == 744 && notification == LBN_DBLCLK)) {
+                    const auto selected = list.GetSelectedIndex();
+                    if (selected && static_cast<std::size_t>(*selected) < visible.size()) {
+                        chosen = visible[static_cast<std::size_t>(*selected)]; pointer->Accept(); return true;
+                    }
+                }
+                return false;
+            }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal());
+        if (chosen && !OpenPath(paths[*chosen])) status_.SetText(L"Quick Open failed");
+    }
+
+    void ShowDocumentSymbols() {
+        auto* document = ActiveDocument();
+        const auto text = document ? EditorUtf8(*document->editor) : std::nullopt;
+        if (!document || !document->syntax_tree || !text) {
+            status_.SetText(L"Document symbols require an active Tree-sitter language"); return;
+        }
+        const auto symbols = document->syntax_tree->Symbols(*text);
+        if (symbols.empty()) { status_.SetText(L"No document symbols found"); return; }
+        mwfl::TextBox query; mwfl::ListBox list; mwfl::Button open, cancel;
+        std::vector<std::size_t> visible; std::optional<std::size_t> chosen;
+        mwfl::Dialog* pointer = nullptr;
+        const auto refresh = [&] {
+            list.ClearItems(); visible.clear();
+            auto filter = query.GetText(); std::ranges::transform(filter, filter.begin(), ::towlower);
+            for (std::size_t index = 0; index < symbols.size(); ++index) {
+                auto name = mwfl::FromUtf8(symbols[index].name).value_or(L"?");
+                auto folded = name; std::ranges::transform(folded, folded.begin(), ::towlower);
+                if (!filter.empty() && folded.find(filter) == std::wstring::npos) continue;
+                visible.push_back(index);
+                list.AddItem(name + L"  [" + mwfl::FromUtf8(symbols[index].kind).value_or(L"symbol") + L"]");
+            }
+            if (!visible.empty()) list.SetSelection(0);
+        };
+        mwfl::Dialog dialog({.owner = GetHwnd(), .title = L"Document Symbols",
+            .initial_client_size = {520.0_dip, 420.0_dip}, .resizable = true,
+            .callbacks = {.initialize = [&](HWND window) {
+                mwfl::ControlHost ui{window}; ui.Add(query, {741}, L""); ui.Add(list, {742}, {});
+                ui.Add(open, {IDOK}, L"Go to"); ui.Add(cancel, {IDCANCEL}, L"Cancel");
+                const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)
+                    .Add(query, mwfl::Fixed(30.0_dip)).Add(list, mwfl::Stretch())
+                    .Add(mwfl::Row().Gap(6.0_dip).Add(mwfl::Column(), mwfl::Stretch())
+                        .Add(open, mwfl::Fixed(80.0_dip)).Add(cancel, mwfl::Fixed(80.0_dip)),
+                        mwfl::Fixed(30.0_dip)));
+                refresh(); query.Focus(); return layout;
+            }, .command = [&](HWND, WORD id, WORD notification) {
+                if (id == 741 && notification == EN_CHANGE) { refresh(); return true; }
+                if (id == IDOK || (id == 742 && notification == LBN_DBLCLK)) {
+                    const auto selected = list.GetSelectedIndex();
+                    if (selected && static_cast<std::size_t>(*selected) < visible.size()) {
+                        chosen = visible[static_cast<std::size_t>(*selected)]; pointer->Accept(); return true;
+                    }
+                }
+                return false;
+            }}});
+        pointer = &dialog; static_cast<void>(dialog.ShowModal());
+        if (chosen) {
+            const auto& symbol = symbols[*chosen];
+            document->editor->SetSelection({symbol.start_byte, symbol.start_byte});
+            document->editor->Send(SCI_SCROLLCARET); document->editor->Focus();
+        }
+    }
+
     void ShowCommandPalette() {
         mwfl::TextBox query; mwfl::ListBox list; mwfl::Label hint;
         mwfl::Button run, cancel;
@@ -1839,7 +2353,8 @@ private:
         if (error) return false;
         const auto temporary = path.wstring() + L".tmp";
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        const auto encoded = notepad_colon::SerializeConfiguration({preferences_, CaptureShortcuts()});
+        const auto encoded = notepad_colon::SerializeConfiguration(
+            {preferences_, CaptureShortcuts(), search_history_});
         output.write(encoded.data(), static_cast<std::streamsize>(encoded.size())); output.close();
         if (!output || !::MoveFileExW(temporary.c_str(), path.c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
@@ -1936,6 +2451,7 @@ private:
             status_.SetText(L"Settings import rejected: invalid or conflicting configuration"); return;
         }
         preferences_ = configuration.preferences; ApplyAppearance();
+        search_history_ = configuration.search_history;
         if (!IsTestMode()) static_cast<void>(SavePreferences());
         static_cast<void>(SaveConfigurationFile(configuration_path_));
         status_.SetText(L"Settings and shortcuts imported");
@@ -2289,12 +2805,77 @@ private:
         } else status_.SetText(L"Could not open a new window");
     }
 
+    void ToggleSearchOption(mwfl::ControlId id, bool& value) {
+        value = !value;
+        if (auto* command = commands_.Find(id)) {
+            command->SetChecked(value);
+            menu_.UpdateCommand(*command);
+        }
+    }
+
+    void ToggleSearchSelection() {
+        search_selection_ = !search_selection_;
+        search_scope_.reset();
+        if (search_selection_) {
+            if (auto* editor = ActiveEditor()) {
+                const auto selection = editor->GetSelection();
+                if (selection.end > selection.start) search_scope_ = selection;
+                else search_selection_ = false;
+            } else search_selection_ = false;
+        }
+        if (auto* command = commands_.Find(kSearchSelection)) {
+            command->SetChecked(search_selection_);
+            menu_.UpdateCommand(*command);
+        }
+        status_.SetText(search_selection_ ? L"Search is limited to the captured selection"
+                                          : L"Search uses the whole document");
+    }
+
+    mwfl::ScintillaSearchFlags SearchFlags() const noexcept {
+        auto flags = mwfl::ScintillaSearchFlags::none;
+        if (search_match_case_) flags = flags | mwfl::ScintillaSearchFlags::match_case;
+        if (search_whole_word_) flags = flags | mwfl::ScintillaSearchFlags::whole_word;
+        if (search_regex_) flags = flags | mwfl::ScintillaSearchFlags::regular_expression;
+        return flags;
+    }
+
+    void RememberSearch(std::wstring_view query) {
+        if (query.empty()) return;
+        std::erase(search_history_, query);
+        search_history_.insert(search_history_.begin(), std::wstring{query});
+        if (search_history_.size() > 20) search_history_.resize(20);
+    }
+
+    bool LoadLargeFileWindow(EditorDocument& document, std::uint64_t offset,
+                             std::optional<std::pair<std::uint64_t, std::size_t>> selection = {}) {
+        const auto window = document.large_buffer->ReadTextWindow(
+            offset, document.mapped_window_size, document.detected_encoding,
+            document.ansi_code_page);
+        if (!window) return false;
+        document.loading_large_window = true;
+        document.editor->SetReadOnly(false);
+        const bool replaced = document.editor->SetText(window->text);
+        document.editor->SetReadOnly(document.read_only);
+        document.loading_large_window = false;
+        if (!replaced) return false;
+        document.mapped_offset = offset;
+        document.mapped_decoded_offset = window->decoded_offset;
+        if (!document.large_buffer->IsModified()) document.editor->SetSavePoint();
+        if (selection && selection->first >= window->decoded_offset) {
+            const auto relative = selection->first - window->decoded_offset;
+            if (relative + selection->second <= static_cast<std::uint64_t>(document.editor->GetLength()))
+                document.editor->SetSelection({static_cast<mwfl::ScintillaPosition>(relative),
+                    static_cast<mwfl::ScintillaPosition>(relative + selection->second)});
+        }
+        return true;
+    }
+
     void MoveLargeFileWindow(bool forward) {
         auto* document = ActiveDocument();
-        if (!document || !document->mapped_file) {
+        if (!document || !document->large_buffer) {
             status_.SetText(L"The active document is not using mapped large-file mode"); return;
         }
-        const auto size = document->mapped_file->Size();
+        const auto size = document->large_buffer->Size();
         const auto step = static_cast<std::uint64_t>(document->mapped_window_size);
         const auto offset = forward
             ? (std::min)(size, document->mapped_offset + step)
@@ -2302,30 +2883,63 @@ private:
         if (offset == document->mapped_offset || offset >= size) {
             status_.SetText(forward ? L"End of large file" : L"Start of large file"); return;
         }
-        const auto window = document->mapped_file->ReadTextWindow(
+        const auto window = document->large_buffer->ReadTextWindow(
             offset, document->mapped_window_size, document->detected_encoding,
             document->ansi_code_page);
         if (!window) { status_.SetText(L"Window boundary contains invalid text"); return; }
+        document->loading_large_window = true;
         document->editor->SetReadOnly(false);
         const bool replaced = document->editor->SetText(window->text);
-        document->editor->SetReadOnly(true);
+        document->editor->SetReadOnly(document->read_only);
+        document->loading_large_window = false;
         if (!replaced) return;
         document->mapped_offset = offset;
-        document->editor->SetSavePoint();
+        document->mapped_decoded_offset = window->decoded_offset;
+        if (!document->large_buffer->IsModified()) document->editor->SetSavePoint();
         status_.SetText(L"Large file | bytes " + std::to_wstring(document->mapped_offset) + L"–" +
             std::to_wstring(window->byte_end) + L" of " +
             std::to_wstring(size));
     }
 
     std::optional<mwfl::ScintillaTextRange> FindNext() {
-        auto* editor = ActiveEditor();
+        auto* document = ActiveDocument();
+        auto* editor = document ? document->editor.get() : nullptr;
         const auto query = search_.GetText();
         if (!editor || query.empty()) return std::nullopt;
+        RememberSearch(query);
         const auto selection = editor->GetSelection();
-        auto match = editor->Find(query, selection.end);
-        if (!match) match = editor->Find(query);
+        const auto scope_start = search_scope_ ? search_scope_->start : 0;
+        const auto scope_end = search_scope_ ? search_scope_->end : editor->GetLength();
+        const auto start = (std::max)(selection.end, scope_start);
+        auto match = editor->Find(query, start, scope_end, SearchFlags());
+        if (!match && start != scope_start)
+            match = editor->Find(query, scope_start, scope_end, SearchFlags());
+        if (!match && document->large_buffer && !search_regex_ && !search_selection_) {
+            const auto bytes = mwfl::ToUtf8(query);
+            if (bytes && !bytes->empty()) {
+                const auto needle = std::span<const std::uint8_t>{
+                    reinterpret_cast<const std::uint8_t*>(bytes->data()), bytes->size()};
+                const auto logical_start = document->mapped_decoded_offset +
+                    static_cast<std::uint64_t>((std::max<mwfl::ScintillaPosition>)(0, selection.end));
+                auto found = document->large_buffer->Find(
+                    needle, logical_start, UINT64_MAX, search_match_case_);
+                if (!found && logical_start != 0)
+                    found = document->large_buffer->Find(
+                        needle, 0, logical_start, search_match_case_);
+                if (found) {
+                    const auto lead = document->mapped_window_size / 4;
+                    const auto window_offset = *found > lead ? *found - lead : 0;
+                    if (LoadLargeFileWindow(*document, window_offset,
+                                            std::pair{*found, bytes->size()}))
+                        match = editor->GetSelection();
+                }
+            }
+        }
         if (match) editor->SetSelection(*match);
-        status_.SetText(match ? L"Match selected" : L"No matches");
+        status_.SetText(match ? L"Match selected" :
+            (document->large_buffer && search_regex_ ?
+                L"No match in this window; full-file regular expressions are disabled for large files"
+                : L"No matches"));
         return match;
     }
 
@@ -2341,19 +2955,26 @@ private:
         const auto query = search_.GetText();
         if (!editor || query.empty()) return;
         const auto replacement = replacement_.GetText();
-        mwfl::ScintillaPosition cursor = 0;
+        const auto scope_start = search_scope_ ? search_scope_->start : 0;
+        auto scope_end = search_scope_ ? search_scope_->end : editor->GetLength();
+        mwfl::ScintillaPosition cursor = scope_start;
         std::size_t count = 0;
-        while (cursor <= editor->GetLength()) {
-            const auto match = editor->Find(query, cursor);
+        while (cursor <= scope_end) {
+            const auto match = editor->Find(query, cursor, scope_end, SearchFlags());
             if (!match) break;
             editor->SetSelection(*match);
             if (!editor->ReplaceTarget(replacement)) break;
             const auto replacement_utf8 = mwfl::ToUtf8(replacement);
-            cursor = match->start + static_cast<mwfl::ScintillaPosition>(
+            const auto replacement_size = static_cast<mwfl::ScintillaPosition>(
                 replacement_utf8 ? replacement_utf8->size() : 0);
+            const auto removed = match->end - match->start;
+            scope_end += replacement_size - removed;
+            cursor = match->start + replacement_size;
+            if (removed == 0 && replacement_size == 0) ++cursor;
             ++count;
         }
-        status_.SetText(L"Replaced " + std::to_wstring(count) + L" occurrence(s)");
+        status_.SetText(L"Replaced " + std::to_wstring(count) + L" occurrence(s)" +
+            (ActiveDocument() && ActiveDocument()->large_buffer ? L" in the loaded large-file window" : L""));
     }
 
     void ShowEncodingInformation() {
@@ -2480,7 +3101,8 @@ private:
     }
 
     std::optional<std::wstring> PromptWorkspaceName(std::wstring_view title,
-                                                     std::wstring_view initial = {}) {
+                                                     std::wstring_view initial = {},
+                                                     bool validate_name = true) {
         mwfl::TextBox name; mwfl::Button accept, cancel; std::optional<std::wstring> result;
         mwfl::Dialog* pointer = nullptr;
         mwfl::Dialog dialog({.owner = GetHwnd(), .title = std::wstring(title),
@@ -2499,7 +3121,7 @@ private:
                 .command = [&](HWND, WORD id, WORD) {
                     if (id != IDOK) return false;
                     const auto value = name.GetText();
-                    if (!notepad_colon::IsValidWorkspaceName(value)) {
+                    if (validate_name && !notepad_colon::IsValidWorkspaceName(value)) {
                         ::MessageBoxW(pointer->GetHwnd(), L"Enter a valid Windows file or folder name.",
                                       L"Invalid name", MB_OK | MB_ICONWARNING);
                         return true;
@@ -2739,6 +3361,7 @@ private:
             status_.SetText(L"Enter search text before Find in Files");
             return;
         }
+        RememberSearch(query);
         CancelFolderSearch();
         ReapCompletedWorkers(search_workers_);
         const auto generation = ++search_generation_;
@@ -2747,15 +3370,21 @@ private:
         status_.SetText(L"Searching workspace...");
         const HWND window = GetHwnd();
         const auto roots = workspace_catalog_.Roots();
+        const notepad_colon::SearchOptions requested_options{
+            .match_case = search_match_case_, .whole_word = search_whole_word_,
+            .regular_expression = search_regex_, .multiline = true,
+            .use_gitignore = true};
         auto done = std::make_shared<std::atomic_bool>(false);
-        search_workers_.push_back({done, std::jthread([this, window, roots, query, generation, done](std::stop_token stop) {
+        search_workers_.push_back({done, std::jthread([this, window, roots, query, generation,
+                                                      requested_options, done](std::stop_token stop) {
             notepad_colon::SearchResult result;
             for (const auto& root : roots) {
                 if (stop.stop_requested()) { result.cancelled = true; break; }
-                notepad_colon::SearchOptions options;
+                auto options = requested_options;
                 options.maximum_results = 5000 - result.matches.size();
                 if (options.maximum_results == 0) { result.truncated = true; break; }
                 auto part = notepad_colon::SearchWorkspace(root, query, options, stop);
+                if (!part.error.empty()) { result.error = std::move(part.error); break; }
                 result.matches.insert(result.matches.end(),
                                       std::make_move_iterator(part.matches.begin()),
                                       std::make_move_iterator(part.matches.end()));
@@ -2808,7 +3437,8 @@ private:
         menu_.UpdateCommand(*commands_.Find(kCancelSearch));
         results_visible_ = true;
         ApplyCompactLayout();
-        status_.SetText((search_results_.cancelled ? L"Search cancelled | " : L"Search complete | ") +
+        status_.SetText(!search_results_.error.empty() ? search_results_.error :
+            (search_results_.cancelled ? L"Search cancelled | " : L"Search complete | ") +
             std::to_wstring(search_results_.matches.size()) + L" matches in " +
             std::to_wstring(search_results_.files_searched) + L" files" +
             (search_results_.truncated ? L" (truncated)" : L""));
@@ -2821,6 +3451,23 @@ private:
             if (!metadata || metadata->path.empty()) continue;
             const auto current = notepad_colon::CaptureFileState(metadata->path);
             if (current == document.file_state || document.external_changed) continue;
+            if (document.follow_tail && document.large_buffer && current.exists &&
+                !metadata->dirty && current.size >= document.file_state.size) {
+                if (document.mapped_file) document.mapped_file->Close();
+                document.large_buffer->Close();
+                const bool reopened = document.large_buffer->Open(metadata->path) &&
+                    (!document.mapped_file || document.mapped_file->Open(metadata->path));
+                const auto offset = current.size > document.mapped_window_size
+                    ? current.size - document.mapped_window_size : 0;
+                if (reopened && LoadLargeFileWindow(document, offset)) {
+                    document.file_state = current;
+                    document.editor->Send(SCI_GOTOPOS, document.editor->GetLength());
+                    status_.SetText(L"Follow mode loaded appended data");
+                    continue;
+                }
+                document.follow_tail = false;
+                status_.SetText(L"Follow mode stopped because the file could not be reopened");
+            }
             if (!current.exists && !IsTestMode()) {
                 const auto answer = ::MessageBoxW(GetHwnd(),
                     (metadata->title + L" was deleted outside Notepad Colon.\n\n"
@@ -2935,6 +3582,7 @@ private:
             notepad_colon::Configuration configuration;
             if (!encoded.empty() && notepad_colon::DeserializeConfiguration(encoded, configuration)) {
                 preferences_ = configuration.preferences;
+                search_history_ = configuration.search_history;
                 ApplyAppearance();
                 static_cast<void>(ApplyShortcuts(configuration.shortcuts, false));
             }
@@ -3101,6 +3749,10 @@ private:
     }
 
     void RunSelfTest() noexcept {
+        if (large_file_self_test_) {
+            RunLargeFileSelfTest();
+            return;
+        }
         int result = 0;
         std::vector<std::filesystem::path> cleanup;
         try {
@@ -3151,6 +3803,23 @@ private:
                 first->editor->Send(SCI_COLOURISE, 0, -1);
                 if (first->editor->Send(SCI_GETSTYLEAT, 0) != 5 ||
                     first->editor->Send(SCI_STYLEGETFORE, 5) != RGB(86, 156, 214)) result = 24;
+            }
+            if (result == 0) {
+                constexpr std::string_view source = "int value = 42; return value; // syntax colour\n";
+                notepad_colon::TreeSitterDocument syntax;
+                if (!first->editor->SetText(L"int value = 42; return value; // syntax colour\n") ||
+                    !syntax.ConfigureCpp() || !syntax.Parse(source)) result = 26;
+                else {
+                    notepad_colon::ConfigureTreeSitterStyles(*first->editor, true);
+                    notepad_colon::ApplyTreeSitterHighlights(
+                        *first->editor, syntax, 0, static_cast<std::uint32_t>(source.size()));
+                    const auto return_position = source.find("return");
+                    if (first->editor->Send(SCI_GETSTYLEAT, return_position) !=
+                            40 + static_cast<int>(notepad_colon::SyntaxKind::keyword) ||
+                        first->editor->Send(SCI_STYLEGETFORE,
+                            40 + static_cast<int>(notepad_colon::SyntaxKind::keyword)) !=
+                            RGB(86, 156, 214)) result = 26;
+                }
             }
             if (result == 0) {
                 for (const auto language : notepad_colon::AllLanguages()) {
@@ -3264,8 +3933,33 @@ private:
         ::PostQuitMessage(result);
     }
 
+    void RunLargeFileSelfTest() noexcept {
+        int result = 0;
+        constexpr std::string_view marker = "/*NPC-LARGE-EDIT*/";
+        auto* document = ActiveDocument();
+        const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+        if (!document || !metadata || !document->large_buffer || document->read_only ||
+            document->detected_encoding != notepad_colon::EncodingKind::utf8) result = 40;
+        if (result == 0) {
+            document->editor->Send(SCI_INSERTTEXT, 0, reinterpret_cast<LPARAM>(marker.data()));
+            if (!document->large_buffer->IsModified() ||
+                document->large_buffer->Size() != document->file_state.size + marker.size())
+                result = 41;
+        }
+        if (result == 0 && !SaveDocument(*document, false)) result = 42;
+        if (result == 0) {
+            const auto prefix = document->large_buffer->Read(0, marker.size());
+            if (std::string(prefix.begin(), prefix.end()) != marker ||
+                document->large_buffer->IsModified() || workspace_.Find(document->id)->dirty)
+                result = 43;
+        }
+        StopWorkers();
+        ::PostQuitMessage(result);
+    }
+
     mwfl::ScintillaRuntime runtime_;
     notepad_colon::LexillaRuntime lexilla_;
+    notepad_colon::LanguageRegistry language_registry_;
     mwfl::DocumentWorkspaceModel workspace_;
     mwfl::DocumentTabWorkspaceAdapter adapter_;
     std::vector<EditorDocument> documents_;
@@ -3286,6 +3980,12 @@ private:
     std::chrono::steady_clock::time_point session_snapshot_due_{};
     bool restoring_session_ = false;
     bool find_bar_visible_ = false;
+    bool search_match_case_ = false;
+    bool search_whole_word_ = false;
+    bool search_regex_ = false;
+    bool search_selection_ = false;
+    std::optional<mwfl::ScintillaTextRange> search_scope_;
+    std::vector<std::wstring> search_history_;
     bool workspace_visible_ = false;
     bool results_visible_ = false;
     mwfl::RecentFileList recent_{10};
@@ -3323,6 +4023,7 @@ private:
     std::vector<std::filesystem::path> startup_paths_;
     bool self_test_ = false;
     bool activation_test_server_ = false;
+    bool large_file_self_test_ = false;
     bool chinese_ui_ = false;
     int activation_test_result_ = 4;
     notepad_colon::Preferences preferences_;
@@ -3335,12 +4036,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     int count{};
     wchar_t** arguments = ::CommandLineToArgvW(::GetCommandLineW(), &count);
     bool self_test = false;
+    bool large_file_self_test = false;
     bool activation_test_server = false;
     bool activation_test_client = false;
     std::vector<std::filesystem::path> paths;
     for (int index = 1; arguments && index < count; ++index) {
         const std::wstring_view argument{arguments[index]};
         if (argument == L"--self-test") self_test = true;
+        else if (argument == L"--large-file-self-test") large_file_self_test = true;
         else if (argument == L"--activation-test-server") activation_test_server = true;
         else if (argument == L"--activation-test-client") activation_test_client = true;
         else if (!argument.starts_with(L"--")) {
@@ -3350,7 +4053,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         }
     }
     if (arguments) ::LocalFree(arguments);
-    const std::wstring instance_id = self_test
+    const std::wstring instance_id = (self_test || large_file_self_test)
         ? L"mwfl.notepad-colon.self-test." + std::to_wstring(::GetCurrentProcessId())
         : (activation_test_server || activation_test_client)
             ? L"mwfl.notepad-colon.activation-test" : L"mwfl.notepad-colon.v1";
@@ -3371,8 +4074,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         return 0;
     }
     if (activation_test_client) return 3;
-    return mwfl::RunApplication<MainWindow>(instance, self_test ? SW_HIDE : show_command,
+    return mwfl::RunApplication<MainWindow>(instance,
+        (self_test || large_file_self_test) ? SW_HIDE : show_command,
         {.title = L"Notepad Colon", .initial_bounds = {{}, {900.0_dip, 650.0_dip}},
          .use_default_bounds = false}, {.com_apartment = mwfl::ComApartment::sta},
-         single_instance, std::move(paths), self_test, activation_test_server);
+         single_instance, std::move(paths), self_test, activation_test_server,
+         large_file_self_test);
 }

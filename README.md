@@ -11,15 +11,19 @@ telemetry, and cloud services.
 
 - Native multi-document tabs, safe atomic saves, recent files, drag and drop,
   and crash/session recovery including unsaved documents.
-- UTF-8/BOM and UTF-16 LE/BE, CRLF/LF conversion, find/replace, and external
-  file-change detection.
+- UTF-8/BOM, UTF-16 LE/BE and checked ANSI reopening/saving, CRLF/LF
+  conversion, `.editorconfig`, external-change detection, backup-before-save,
+  and atomic replacement.
 - Scintilla/Lexilla editing for 19 common languages with syntax color, folding,
   bookmarks, multiple/rectangular selections, auto-indent, brace matching,
   line operations, whitespace, wrapping, and zoom.
 - Strict UTF-8/BOM/UTF-16/ANSI analysis, selectable ANSI code-page reopening,
   lossless conversion checks, mixed-EOL reporting, and bidi/zero-width warnings.
-- Workspace tree and cancellable background folder search with ignored build,
-  VCS, cache, and dependency directories.
+- Incremental Tree-sitter parsing and visible-range coloring for C++ and JSON,
+  with document symbols and safe JSON-defined language aliases/queries.
+- Workspace tree, fuzzy Quick Open, and cancellable background folder search
+  with literal, multiline, whole-word, regular-expression, preview, persistent
+  history, and `.gitignore` support.
 - Explicit, reversible per-user `.txt` association under **Tools**. Existing
   associations are never silently overwritten.
 - A native Preferences dialog persists System/Light/Dark theme, editor font,
@@ -27,11 +31,18 @@ telemetry, and cloud services.
   paths forwarded from later command-line launches.
 - Compact English and Simplified Chinese core navigation can be switched at
   runtime and persists with the local UI settings.
-- Files through 32 MiB open normally; files above 32 MiB through 4 GiB use a
-  protected read-only 8 MiB mapped window with previous/next navigation.
+- Files through 32 MiB open normally. UTF-8 files above 32 MiB through exactly
+  4 GiB use an editable 8 MiB window backed by a piece table: scrolling between
+  windows, inserts/deletes, fixed-memory full-file literal search, conflict-safe
+  streaming save, and follow-tail are supported. Other large encodings remain
+  read-only until their byte/character mapping is made lossless.
 
 Plugins, IDE project systems, accounts, telemetry, and cloud services are
 deliberately out of scope.
+
+See [Custom languages](docs/custom-languages.md) and
+[Large-file testing](docs/large-file-testing.md) for extension and verification
+details.
 
 ## Supported systems
 
@@ -63,4 +74,5 @@ removed there.
 ## Validation
 
 CTest runs model coverage, a real native-window GUI self-test, isolated Shell
-registry lifecycle coverage, and a deterministic workspace performance guard.
+registry lifecycle coverage, a 34 MiB edit/save integration test, and a sparse
+exact-4-GiB piece-table/search performance guard.

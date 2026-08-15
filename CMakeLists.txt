@@ -1,8 +1,46 @@
 cmake_minimum_required(VERSION 3.21)
-project(notepad_colon VERSION 0.1.0 LANGUAGES CXX)
+project(notepad_colon VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 include(FetchContent)
+
+set(TREE_SITTER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TREE_SITTER_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies statically" FORCE)
+FetchContent_Declare(notepad_colon_tree_sitter
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+    GIT_TAG v0.26.11
+    GIT_SHALLOW TRUE)
+FetchContent_Declare(notepad_colon_tree_sitter_cpp
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-cpp.git
+    GIT_TAG v0.23.4
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _use_pregenerated_parser)
+FetchContent_Declare(notepad_colon_tree_sitter_json
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-json.git
+    GIT_TAG v0.24.8
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _use_pregenerated_parser)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(notepad_colon_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(notepad_colon_tree_sitter notepad_colon_tree_sitter_cpp
+                           notepad_colon_tree_sitter_json
+                           notepad_colon_json)
+add_library(tree-sitter-cpp STATIC
+    "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/src/parser.c"
+    "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/src/scanner.c")
+target_include_directories(tree-sitter-cpp PRIVATE
+    "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/src")
+set_target_properties(tree-sitter-cpp PROPERTIES C_STANDARD 11)
+add_library(tree-sitter-json STATIC
+    "${notepad_colon_tree_sitter_json_SOURCE_DIR}/src/parser.c")
+target_include_directories(tree-sitter-json PRIVATE
+    "${notepad_colon_tree_sitter_json_SOURCE_DIR}/src")
+set_target_properties(tree-sitter-json PROPERTIES C_STANDARD 11)
 
 # Declare Scintilla before mwfl so both projects share the verified source tree
 # and Lexilla can use its required sibling-directory layout on ARM64.
@@ -33,10 +71,14 @@ add_library(notepad_colon_model
     src/comparison.cpp
     src/configuration.cpp
     src/document.cpp
+    src/editor_config.cpp
+    src/git_status.cpp
     src/editing.cpp
     src/encoding_analysis.cpp
     src/large_file.cpp
+    src/large_file_buffer.cpp
     src/language.cpp
+    src/language_registry.cpp
     src/macro.cpp
     src/mapped_file.cpp
     src/output.cpp
@@ -45,6 +87,7 @@ add_library(notepad_colon_model
     src/session.cpp
     src/session_writer.cpp
     src/text.cpp
+    src/tree_sitter_document.cpp
     src/workspace.cpp
     src/workspace_state.cpp)
 
@@ -58,6 +101,8 @@ add_executable(notepad-colon WIN32
     app.manifest)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
+target_link_libraries(notepad_colon_model PUBLIC tree-sitter tree-sitter-cpp tree-sitter-json
+    nlohmann_json::nlohmann_json)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc)
 FetchContent_GetProperties(mwfl_scintilla_binary)
 FetchContent_GetProperties(mwfl_scintilla_source)
@@ -124,6 +169,12 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/single_instance_test.ps1"
                 "$<TARGET_FILE:notepad-colon>")
     set_tests_properties(notepad-colon.single-instance PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE)
+    add_test(NAME notepad-colon.large-file-edit
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/large_file_test.ps1"
+                "$<TARGET_FILE:notepad-colon>")
+    set_tests_properties(notepad-colon.large-file-edit PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                         LABELS performance)
     add_executable(notepad_colon_performance_tests tests/performance_tests.cpp)
     target_link_libraries(notepad_colon_performance_tests PRIVATE notepad_colon_model)
     target_compile_features(notepad_colon_performance_tests PRIVATE cxx_std_20)

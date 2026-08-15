@@ -104,7 +104,7 @@ std::vector<std::pair<std::uint16_t, std::uint16_t>> FindShortcutConflicts(
 std::string SerializeConfiguration(const Configuration& configuration) {
     const auto font = Utf8(configuration.preferences.font_name);
     std::ostringstream out;
-    out << "NPCCONFIG\t1\n" << font.size() << '\n'; out.write(font.data(), static_cast<std::streamsize>(font.size())); out << '\n';
+    out << "NPCCONFIG\t2\n" << font.size() << '\n'; out.write(font.data(), static_cast<std::streamsize>(font.size())); out << '\n';
     const auto& p = configuration.preferences;
     out << p.font_size << '\t' << p.tab_width << '\t' << static_cast<unsigned>(p.theme) << '\t'
         << p.auto_save << '\t' << p.auto_save_seconds << '\t' << p.trim_trailing_whitespace_on_save << '\t'
@@ -112,12 +112,19 @@ std::string SerializeConfiguration(const Configuration& configuration) {
     out << configuration.shortcuts.size() << '\n';
     for (const auto& shortcut : configuration.shortcuts)
         out << shortcut.command_id << '\t' << static_cast<unsigned>(shortcut.modifiers) << '\t' << shortcut.key << '\n';
+    out << configuration.search_history.size() << '\n';
+    for (const auto& item : configuration.search_history) {
+        const auto value = Utf8(item);
+        out << value.size() << '\n'; out.write(value.data(), static_cast<std::streamsize>(value.size())); out << '\n';
+    }
     return out.str();
 }
 
 bool DeserializeConfiguration(std::string_view encoded, Configuration& configuration) {
     std::istringstream input{std::string(encoded)}; std::string line;
-    if (!std::getline(input, line) || line != "NPCCONFIG\t1" || !std::getline(input, line)) return false;
+    if (!std::getline(input, line)) return false;
+    const bool version_two = line == "NPCCONFIG\t2";
+    if ((!version_two && line != "NPCCONFIG\t1") || !std::getline(input, line)) return false;
     std::uint32_t font_size_bytes = 0; if (!Number(line, font_size_bytes) || font_size_bytes > 4096) return false;
     std::string font(font_size_bytes, '\0'); input.read(font.data(), font.size()); if (input.get() != '\n') return false;
     const auto wide_font = Wide(font); if (!wide_font || !std::getline(input, line)) return false;
@@ -142,6 +149,18 @@ bool DeserializeConfiguration(std::string_view encoded, Configuration& configura
                              static_cast<std::uint16_t>(values[2])});
     }
     if (!FindShortcutConflicts(shortcuts).empty()) return false;
-    configuration = {preferences, std::move(shortcuts)}; return true;
+    std::vector<std::wstring> search_history;
+    if (version_two) {
+        if (!std::getline(input, line) || !Number(line, count) || count > 50) return false;
+        for (std::uint32_t index = 0; index < count; ++index) {
+            std::uint32_t size = 0;
+            if (!std::getline(input, line) || !Number(line, size) || size > 4096) return false;
+            std::string value(size, '\0'); input.read(value.data(), value.size());
+            if (input.get() != '\n') return false;
+            const auto wide = Wide(value); if (!wide) return false;
+            search_history.push_back(*wide);
+        }
+    }
+    configuration = {preferences, std::move(shortcuts), std::move(search_history)}; return true;
 }
 }  // namespace notepad_colon

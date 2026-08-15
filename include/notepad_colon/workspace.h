@@ -32,6 +32,9 @@ struct SearchMatch {
 struct SearchOptions {
     bool match_case = false;
     bool whole_word = false;
+    bool regular_expression = false;
+    bool multiline = false;
+    bool use_gitignore = true;
     std::size_t maximum_results = 5000;
     std::uintmax_t maximum_file_size = 8 * 1024 * 1024;
 };
@@ -42,6 +45,7 @@ struct SearchResult {
     std::size_t files_skipped = 0;
     bool truncated = false;
     bool cancelled = false;
+    std::wstring error;
 };
 
 struct FileState {
@@ -54,7 +58,8 @@ struct FileState {
 bool IsExcludedWorkspaceDirectory(std::wstring_view name) noexcept;
 WorkspaceScan ScanWorkspace(const std::filesystem::path& root,
                             std::size_t maximum_entries = 20000,
-                            std::stop_token stop = {});
+                            std::stop_token stop = {},
+                            bool use_gitignore = true);
 SearchResult SearchWorkspace(const std::filesystem::path& root,
                              std::wstring_view query,
                              const SearchOptions& options = {},

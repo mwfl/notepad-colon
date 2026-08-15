@@ -2,11 +2,15 @@
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/configuration.h>
 #include <notepad_colon/editing.h>
+#include <notepad_colon/editor_config.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/session_writer.h>
 #include <notepad_colon/text.h>
+#include <notepad_colon/tree_sitter_document.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/language_registry.h>
+#include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/macro.h>
 #include <notepad_colon/mapped_file.h>
@@ -18,6 +22,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <iostream>
 #include <fstream>
 
@@ -32,6 +37,145 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    {
+        const auto root = std::filesystem::temp_directory_path() /
+            (L"notepad-colon-editorconfig-" + std::to_wstring(::GetCurrentProcessId()));
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+        std::filesystem::create_directories(root / L"src");
+        std::ofstream(root / L".editorconfig") <<
+            "root = true\n[*]\nindent_style = space\nindent_size = 2\nend_of_line = lf\n"
+            "trim_trailing_whitespace = true\ninsert_final_newline = true\n"
+            "[*.cpp]\nindent_size = 4\ncharset = utf-8\n";
+        const auto settings = notepad_colon::ResolveEditorConfig(root / L"src" / L"sample.cpp");
+        Check(settings.use_tabs && !*settings.use_tabs && settings.indent_size == 4u &&
+                  settings.line_ending == notepad_colon::LineEnding::lf &&
+                  settings.encoding == notepad_colon::EncodingKind::utf8 &&
+                  settings.trim_trailing_whitespace == true &&
+                  settings.insert_final_newline == true,
+              ".editorconfig resolves inherited and language-specific properties");
+        std::filesystem::remove_all(root, ignored);
+    }
+    {
+        constexpr std::string_view json = R"({"name":"colon","enabled":true,"count":4})";
+        notepad_colon::TreeSitterDocument syntax;
+        Check(syntax.ConfigureJson() && syntax.Parse(json) && !syntax.HasErrors() &&
+                  std::ranges::any_of(syntax.Highlights(0, static_cast<std::uint32_t>(json.size())),
+                      [](const auto& span) { return span.kind == notepad_colon::SyntaxKind::property; }),
+              "Tree-sitter JSON grammar parses and highlights properties");
+    }
+    {
+        constexpr std::string_view source =
+            "namespace demo { class Widget {}; int compute(int value) { "
+            "return value + 42; } } // tree-sitter\n";
+        notepad_colon::TreeSitterDocument syntax;
+        Check(syntax.ConfigureCpp() && syntax.Parse(source),
+              "Tree-sitter C++ parser configures and parses");
+        const auto highlights = syntax.Highlights(0, static_cast<std::uint32_t>(source.size()));
+        Check(std::ranges::any_of(highlights, [](const auto& span) {
+                  return span.kind == notepad_colon::SyntaxKind::keyword;
+              }) && std::ranges::any_of(highlights, [](const auto& span) {
+                  return span.kind == notepad_colon::SyntaxKind::comment;
+              }), "Tree-sitter emits semantic keyword and comment ranges");
+        const auto symbols = syntax.Symbols(source);
+        Check(std::ranges::any_of(symbols, [](const auto& symbol) {
+                  return symbol.name == "compute" && symbol.kind == "function";
+              }) && std::ranges::any_of(symbols, [](const auto& symbol) {
+                  return symbol.name == "Widget" && symbol.kind == "class";
+              }), "Tree-sitter extracts document symbols");
+        const auto value = source.find("42");
+        std::string edited{source};
+        edited.replace(value, 2, "420");
+        const notepad_colon::SyntaxEdit edit{
+            static_cast<std::uint32_t>(value), static_cast<std::uint32_t>(value + 2),
+            static_cast<std::uint32_t>(value + 3), 0, static_cast<std::uint32_t>(value),
+            0, static_cast<std::uint32_t>(value + 2), 0,
+            static_cast<std::uint32_t>(value + 3)};
+        Check(syntax.Reparse(edited, edit) && !syntax.HasErrors(),
+              "Tree-sitter incrementally reparses an edit");
+    }
+    {
+        const auto source = std::filesystem::temp_directory_path() /
+            (L"notepad-colon-piece-bom-" + std::to_wstring(::GetCurrentProcessId()) + L".txt");
+        { std::ofstream output(source, std::ios::binary); output << "\xef\xbb\xbf" "alpha"; }
+        notepad_colon::LargeFileBuffer buffer;
+        const std::array marker{static_cast<std::uint8_t>('X')};
+        const auto opened = buffer.Open(source);
+        const auto window = opened ? buffer.ReadTextWindow(0, 64,
+            notepad_colon::EncodingKind::utf8_bom) : std::nullopt;
+        const auto inserted = window && buffer.Insert(window->decoded_offset, marker);
+        const auto merged = buffer.Read(0, 9);
+        Check(window && window->decoded_offset == 3 && window->text == L"alpha" && inserted &&
+                  std::string(merged.begin(), merged.end()) == "\xef\xbb\xbf" "Xalpha",
+              "UTF-8 BOM large window maps editor byte zero after the BOM");
+        std::error_code ignored; std::filesystem::remove(source, ignored);
+    }
+    {
+        const auto source = std::filesystem::temp_directory_path() /
+            (L"notepad-colon-piece-source-" + std::to_wstring(::GetCurrentProcessId()) + L".txt");
+        const auto saved = std::filesystem::temp_directory_path() /
+            (L"notepad-colon-piece-saved-" + std::to_wstring(::GetCurrentProcessId()) + L".txt");
+        { std::ofstream output(source, std::ios::binary); output << "alpha beta gamma"; }
+        notepad_colon::LargeFileBuffer buffer;
+        const std::array inserted{static_cast<std::uint8_t>('X'), static_cast<std::uint8_t>('Y')};
+        const bool edited = buffer.Open(source) && buffer.Replace(6, 4, inserted);
+        const auto merged = buffer.Read(0, 64);
+        Check(edited && std::string(merged.begin(), merged.end()) == "alpha XY gamma",
+              "piece table edits mapped source without loading the whole file");
+        Check(buffer.IsModified() && buffer.SaveAs(saved) && !buffer.IsModified(),
+              "piece table streams edits to an atomic replacement file");
+        std::ifstream input(saved, std::ios::binary);
+        const std::string result{std::istreambuf_iterator<char>{input}, {}};
+        Check(result == "alpha XY gamma", "piece table save preserves merged content");
+        { std::ofstream external(saved, std::ios::binary | std::ios::app); external << '!'; }
+        Check(buffer.Insert(0, inserted) && !buffer.SaveAs(saved),
+              "piece table refuses to replace a source changed externally during editing");
+        std::error_code ignored;
+        std::filesystem::remove(source, ignored);
+        std::filesystem::remove(saved, ignored);
+    }
+    {
+        const auto directory = std::filesystem::temp_directory_path() /
+            (L"notepad-colon-language-test-" + std::to_wstring(::GetCurrentProcessId()));
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+        std::filesystem::create_directories(directory);
+        std::ofstream(directory / L"acme-highlights.scm", std::ios::binary) <<
+            "(comment) @comment\n[\"return\"] @keyword\n";
+        std::ofstream(directory / L"acme.json", std::ios::binary) <<
+            R"({"id":"acme-script","name":"Acme Script","extensions":[".acme"],"fallbackLexer":"cpp","treeSitter":{"grammar":"cpp","highlights":"acme-highlights.scm"}})";
+        std::ofstream(directory / L"data-highlights.scm", std::ios::binary) <<
+            "(string) @string\n(number) @number\n(pair key: (string) @property)\n";
+        std::ofstream(directory / L"data.json", std::ios::binary) <<
+            R"({"id":"acme-data","name":"Acme Data","extensions":[".adata"],"fallbackLexer":"json","treeSitter":{"grammar":"json","highlights":"data-highlights.scm"}})";
+        std::ofstream(directory / L"unsafe.json", std::ios::binary) <<
+            R"({"id":"unsafe","name":"Unsafe","extensions":[".unsafe"],"treeSitter":{"library":"../outside.dll","highlights":"../outside.scm"}})";
+        notepad_colon::LanguageRegistry registry;
+        Check(registry.LoadDirectory(directory) == 2 && registry.Find("acme-script") &&
+                  registry.Detect(L"sample.acme") == registry.Find("acme-script"),
+              "custom language definitions load and participate in detection");
+        const auto* acme = registry.Find("acme-script");
+        notepad_colon::TreeSitterDocument custom_syntax;
+        Check(acme && acme->tree_sitter &&
+                  custom_syntax.ConfigureCpp(acme->tree_sitter->highlights_query) &&
+                  custom_syntax.Parse("int run() { return 1; } // custom\n") &&
+                  std::ranges::any_of(custom_syntax.Highlights(0, 40), [](const auto& span) {
+                      return span.kind == notepad_colon::SyntaxKind::keyword;
+                  }), "custom language queries drive a sandboxed built-in Tree-sitter grammar");
+        Check(registry.Errors().size() == 1 && !registry.Find("unsafe"),
+              "custom language definitions reject directory traversal");
+        const auto* data = registry.Find("acme-data");
+        notepad_colon::TreeSitterDocument data_syntax;
+        Check(data && data->tree_sitter && data->tree_sitter->grammar == "json" &&
+                  data_syntax.ConfigureJson(data->tree_sitter->highlights_query) &&
+                  data_syntax.Parse(R"({"answer":42})"),
+              "custom language definition selects the sandboxed JSON grammar");
+        registry.ResetBuiltins();
+        Check(!registry.Find("acme-script") && registry.Find("cpp") &&
+                  registry.Detect(L"source.cpp") == registry.Find("cpp"),
+              "language registry reload resets to stable builtins");
+        std::filesystem::remove_all(directory, ignored);
+    }
     const std::vector<std::uint8_t> utf8_bytes{'a', '\r', '\n', 0xe2, 0x80, 0xae, 'b', '\n'};
     const auto utf8_analysis = notepad_colon::AnalyzeEncoding(utf8_bytes);
     Check(utf8_analysis.encoding == notepad_colon::EncodingKind::utf8 && utf8_analysis.valid &&
@@ -81,11 +225,13 @@ int main() {
     notepad_colon::Configuration configuration;
     configuration.preferences.font_name = L"Cascadia Mono";
     configuration.shortcuts = {{1, static_cast<std::uint8_t>(FVIRTKEY | FCONTROL), 'N'}};
+    configuration.search_history = {L"needle", L"alpha\\s+beta"};
     notepad_colon::Configuration decoded_configuration;
     Check(notepad_colon::DeserializeConfiguration(
               notepad_colon::SerializeConfiguration(configuration), decoded_configuration) &&
               decoded_configuration.preferences == configuration.preferences &&
-              decoded_configuration.shortcuts == configuration.shortcuts,
+              decoded_configuration.shortcuts == configuration.shortcuts &&
+              decoded_configuration.search_history == configuration.search_history,
           "configuration round trip");
     notepad_colon::MacroRecorder macro_recorder;
     macro_recorder.Start();
@@ -371,6 +517,33 @@ int main() {
     search_options.match_case = true;
     const auto case_result = notepad_colon::SearchWorkspace(workspace_path, L"needle", search_options);
     Check(case_result.matches.size() == 2, "case-sensitive folder search");
+    const auto advanced_search_path = workspace_path / L"advanced-search";
+    std::filesystem::create_directories(advanced_search_path);
+    { std::ofstream(advanced_search_path / L"included.txt", std::ios::binary)
+          << "alpha123\nfirst line\nsecond line\n";
+      std::ofstream(advanced_search_path / L"ignored.log", std::ios::binary)
+          << "alpha999 ignored\n";
+      std::ofstream(advanced_search_path / L".gitignore", std::ios::binary)
+          << "*.log\n"; }
+    notepad_colon::SearchOptions regex_options;
+    regex_options.regular_expression = true;
+    const auto regex_result = notepad_colon::SearchWorkspace(
+        advanced_search_path, LR"(alpha\d+)", regex_options);
+    Check(regex_result.matches.size() == 1 && regex_result.matches.front().line == 1,
+          "workspace regular expressions honor .gitignore");
+    regex_options.use_gitignore = false;
+    Check(notepad_colon::SearchWorkspace(
+              advanced_search_path, LR"(alpha\d+)", regex_options).matches.size() == 2,
+          "workspace search can explicitly include gitignored files");
+    notepad_colon::SearchOptions multiline_options;
+    multiline_options.multiline = true;
+    Check(notepad_colon::SearchWorkspace(advanced_search_path,
+              L"first line\nsecond line", multiline_options).matches.size() == 1,
+          "workspace literal search supports multiline matches");
+    regex_options.regular_expression = true;
+    const auto invalid_regex = notepad_colon::SearchWorkspace(
+        advanced_search_path, L"(", regex_options);
+    Check(!invalid_regex.error.empty(), "invalid workspace regular expressions report an error");
     std::stop_source cancelled;
     cancelled.request_stop();
     Check(notepad_colon::SearchWorkspace(workspace_path, L"needle", {}, cancelled.get_token()).cancelled,

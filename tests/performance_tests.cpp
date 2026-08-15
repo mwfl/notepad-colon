@@ -1,10 +1,12 @@
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/mapped_file.h>
+#include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/session_writer.h>
 
 #include <windows.h>
 
 #include <chrono>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -82,6 +84,37 @@ int main() {
         std::string(ending.begin(), ending.end()) != end_marker || !found_end) return 9;
     if (handles_after > handles_before + 4) return 11;
 
+    const auto four_gib_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-piece-4gib-" + std::to_wstring(::GetCurrentProcessId()) + L".txt");
+    const auto four_gib = ::CreateFileW(four_gib_path.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_SPARSE_FILE, nullptr);
+    if (four_gib == INVALID_HANDLE_VALUE) return 14;
+    DWORD sparse_bytes = 0;
+    static_cast<void>(::DeviceIoControl(four_gib, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0,
+                                       &sparse_bytes, nullptr));
+    LARGE_INTEGER four_gib_end{};
+    four_gib_end.QuadPart = 4ll * 1024 * 1024 * 1024;
+    if (!::SetFilePointerEx(four_gib, four_gib_end, nullptr, FILE_BEGIN) ||
+        !::SetEndOfFile(four_gib)) return 15;
+    ::CloseHandle(four_gib);
+    const auto piece_started = Clock::now();
+    notepad_colon::LargeFileBuffer four_gib_buffer;
+    const std::array marker{static_cast<std::uint8_t>('N'), static_cast<std::uint8_t>('P'),
+                            static_cast<std::uint8_t>('C')};
+    if (!four_gib_buffer.Open(four_gib_path) ||
+        four_gib_buffer.Size() != 4ull * 1024 * 1024 * 1024 ||
+        !four_gib_buffer.Insert(four_gib_buffer.Size() - 1, marker)) return 16;
+    const auto around_marker = four_gib_buffer.Read(four_gib_buffer.Size() - 4, 4);
+    if (around_marker.size() != 4 || around_marker[0] != 'N' || around_marker[1] != 'P' ||
+        around_marker[2] != 'C' || around_marker[3] != 0) return 17;
+    const auto found_piece_marker = four_gib_buffer.Find(marker, four_gib_buffer.Size() - 1024);
+    if (!found_piece_marker || *found_piece_marker != four_gib_buffer.Size() - 4) return 19;
+    if (!four_gib_buffer.Erase(four_gib_buffer.Size() - 4, 3) ||
+        four_gib_buffer.Size() != 4ull * 1024 * 1024 * 1024) return 18;
+    const auto piece_finished = Clock::now();
+    four_gib_buffer.Close();
+    std::filesystem::remove(four_gib_path, ignored);
+
     const auto session_path = std::filesystem::temp_directory_path() /
         (L"notepad-colon-session-performance-" + std::to_wstring(::GetCurrentProcessId()));
     notepad_colon::Session session;
@@ -110,6 +143,7 @@ int main() {
               << "  \"workspace_scan_ms\": " << Milliseconds(scanned - started) << ",\n"
               << "  \"workspace_search_ms\": " << Milliseconds(searched - scanned) << ",\n"
               << "  \"mapped_1gib_search_ms\": " << Milliseconds(mapped_finished - mapped_started) << ",\n"
+              << "  \"piece_table_4gib_edit_ms\": " << Milliseconds(piece_finished - piece_started) << ",\n"
               << "  \"session_coalesce_50x_1mib_ms\": " << Milliseconds(session_finished - session_started) << ",\n"
               << "  \"filter_20000_ms\": " << Milliseconds(filter_finished - filter_started) << ",\n"
               << "  \"handle_delta\": " << static_cast<long long>(handles_after) - handles_before << "\n"

@@ -2,7 +2,9 @@
 
 #include <mwfl/scintilla.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/language_registry.h>
 #include <notepad_colon/preferences.h>
+#include <notepad_colon/tree_sitter_document.h>
 
 #include <windows.h>
 
@@ -20,6 +22,7 @@ public:
     LexillaRuntime& operator=(const LexillaRuntime&) = delete;
     bool LoadAdjacent() noexcept;
     void* CreateLexer(Language language) const noexcept;
+    void* CreateLexer(std::string_view name) const noexcept;
 
 private:
     using CreateLexerFunction = void*(__cdecl*)(const char*);
@@ -30,6 +33,15 @@ private:
 bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runtime,
                        Language language, bool dark = false,
                        SyntaxPerformanceMode mode = SyntaxPerformanceMode::full) noexcept;
+bool ConfigureRegisteredLanguage(mwfl::ScintillaEditor& editor,
+                                 const LexillaRuntime& runtime,
+                                 const RegisteredLanguage& language,
+                                 bool dark = false) noexcept;
+void ConfigureTreeSitterStyles(mwfl::ScintillaEditor& editor, bool dark) noexcept;
+void ApplyTreeSitterHighlights(mwfl::ScintillaEditor& editor,
+                               const TreeSitterDocument& document,
+                               std::uint32_t start_byte,
+                               std::uint32_t end_byte) noexcept;
 void ConfigureAdvancedEditing(mwfl::ScintillaEditor& editor) noexcept;
 void ToggleBookmark(mwfl::ScintillaEditor& editor) noexcept;
 bool GoToNextBookmark(mwfl::ScintillaEditor& editor) noexcept;
