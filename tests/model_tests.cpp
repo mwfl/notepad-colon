@@ -148,10 +148,20 @@ int main() {
             "(string) @string\n(number) @number\n(pair key: (string) @property)\n";
         std::ofstream(directory / L"data.json", std::ios::binary) <<
             R"({"id":"acme-data","name":"Acme Data","extensions":[".adata"],"fallbackLexer":"json","treeSitter":{"grammar":"json","highlights":"data-highlights.scm"}})";
+        std::filesystem::copy_file(std::filesystem::path{__FILE__}.parent_path() /
+            L"fixtures" / L"tree-sitter-json.wasm", directory / L"tree-sitter-json.wasm",
+            std::filesystem::copy_options::overwrite_existing);
+        std::ofstream(directory / L"wasm.json", std::ios::binary) <<
+            R"({"id":"wasm-data","name":"Wasm Data","extensions":[".wdata"],"fallbackLexer":"json","treeSitter":{"grammar":"wasm","language":"json","module":"tree-sitter-json.wasm","highlights":"data-highlights.scm"}})";
+        { const std::array<char, 8> invalid_wasm{0, 'a', 's', 'm', 2, 0, 0, 0};
+          std::ofstream bad_module(directory / L"bad.wasm", std::ios::binary);
+          bad_module.write(invalid_wasm.data(), invalid_wasm.size()); }
+        std::ofstream(directory / L"bad-wasm.json", std::ios::binary) <<
+            R"({"id":"bad-wasm","name":"Bad Wasm","extensions":[".badwasm"],"treeSitter":{"grammar":"wasm","language":"json","module":"bad.wasm","highlights":"data-highlights.scm"}})";
         std::ofstream(directory / L"unsafe.json", std::ios::binary) <<
             R"({"id":"unsafe","name":"Unsafe","extensions":[".unsafe"],"treeSitter":{"library":"../outside.dll","highlights":"../outside.scm"}})";
         notepad_colon::LanguageRegistry registry;
-        Check(registry.LoadDirectory(directory) == 2 && registry.Find("acme-script") &&
+        Check(registry.LoadDirectory(directory) == 3 && registry.Find("acme-script") &&
                   registry.Detect(L"sample.acme") == registry.Find("acme-script"),
               "custom language definitions load and participate in detection");
         const auto* acme = registry.Find("acme-script");
@@ -162,14 +172,19 @@ int main() {
                   std::ranges::any_of(custom_syntax.Highlights(0, 40), [](const auto& span) {
                       return span.kind == notepad_colon::SyntaxKind::keyword;
                   }), "custom language queries drive a sandboxed built-in Tree-sitter grammar");
-        Check(registry.Errors().size() == 1 && !registry.Find("unsafe"),
-              "custom language definitions reject directory traversal");
+        Check(registry.Errors().size() == 2 && !registry.Find("unsafe") && !registry.Find("bad-wasm"),
+              "custom language definitions reject traversal and invalid Wasm versions");
         const auto* data = registry.Find("acme-data");
         notepad_colon::TreeSitterDocument data_syntax;
         Check(data && data->tree_sitter && data->tree_sitter->grammar == "json" &&
                   data_syntax.ConfigureJson(data->tree_sitter->highlights_query) &&
                   data_syntax.Parse(R"({"answer":42})"),
               "custom language definition selects the sandboxed JSON grammar");
+        const auto* wasm_data = registry.Find("wasm-data");
+        Check(wasm_data && wasm_data->tree_sitter &&
+                  wasm_data->tree_sitter->wasm_language_name == "json" &&
+                  wasm_data->tree_sitter->wasm_bytes.size() > 8,
+              "custom language definition validates and loads a bounded Wasm grammar");
         registry.ResetBuiltins();
         Check(!registry.Find("acme-script") && registry.Find("cpp") &&
                   registry.Detect(L"source.cpp") == registry.Find("cpp"),

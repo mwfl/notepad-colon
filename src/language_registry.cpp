@@ -67,6 +67,18 @@ std::optional<std::string> ReadUtf8(const std::filesystem::path& path,
     return input.good() || input.eof() ? std::optional<std::string>{std::move(bytes)} : std::nullopt;
 }
 
+std::optional<std::vector<std::uint8_t>> ReadBinary(const std::filesystem::path& path,
+                                                     std::uintmax_t maximum) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size == 0 || size > maximum) return std::nullopt;
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return std::nullopt;
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return input ? std::optional{std::move(bytes)} : std::nullopt;
+}
+
 std::optional<std::filesystem::path> SafeRelativePath(
     const std::filesystem::path& root, const nlohmann::json& value) {
     if (!value.is_string()) return std::nullopt;
@@ -133,9 +145,15 @@ std::size_t LanguageRegistry::LoadDirectory(const std::filesystem::path& directo
     std::error_code error;
     if (!std::filesystem::is_directory(directory, error)) return 0;
     std::size_t loaded = 0;
+    std::size_t visited = 0;
+    std::size_t wasm_bytes_loaded = 0;
     for (std::filesystem::directory_iterator iterator(directory,
              std::filesystem::directory_options::skip_permission_denied, error), end;
          iterator != end && !error; iterator.increment(error)) {
+        if (++visited > 256) {
+            errors_.push_back({directory, "language directory exceeds 256 entries"});
+            break;
+        }
         const auto path = iterator->path();
         if (!iterator->is_regular_file(error) || Lower(path.extension().wstring()) != L".json") continue;
         try {
@@ -169,8 +187,24 @@ std::size_t LanguageRegistry::LoadDirectory(const std::filesystem::path& directo
                 if (!highlights) throw std::runtime_error("Tree-sitter query escapes the language directory");
                 TreeSitterDefinition syntax;
                 syntax.grammar = found->value("grammar", std::string{});
-                if (syntax.grammar != "cpp" && syntax.grammar != "json")
-                    throw std::runtime_error("grammar must be a sandboxed built-in: cpp or json");
+                if (syntax.grammar != "cpp" && syntax.grammar != "json" && syntax.grammar != "wasm")
+                    throw std::runtime_error("grammar must be cpp, json, or wasm");
+                if (syntax.grammar == "wasm") {
+                    const auto module_path = SafeRelativePath(directory, found->at("module"));
+                    if (!module_path) throw std::runtime_error("Wasm module escapes the language directory");
+                    const auto module = ReadBinary(*module_path, 16u * 1024 * 1024);
+                    if (!module || module->size() < 8 || (*module)[0] != 0 || (*module)[1] != 'a' ||
+                        (*module)[2] != 's' || (*module)[3] != 'm' || (*module)[4] != 1 ||
+                        (*module)[5] != 0 || (*module)[6] != 0 || (*module)[7] != 0)
+                        throw std::runtime_error("Wasm module is unreadable or invalid");
+                    syntax.wasm_language_name = found->at("language").get<std::string>();
+                    if (!ValidId(syntax.wasm_language_name))
+                        throw std::runtime_error("invalid Wasm Tree-sitter language name");
+                    if (wasm_bytes_loaded > 64u * 1024 * 1024 - module->size())
+                        throw std::runtime_error("Wasm language modules exceed the 64 MiB directory budget");
+                    wasm_bytes_loaded += module->size();
+                    syntax.wasm_bytes = *module;
+                }
                 const auto query = ReadUtf8(*highlights);
                 if (!query) throw std::runtime_error("highlight query is unreadable");
                 syntax.highlights_query = *query;
@@ -186,6 +220,10 @@ std::size_t LanguageRegistry::LoadDirectory(const std::filesystem::path& directo
                 throw std::runtime_error("at least one extension or filename is required");
             languages_.push_back(std::move(language));
             ++loaded;
+            if (loaded >= 64) {
+                errors_.push_back({directory, "language directory exceeds 64 valid definitions"});
+                break;
+            }
         } catch (const std::exception& exception) {
             errors_.push_back({path, exception.what()});
         }

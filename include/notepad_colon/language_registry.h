@@ -15,6 +15,8 @@ struct TreeSitterDefinition {
     std::string grammar;
     std::string highlights_query;
     std::string symbols_query;
+    std::string wasm_language_name;
+    std::vector<std::uint8_t> wasm_bytes;
 };
 
 struct RegisteredLanguage {

@@ -27,6 +27,7 @@
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/workspace_state.h>
 #include "scintilla_support.h"
+#include "wasm_syntax_client.h"
 
 #include <algorithm>
 #include <array>
@@ -232,6 +233,7 @@ struct EditorDocument {
     std::size_t mapped_window_size = 8u * 1024 * 1024;
     bool loading_large_window = false;
     std::unique_ptr<notepad_colon::TreeSitterDocument> syntax_tree;
+    std::unique_ptr<notepad_colon::WasmSyntaxClient> wasm_syntax;
     std::string language_id = "plain-text";
     notepad_colon::EditorConfigSettings editor_config;
     bool follow_tail = false;
@@ -1362,7 +1364,7 @@ private:
                     *document.editor, lexilla_, document.language, dark,
                     document.mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
                                          : notepad_colon::SyntaxPerformanceMode::full));
-            if (document.syntax_tree) {
+            if (document.syntax_tree || document.wasm_syntax) {
                 notepad_colon::ConfigureTreeSitterStyles(*document.editor, dark);
                 StyleVisibleSyntax(document);
             }
@@ -1445,10 +1447,25 @@ private:
 
     void InitializeSyntaxTree(EditorDocument& document) noexcept {
         document.syntax_tree.reset();
+        document.wasm_syntax.reset();
         if (document.mapped_file) return;
         const auto text = EditorUtf8(*document.editor);
         if (!text || text->size() > 8u * 1024 * 1024) return;
         try {
+            if (const auto* language = language_registry_.Find(document.language_id);
+                language && language->tree_sitter && language->tree_sitter->grammar == "wasm") {
+                auto syntax = std::make_unique<notepad_colon::WasmSyntaxClient>();
+                const auto host = ExecutablePath().parent_path() / L"notepad-colon-language-host.exe";
+                if (!syntax->Start(host, language->tree_sitter->wasm_language_name,
+                    language->tree_sitter->wasm_bytes, language->tree_sitter->highlights_query,
+                    language->tree_sitter->symbols_query) || !syntax->Parse(*text)) {
+                    status_.SetText(L"Wasm language host rejected or timed out"); return;
+                }
+                document.wasm_syntax = std::move(syntax);
+                notepad_colon::ConfigureTreeSitterStyles(*document.editor, IsDark());
+                StyleVisibleSyntax(document);
+                return;
+            }
             auto syntax = std::make_unique<notepad_colon::TreeSitterDocument>();
             bool configured = false;
             if (document.language == notepad_colon::Language::cpp) configured = syntax->ConfigureCpp();
@@ -1466,11 +1483,11 @@ private:
             document.syntax_tree = std::move(syntax);
             notepad_colon::ConfigureTreeSitterStyles(*document.editor, IsDark());
             StyleVisibleSyntax(document);
-        } catch (...) { document.syntax_tree.reset(); }
+        } catch (...) { document.syntax_tree.reset(); document.wasm_syntax.reset(); }
     }
 
     void StyleVisibleSyntax(EditorDocument& document) noexcept {
-        if (!document.syntax_tree) return;
+        if (!document.syntax_tree && !document.wasm_syntax) return;
         const auto first_visible = document.editor->Send(SCI_GETFIRSTVISIBLELINE);
         const auto visible_count = document.editor->Send(SCI_LINESONSCREEN);
         const auto first_line = document.editor->Send(
@@ -1480,9 +1497,15 @@ private:
         const auto start = document.editor->Send(SCI_POSITIONFROMLINE, first_line);
         auto end = document.editor->Send(SCI_GETLINEENDPOSITION, last_line);
         if (end < 0) end = document.editor->GetLength();
-        notepad_colon::ApplyTreeSitterHighlights(*document.editor, *document.syntax_tree,
-            static_cast<std::uint32_t>((std::max<LRESULT>)(0, start)),
-            static_cast<std::uint32_t>((std::max<LRESULT>)(0, end)));
+        const auto start_byte = static_cast<std::uint32_t>((std::max<LRESULT>)(0, start));
+        const auto end_byte = static_cast<std::uint32_t>((std::max<LRESULT>)(0, end));
+        if (document.syntax_tree)
+            notepad_colon::ApplyTreeSitterHighlights(*document.editor, *document.syntax_tree,
+                                                     start_byte, end_byte);
+        else {
+            const auto spans = document.wasm_syntax->Highlights(start_byte, end_byte);
+            notepad_colon::ApplySyntaxSpans(*document.editor, spans, start_byte, end_byte);
+        }
     }
 
     void UpdateLargeBuffer(EditorDocument& document, const SCNotification& notification) noexcept {
@@ -1510,7 +1533,7 @@ private:
     }
 
     void UpdateSyntaxTree(EditorDocument& document, const SCNotification& notification) noexcept {
-        if (!document.syntax_tree ||
+        if ((!document.syntax_tree && !document.wasm_syntax) ||
             (notification.modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) == 0)
             return;
         const auto text = EditorUtf8(*document.editor);
@@ -1548,7 +1571,14 @@ private:
             edit.new_end_row = line;
             edit.new_end_column = column;
         }
-        if (document.syntax_tree->Reparse(*text, edit)) StyleVisibleSyntax(document);
+        const bool reparsed = document.syntax_tree
+            ? document.syntax_tree->Reparse(*text, edit)
+            : document.wasm_syntax->Reparse(*text, edit);
+        if (reparsed) StyleVisibleSyntax(document);
+        else if (document.wasm_syntax) {
+            document.wasm_syntax.reset();
+            status_.SetText(L"Wasm language host stopped after a timeout or protocol failure");
+        }
     }
 
     void LoadPreferences() {
@@ -2114,10 +2144,11 @@ private:
     void ShowDocumentSymbols() {
         auto* document = ActiveDocument();
         const auto text = document ? EditorUtf8(*document->editor) : std::nullopt;
-        if (!document || !document->syntax_tree || !text) {
+        if (!document || (!document->syntax_tree && !document->wasm_syntax) || !text) {
             status_.SetText(L"Document symbols require an active Tree-sitter language"); return;
         }
-        const auto symbols = document->syntax_tree->Symbols(*text);
+        const auto symbols = document->syntax_tree
+            ? document->syntax_tree->Symbols(*text) : document->wasm_syntax->Symbols();
         if (symbols.empty()) { status_.SetText(L"No document symbols found"); return; }
         mwfl::TextBox query; mwfl::ListBox list; mwfl::Button open, cancel;
         std::vector<std::size_t> visible; std::optional<std::size_t> chosen;
@@ -3820,6 +3851,40 @@ private:
                             40 + static_cast<int>(notepad_colon::SyntaxKind::keyword)) !=
                             RGB(86, 156, 214)) result = 26;
                 }
+            }
+            if (result == 0) {
+                const auto language_directory = LanguageDirectory(true);
+                std::error_code ignored;
+                std::filesystem::remove_all(language_directory, ignored);
+                std::filesystem::create_directories(language_directory, ignored);
+                const auto fixture = ExecutablePath().parent_path() / L"tree-sitter-json-test.wasm";
+                std::filesystem::copy_file(fixture, language_directory / L"tree-sitter-json.wasm",
+                    std::filesystem::copy_options::overwrite_existing, ignored);
+                std::ofstream(language_directory / L"json-highlights.scm", std::ios::binary) <<
+                    "(string) @string\n(number) @number\n(pair key: (string) @property)\n";
+                std::ofstream(language_directory / L"wasm-test.json", std::ios::binary) <<
+                    R"({"id":"wasm-self-test","name":"Wasm Self Test","extensions":[".wtest"],"fallbackLexer":"json","treeSitter":{"grammar":"wasm","language":"json","module":"tree-sitter-json.wasm","highlights":"json-highlights.scm"}})";
+                LoadLanguageDefinitions();
+                first->language = notepad_colon::Language::plain_text;
+                first->language_id = "wasm-self-test";
+                constexpr std::string_view json = R"({"name":"colon","count":42})";
+                if (ignored || !first->editor->SetText(L"{\"name\":\"colon\",\"count\":42}") ) result = 27;
+                else {
+                    InitializeSyntaxTree(*first);
+                    const auto property = json.find("\"name\"");
+                    if (!first->wasm_syntax) result = 27;
+                    else {
+                        const auto spans = first->wasm_syntax->Highlights(
+                            0, static_cast<std::uint32_t>(json.size()));
+                        notepad_colon::ApplySyntaxSpans(*first->editor, spans, 0,
+                            static_cast<std::uint32_t>(json.size()));
+                        if (first->editor->Send(SCI_GETSTYLEAT, property) !=
+                            40 + static_cast<int>(notepad_colon::SyntaxKind::property)) result = 28;
+                    }
+                }
+                first->wasm_syntax.reset();
+                std::filesystem::remove_all(language_directory, ignored);
+                language_registry_.ResetBuiltins();
             }
             if (result == 0) {
                 for (const auto language : notepad_colon::AllLanguages()) {

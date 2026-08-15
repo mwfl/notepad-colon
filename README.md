@@ -20,7 +20,9 @@ telemetry, and cloud services.
 - Strict UTF-8/BOM/UTF-16/ANSI analysis, selectable ANSI code-page reopening,
   lossless conversion checks, mixed-EOL reporting, and bidi/zero-width warnings.
 - Incremental Tree-sitter parsing and visible-range coloring for C++ and JSON,
-  with document symbols and safe JSON-defined language aliases/queries.
+  with document symbols and JSON-defined languages. Third-party Tree-sitter
+  Wasm grammars run in a time- and memory-limited helper process, never in the
+  GUI process.
 - Workspace tree, fuzzy Quick Open, and cancellable background folder search
   with literal, multiline, whole-word, regular-expression, preview, persistent
   history, and `.gitignore` support.

@@ -300,9 +300,26 @@ void ApplyTreeSitterHighlights(mwfl::ScintillaEditor& editor,
     end_byte = (std::min)(end_byte, length);
     if (start_byte >= end_byte) return;
     const auto spans = document.Highlights(start_byte, end_byte);
+    ApplySyntaxSpans(editor, spans, start_byte, end_byte);
+}
+
+void ApplySyntaxSpans(mwfl::ScintillaEditor& editor,
+                      std::span<const SyntaxSpan> spans,
+                      std::uint32_t start_byte,
+                      std::uint32_t end_byte) noexcept {
+    const auto length = static_cast<std::uint32_t>((std::max<LRESULT>)(0, editor.GetLength()));
+    start_byte = (std::min)(start_byte, length);
+    end_byte = (std::min)(end_byte, length);
+    if (start_byte >= end_byte) return;
+    std::vector<SyntaxSpan> ordered{spans.begin(), spans.end()};
+    std::ranges::sort(ordered, [](const auto& left, const auto& right) {
+        if (left.start_byte != right.start_byte) return left.start_byte < right.start_byte;
+        if (left.end_byte != right.end_byte) return left.end_byte > right.end_byte;
+        return static_cast<std::uint32_t>(left.kind) > static_cast<std::uint32_t>(right.kind);
+    });
     std::uint32_t cursor = start_byte;
     editor.Send(SCI_STARTSTYLING, start_byte);
-    for (const auto& span : spans) {
+    for (const auto& span : ordered) {
         const auto begin = (std::max)(start_byte, span.start_byte);
         const auto end = (std::min)(end_byte, span.end_byte);
         if (begin >= end || end <= cursor) continue;

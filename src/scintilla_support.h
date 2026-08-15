@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <functional>
+#include <span>
 
 namespace notepad_colon {
 
@@ -42,6 +43,10 @@ void ApplyTreeSitterHighlights(mwfl::ScintillaEditor& editor,
                                const TreeSitterDocument& document,
                                std::uint32_t start_byte,
                                std::uint32_t end_byte) noexcept;
+void ApplySyntaxSpans(mwfl::ScintillaEditor& editor,
+                      std::span<const SyntaxSpan> spans,
+                      std::uint32_t start_byte,
+                      std::uint32_t end_byte) noexcept;
 void ConfigureAdvancedEditing(mwfl::ScintillaEditor& editor) noexcept;
 void ToggleBookmark(mwfl::ScintillaEditor& editor) noexcept;
 bool GoToNextBookmark(mwfl::ScintillaEditor& editor) noexcept;
