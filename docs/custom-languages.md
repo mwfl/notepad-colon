@@ -1,6 +1,6 @@
 # Custom languages
 
-Notepad Colon loads language definitions from:
+Notepad:: loads language definitions from:
 
 ```text
 %LOCALAPPDATA%\mwfl\Notepad Colon\languages\*.json
@@ -38,7 +38,7 @@ Each definition and query is limited to 1 MiB and a Wasm module to 16 MiB. IDs,
 extensions, duplicate definitions, UTF-8, the Wasm magic/version, and relative
 paths are validated. Absolute paths and `..` escapes are rejected.
 
-Wasm never runs in the GUI process. Notepad Colon starts a hidden language host
+Wasm never runs in the GUI process. Notepad:: starts a hidden language host
 under a Windows Job Object with one-process, 256 MiB process-memory, and 25%
 hard CPU-rate limits. Configure requests time out after 5 seconds and parse
 requests after 1.5 seconds; a timeout terminates the entire job. The host does

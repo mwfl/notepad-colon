@@ -1,4 +1,8 @@
 #include <windows.h>
+#include "resource.h"
+
+IDI_APP_ICON ICON "assets\\notepad-colon.ico"
+IDB_TOOLBAR BITMAP "assets\\toolbar.bmp"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 0,1,0,1
@@ -18,12 +22,12 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName", "mwfl"
-            VALUE "FileDescription", "Notepad Colon"
+            VALUE "FileDescription", "Notepad::"
             VALUE "FileVersion", "0.1.0-beta.1"
             VALUE "InternalName", "notepad-colon"
             VALUE "LegalCopyright", "Copyright (c) 2026 mwfl contributors"
             VALUE "OriginalFilename", "notepad-colon.exe"
-            VALUE "ProductName", "Notepad Colon"
+            VALUE "ProductName", "Notepad::"
             VALUE "ProductVersion", "0.1.0-beta.1"
         END
     END

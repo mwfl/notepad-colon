@@ -29,6 +29,7 @@
 #include <notepad_colon/workspace_state.h>
 #include "scintilla_support.h"
 #include "wasm_syntax_client.h"
+#include "../resource.h"
 
 #include <algorithm>
 #include <array>
@@ -419,7 +420,7 @@ mwfl::FileAssociationSpec TextAssociation() {
             .display_name = L"Text document",
             .executable = ExecutablePath(),
             .icon = ExecutablePath(),
-            .verbs = {{L"open", L"Open with Notepad Colon", {}}}};
+            .verbs = {{L"open", L"Open with Notepad::", {}}}};
 }
 
 class MainWindow final : public mwfl::WindowBase {
@@ -435,9 +436,9 @@ public:
     void BuildUI() override {
         static_cast<void>(mwfl::SetProcessAppUserModelId(L"mwfl.notepad-colon"));
         if (!runtime_.LoadAdjacent())
-            throw std::runtime_error("Scintilla.dll is not available beside Notepad Colon");
+            throw std::runtime_error("Scintilla.dll is not available beside Notepad::");
         if (!lexilla_.LoadAdjacent())
-            throw std::runtime_error("Lexilla.dll is not available beside Notepad Colon");
+            throw std::runtime_error("Lexilla.dll is not available beside Notepad::");
         if (!IsTestMode()) {
             const auto loaded = mwfl::LoadRecentFilesFromRegistry(HKEY_CURRENT_USER, kSettingsKey, 10);
             if (loaded.Succeeded()) recent_ = *loaded.value;
@@ -458,19 +459,55 @@ public:
         ui.Add(tabs_, mwfl::TabControlOptions{});
         ui.Add(results_, kResults, mwfl::RectDip{}, mwfl::ListViewOptions{});
         ui.Add(status_);
-        for (const auto id : {kNew, kOpen, kSave, kUndo, kRedo, kToggleFindBar})
+        const auto toolbar_style = static_cast<DWORD>(
+            ::GetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE));
+        ::SetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE,
+                            toolbar_style & ~static_cast<DWORD>(TBSTYLE_LIST));
+        mwfl::Must(toolbar_images_.Create(20, 20, ILC_COLOR24 | ILC_MASK, 7, 1),
+                   "create toolbar image list");
+        const auto strip = reinterpret_cast<HBITMAP>(::LoadImageW(
+            ::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDB_TOOLBAR), IMAGE_BITMAP,
+            0, 0, LR_CREATEDIBSECTION));
+        mwfl::Must(strip != nullptr &&
+                       ImageList_AddMasked(toolbar_images_.GetHandle(), strip,
+                                           RGB(255, 0, 255)) == 0,
+                   "load toolbar images");
+        ::DeleteObject(strip);
+        mwfl::Must(toolbar_images_.SetBackgroundColor(CLR_NONE),
+                   "make toolbar images transparent");
+        mwfl::Must(toolbar_.SetImageList(toolbar_images_), "attach toolbar images");
+        const std::array toolbar_commands{
+            std::pair{kNew, 0}, std::pair{kOpen, 1}, std::pair{kSave, 2},
+            std::pair{kOpenFolder, 6}, std::pair{kUndo, 3}, std::pair{kRedo, 4},
+            std::pair{kToggleFindBar, 5}};
+        for (const auto& [id, image] : toolbar_commands)
+            commands_.Find(id)->SetImageIndex(image);
+        const auto add_button = [&](mwfl::ControlId id) {
             mwfl::Must(toolbar_.AddCommand(*commands_.Find(id)), "add toolbar command");
-        const auto toolbar_text = [&](mwfl::ControlId id, std::wstring_view value) {
             TBBUTTONINFOW information{sizeof(information)};
-            information.dwMask = TBIF_TEXT;
-            information.pszText = const_cast<wchar_t*>(value.data());
-            ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONINFOW, id.value,
-                           reinterpret_cast<LPARAM>(&information));
+            information.dwMask = TBIF_STYLE;
+            information.fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE;
+            mwfl::Must(::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONINFOW, id.value,
+                                     reinterpret_cast<LPARAM>(&information)) != FALSE,
+                       "configure toolbar button");
         };
-        toolbar_text(kNew, L"＋ New"); toolbar_text(kOpen, L"Open"); toolbar_text(kSave, L"Save");
-        toolbar_text(kUndo, L"↶"); toolbar_text(kRedo, L"↷"); toolbar_text(kToggleFindBar, L"Find");
-        ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(7, 4));
+        const auto add_separator = [&] {
+            TBBUTTON separator{};
+            separator.fsStyle = BTNS_SEP;
+            separator.iBitmap = 8;
+            mwfl::Must(::SendMessageW(toolbar_.GetHwnd(), TB_ADDBUTTONSW, 1,
+                                     reinterpret_cast<LPARAM>(&separator)) != FALSE,
+                       "add toolbar separator");
+        };
+        add_button(kNew); add_button(kOpen); add_button(kSave); add_button(kOpenFolder);
+        add_separator(); add_button(kUndo); add_button(kRedo);
+        add_separator(); add_button(kToggleFindBar);
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETMAXTEXTROWS, 0, 0);
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONSIZE, 0, MAKELPARAM(32, 30));
+        ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(6, 5));
         toolbar_.AutoSize();
+        mwfl::Must(mwfl::SetAccessibleName(toolbar_.GetHwnd(), L"Primary commands"),
+                   "name toolbar");
         mwfl::Must(mwfl::AddColumns(results_, {{L"File", 330}, {L"Line", 70},
                                                 {L"Column", 70}, {L"Preview", 520}}),
                    "add search-result columns");
@@ -665,8 +702,8 @@ public:
             for (const auto& document : workspace_.GetDocuments()) {
                 if (!document.dirty) continue;
                 if (::MessageBoxW(GetHwnd(),
-                                  L"Close Notepad Colon? Unsaved documents will be restored next time.",
-                                  L"Notepad Colon", MB_ICONINFORMATION | MB_OKCANCEL) != IDOK)
+                                  L"Close Notepad::? Unsaved documents will be restored next time.",
+                                  L"Notepad::", MB_ICONINFORMATION | MB_OKCANCEL) != IDOK)
                     return mwfl::EventResult::Handled();
                 break;
             }
@@ -790,10 +827,10 @@ private:
                 [this] { CompareWithFile(); }))
             .Add(mwfl::Command(kCompareWithDisk, L"Compare with Saved Version",
                 [this] { CompareWithDisk(); }))
-            .Add(mwfl::Command(kAbout, L"&About Notepad Colon",
+            .Add(mwfl::Command(kAbout, L"&About Notepad::",
                 [this] { ::MessageBoxW(GetHwnd(),
-                    L"Notepad Colon 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
-                    L"About Notepad Colon", MB_OK | MB_ICONINFORMATION); }));
+                    L"Notepad:: 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
+                    L"About Notepad::", MB_OK | MB_ICONINFORMATION); }));
         commands_
             .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })
                      .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_4}))
@@ -966,7 +1003,7 @@ private:
         set(kPreferences, L"&Preferences...", L"首选项(&P)...");
         set(kEncodingInfo, L"Document Encoding Information...", L"文档编码信息...");
         set(kPrint, L"&Print...", L"打印(&P)...");
-        set(kAbout, L"&About Notepad Colon", L"关于 Notepad Colon(&A)");
+        set(kAbout, L"&About Notepad::", L"关于 Notepad::(&A)");
     }
 
     void SetUiLanguage(bool chinese) {
@@ -1699,7 +1736,7 @@ private:
         auto candidate = preferences_;
         mwfl::Dialog* pointer = nullptr;
         mwfl::Dialog dialog({
-            .owner = GetHwnd(), .title = L"Notepad Colon Preferences",
+            .owner = GetHwnd(), .title = L"Notepad:: Preferences",
             .initial_client_size = {500.0_dip, 390.0_dip}, .resizable = false,
             .callbacks = {
                 .initialize = [&](HWND window) {
@@ -2571,7 +2608,7 @@ private:
 
     void ExportConfiguration() {
         const auto selected = mwfl::ShowSaveFileDialog({.owner = GetHwnd(), .title = L"Export settings",
-            .filters = {{L"Notepad Colon configuration", L"*.npcconfig"}},
+            .filters = {{L"Notepad:: configuration", L"*.npcconfig"}},
             .default_extension = L"npcconfig", .path_must_exist = false});
         if (selected.accepted)
             status_.SetText(SaveConfigurationFile(selected.path) ? L"Settings exported" : L"Settings export failed");
@@ -2579,7 +2616,7 @@ private:
 
     void ImportConfiguration() {
         const auto selected = mwfl::ShowOpenFileDialog({.owner = GetHwnd(), .title = L"Import settings",
-            .filters = {{L"Notepad Colon configuration", L"*.npcconfig"}, {L"All files", L"*.*"}}});
+            .filters = {{L"Notepad:: configuration", L"*.npcconfig"}, {L"All files", L"*.*"}}});
         if (!selected.accepted) return;
         std::ifstream input(selected.path, std::ios::binary); std::string encoded{
             std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
@@ -2858,7 +2895,7 @@ private:
         const auto* metadata = workspace_.Find(*id);
         if (metadata && metadata->dirty && !discard && !IsTestMode()) {
             const int answer = ::MessageBoxW(GetHwnd(), L"Save changes before closing?",
-                                              L"Notepad Colon", MB_ICONWARNING | MB_YESNOCANCEL);
+                                              L"Notepad::", MB_ICONWARNING | MB_YESNOCANCEL);
             if (answer == IDCANCEL || (answer == IDYES && !SaveActive(false))) return false;
         }
         auto found = std::ranges::find(documents_, *id, &EditorDocument::id);
@@ -3774,7 +3811,7 @@ private:
             }
             if (!current.exists && !IsTestMode()) {
                 const auto answer = ::MessageBoxW(GetHwnd(),
-                    (metadata->title + L" was deleted outside Notepad Colon.\n\n"
+                    (metadata->title + L" was deleted outside Notepad::.\n\n"
                      L"Choose Yes to keep its contents as an unsaved document, or No to keep "
                      L"the original path blocked from overwrite.").c_str(),
                     L"File deleted on disk", MB_YESNO | MB_ICONWARNING);
@@ -3938,7 +3975,7 @@ private:
 
     void SaveNamedSession() {
         const auto selected = mwfl::ShowSaveFileDialog({.owner = GetHwnd(), .title = L"Save Named Session",
-            .filters = {{L"Notepad Colon session", L"*.npcsession"}},
+            .filters = {{L"Notepad:: session", L"*.npcsession"}},
             .default_extension = L"npcsession"});
         if (!selected.accepted) return;
         const auto session = CaptureSession();
@@ -3948,7 +3985,7 @@ private:
 
     void OpenNamedSession() {
         const auto selected = mwfl::ShowOpenFileDialog({.owner = GetHwnd(), .title = L"Open Named Session",
-            .filters = {{L"Notepad Colon session", L"*.npcsession"}}});
+            .filters = {{L"Notepad:: session", L"*.npcsession"}}});
         if (!selected.accepted) return;
         notepad_colon::Session session;
         if (!notepad_colon::LoadSession(selected.path, session)) {
@@ -4030,8 +4067,8 @@ private:
     void SyncPresentation(std::wstring_view action) {
         const auto* metadata = workspace_.GetActiveId() ? workspace_.Find(*workspace_.GetActiveId()) : nullptr;
         const auto* document = ActiveDocument();
-        SetTitle((metadata ? metadata->title : L"Notepad Colon") +
-                 std::wstring(metadata && metadata->dirty ? L" * — Notepad Colon" : L" — Notepad Colon"));
+        SetTitle((metadata ? metadata->title : L"Notepad::") +
+                 std::wstring(metadata && metadata->dirty ? L" * — Notepad::" : L" — Notepad::"));
         if (metadata && document) {
             const auto selection = document->editor->GetSelection();
             status_.SetText(std::wstring(action) + L" | Pos " + std::to_wstring(selection.end) +
@@ -4308,6 +4345,7 @@ private:
     mwfl::CommandSet commands_;
     mwfl::AcceleratorTable accelerators_;
     mwfl::Menu menu_;
+    mwfl::ImageList toolbar_images_;
     mwfl::Toolbar toolbar_;
     mwfl::TextBox search_, replacement_, workspace_filter_;
     mwfl::TreeView tree_;
@@ -4412,8 +4450,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         const auto result = single_instance.ForwardActivation(payload);
         if (!result.Delivered()) {
             if (activation_test_client) return 2;
-            ::MessageBoxW(nullptr, L"The existing Notepad Colon instance did not respond.",
-                          L"Notepad Colon", MB_OK | MB_ICONERROR);
+            ::MessageBoxW(nullptr, L"The existing Notepad:: instance did not respond.",
+                          L"Notepad::", MB_OK | MB_ICONERROR);
             return 2;
         }
         return 0;
@@ -4421,7 +4459,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     if (activation_test_client) return 3;
     return mwfl::RunApplication<MainWindow>(instance,
         (self_test || large_file_self_test) ? SW_HIDE : show_command,
-        {.title = L"Notepad Colon", .initial_bounds = {{}, {900.0_dip, 650.0_dip}},
+        {.title = L"Notepad::", .initial_bounds = {{}, {900.0_dip, 650.0_dip}},
          .use_default_bounds = false}, {.com_apartment = mwfl::ComApartment::sta},
          single_instance, std::move(paths), self_test, activation_test_server,
          large_file_self_test);

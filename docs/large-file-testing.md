@@ -27,7 +27,7 @@ Manual acceptance for a 100 MiB or 4 GiB UTF-8 file:
 4. Search for text beyond the current window and confirm the matching window
    loads with the match selected.
 5. Save As, compare size and hashes of unchanged ranges, then reopen.
-6. Modify the source externally before saving and confirm Notepad Colon refuses
+6. Modify the source externally before saving and confirm Notepad:: refuses
    to overwrite it.
 7. Enable **Follow Growing File**, append lines externally, and confirm the view
    advances without discarding edits (follow mode requires a clean document).

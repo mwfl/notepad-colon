@@ -1,6 +1,6 @@
 # Product scope
 
-Notepad Colon is a file-first native editor, not a small IDE.
+Notepad:: is a file-first native editor, not a small IDE.
 
 ## Performance contract
 
@@ -24,7 +24,7 @@ Tree-sitter provides precise coloring and current-document symbols for C++,
 JSON, Python, JavaScript/JSX, and TypeScript/TSX. Local completion combines
 language keywords, current-document identifiers, and those symbols.
 
-Notepad Colon intentionally does not implement LSP completion, cross-project
+Notepad:: intentionally does not implement LSP completion, cross-project
 definitions, references, refactoring, or background diagnostics. The unused
 LanguageService placeholder was removed so the architecture reflects that
 product decision rather than advertising a future IDE subsystem.

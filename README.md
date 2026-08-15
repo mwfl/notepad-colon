@@ -1,68 +1,84 @@
-# Notepad Colon
+<div align="center">
+  <img src="assets/notepad-colon-128.png" width="96" height="96" alt="Notepad:: icon">
+  <h1>Notepad::</h1>
+  <p><strong>A fast, focused text and code editor for Windows.</strong></p>
+  <p>Native C++ · No plugins · No telemetry · No background indexing</p>
+</div>
 
-Notepad Colon is a fast, native Windows text and code editor built with
-[mwfl](https://github.com/mwfl/mwfl) and Scintilla.
+Notepad:: brings the everyday editing strengths people value in Notepad++
+to a focused native Windows application. It starts as an editor—not an IDE—and
+keeps expensive language servers, accounts, cloud services, and project-wide
+code indexing out of the process.
 
-The product targets the everyday editing capabilities people rely on in
-Notepad++ while deliberately excluding plugins, IDE features, accounts,
-telemetry, and cloud services.
+> **Project status:** early preview. Core editing, search, recovery, syntax
+> highlighting, folder browsing, and large-file workflows are implemented and
+> covered by automated tests. Interfaces may still change before 1.0.
 
-## Current capabilities
+## Why Notepad::?
 
-- Native multi-document tabs, safe atomic saves, recent files, drag and drop,
-  and crash/session recovery including unsaved documents.
-- UTF-8/BOM, UTF-16 LE/BE and checked ANSI reopening/saving, CRLF/LF
-  conversion, `.editorconfig`, external-change detection, backup-before-save,
-  and atomic replacement.
-- Scintilla/Lexilla editing for 19 common languages with syntax color, folding,
-  bookmarks, multiple/rectangular selections, auto-indent, brace matching,
-  line operations, whitespace, wrapping, and zoom.
-- Strict UTF-8/BOM/UTF-16/ANSI analysis, selectable ANSI code-page reopening,
-  lossless conversion checks, mixed-EOL reporting, and bidi/zero-width warnings.
-- Incremental Tree-sitter parsing and visible-range coloring for C++, JSON,
-  Python, JavaScript/JSX, and TypeScript/TSX, with document symbols and
-  JSON-defined languages. Third-party Tree-sitter
-  Wasm grammars run in a time- and memory-limited helper process, never in the
-  GUI process.
-- Explicit `Ctrl+Space` local completion combines language keywords, words in
-  the current document, and current-document Tree-sitter symbols. It never
-  starts a language server or indexes a folder, and is disabled for large files.
-- Incremental document search, selection scope, wraparound, regular expressions,
-  replace, persistent history, and bounded **Mark All** highlighting.
-- Workspace tree, fuzzy Quick Open, and cancellable background folder/open-file
-  search with literal, multiline, whole-word, regular-expression, preview,
-  include/exclude globs, persistent history, binary skipping, result/file-size
-  limits, and `.gitignore` support.
-- Explicit, reversible per-user `.txt` association under **Tools**. Existing
-  associations are never silently overwritten.
-- A native Preferences dialog persists System/Light/Dark theme, editor font,
-  font size, and tab width. A single running instance accepts multiple file
-  paths forwarded from later command-line launches.
-- Compact English and Simplified Chinese core navigation can be switched at
-  runtime and persists with the local UI settings.
-- Files through 32 MiB open normally. UTF-8 files above 32 MiB through exactly
-  4 GiB use an editable 8 MiB window backed by a piece table: scrolling between
-  windows, inserts/deletes, fixed-memory full-file literal search, conflict-safe
-  streaming save, and follow-tail are supported. Other large encodings remain
-  read-only until their byte/character mapping is made lossless.
+| | Notepad:: approach |
+|---|---|
+| **Fast by default** | Native Win32 UI built with [mwfl](https://github.com/mwfl/mwfl) and Scintilla |
+| **Focused** | Editing and search without plugins, LSP processes, or IDE project systems |
+| **Safe** | Atomic saves, external-change detection, backups, session recovery, and encoding checks |
+| **Large-file aware** | Editable fixed-memory windows for UTF-8 files through exactly 4 GiB |
+| **Private** | No accounts, telemetry, analytics, or cloud services |
 
-Plugins, LSP processes, semantic project indexing, IDE project systems,
-accounts, telemetry, and cloud services are deliberately out of scope. Opening
-a folder adds a bounded browser and an on-demand search scope; it never turns
-the folder into an IDE project or analyzes files in the background for code
-intelligence.
+## Highlights
 
-See [Custom languages](docs/custom-languages.md) and
-[Large-file testing](docs/large-file-testing.md) for extension and verification
-details.
+### Everyday code editing
+
+- Native multi-document tabs, recent files, drag and drop, bookmarks, folding,
+  multiple and rectangular selections, brace matching, line operations,
+  whitespace controls, wrapping, and zoom.
+- Syntax highlighting for 19 common languages through Scintilla and Lexilla.
+- Incremental Tree-sitter parsing for C++, JSON, Python, JavaScript/JSX, and
+  TypeScript/TSX, including document symbols and visible-range coloring.
+- Explicit `Ctrl+Space` completion from language keywords, current-document
+  identifiers, and current-document symbols—with no language server or folder
+  index.
+
+### Search that stays useful
+
+- Incremental find, match case, whole word, regular expressions, selection
+  scope, wraparound, replace, history, and bounded **Mark All**.
+- Cancellable folder and open-document search with previews, include/exclude
+  globs, `.gitignore`, multiline patterns, binary detection, and safety limits.
+- A lazy workspace tree and fuzzy Quick Open. Opening a folder does not trigger
+  background analysis.
+
+### Files and encodings
+
+- UTF-8/BOM, UTF-16 LE/BE, checked ANSI code pages, CRLF/LF conversion, and
+  `.editorconfig`.
+- Lossless conversion checks, mixed-EOL reporting, and warnings for bidi and
+  zero-width characters.
+- Safe atomic replacement, optional backup-before-save, conflict detection, and
+  crash/session recovery—including unsaved documents.
+
+### Large files without large memory use
+
+- Files through 32 MiB open in the regular editor.
+- UTF-8 files above 32 MiB through exactly 4 GiB use an editable 8 MiB window
+  backed by a piece table.
+- Windowed scrolling, insert/delete, fixed-memory full-file literal search,
+  conflict-safe streaming save, and follow-tail are supported.
+- Other large encodings remain read-only until byte-to-character mapping can be
+  guaranteed lossless.
+
+See [Large-file testing](docs/large-file-testing.md) for the reproducible 100 MiB
+and 4 GiB verification workflow.
 
 ## Supported systems
 
-Windows 10 or newer on x64. Builds and CI use MSVC C++20 with Visual Studio
-2026. CI runs the GUI, model, single-instance, and performance tests and creates
-the x64 portable package.
+- Windows 10 or newer
+- x64 (current packaged build)
+- MSVC C++20 with Visual Studio 2026
 
-## Local development
+## Build from source
+
+Prerequisites: Visual Studio 2026 with Desktop development with C++ and CMake.
+Set `MWFL_SOURCE_DIR` when developing against a local mwfl checkout.
 
 ```powershell
 cmake --preset vs2026-x64
@@ -70,21 +86,36 @@ cmake --build --preset vs2026-x64-debug --parallel
 ctest --preset vs2026-x64-debug
 ```
 
-Set `MWFL_SOURCE_DIR` when developing against a local mwfl checkout.
-
-## Portable package
+Create the portable ZIP:
 
 ```powershell
 cmake --build --preset vs2026-x64-release --target package
 ```
 
-The ZIP contains `notepad-colon.exe`, `Scintilla.dll`, `Lexilla.dll`, the
-license, and this guide. It makes no registry changes on launch; Shell
-registration happens only when explicitly selected from **Tools** and can be
-removed there.
+The package contains `notepad-colon.exe`, Scintilla, Lexilla, notices, and this
+guide. Launching it makes no registry changes. The optional `.txt` association
+is explicit, reversible, and available under **Tools**.
+
+## Project scope
+
+Notepad:: deliberately excludes plugins, LSP processes, semantic project
+indexing, IDE project systems, accounts, telemetry, and cloud services. Opening
+a folder provides bounded navigation and on-demand search; it does not turn the
+folder into a project or analyze its code in the background.
+
+Read the detailed [product scope](docs/product-scope.md) and the guide for
+[custom languages](docs/custom-languages.md).
 
 ## Validation
 
-CTest runs model coverage, a real native-window GUI self-test, isolated Shell
-registry lifecycle coverage, a 34 MiB edit/save integration test, and a sparse
-exact-4-GiB piece-table/search performance guard.
+CTest covers the model layer, real native-window GUI behavior, single-instance
+forwarding, isolated Shell registration, a 34 MiB edit/save integration path,
+Tree-sitter and Wasm syntax handling, and an exact-4-GiB piece-table/search
+performance guard. GitHub Actions builds, tests, packages, and uploads the x64
+portable artifact.
+
+## License
+
+Notepad:: is released under the [MIT License](LICENSE). Third-party
+components and grammar licenses are listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
