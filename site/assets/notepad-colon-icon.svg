@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Notepad Colon icon</title>
+  <defs>
+    <linearGradient id="background" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172A46"/>
+      <stop offset="1" stop-color="#071426"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="112" y1="62" x2="172" y2="198" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#42D5FF"/>
+      <stop offset="1" stop-color="#1689F4"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#background)"/>
+  <rect x="9" y="9" width="238" height="238" rx="51" fill="none" stroke="#385270" stroke-width="2"/>
+  <path d="M60 190V66l64 124V66" fill="none" stroke="#F3F7FC" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="158" cy="92" r="13" fill="url(#accent)"/>
+  <circle cx="158" cy="170" r="13" fill="url(#accent)"/>
+  <circle cx="202" cy="92" r="13" fill="url(#accent)"/>
+  <circle cx="202" cy="170" r="13" fill="url(#accent)"/>
+</svg>

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Notepad:: is a fast, focused native text and code editor for Windows.">
+  <meta name="theme-color" content="#081525">
+  <title>Notepad:: — A fast, focused editor for Windows</title>
+  <link rel="icon" href="assets/notepad-colon-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Notepad Colon home">
+      <img src="assets/notepad-colon-icon.svg" alt="" width="36" height="36">
+      <span>Notepad::</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#features">Features</a>
+      <a href="#large-files">Large files</a>
+      <a href="https://github.com/mwfl/notepad-colon">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Native Windows text editor</p>
+        <h1>Fast where it matters.<br><span>Quiet everywhere else.</span></h1>
+        <p class="lede">Notepad:: keeps everyday text and code editing responsive, clear, and local—without plugins, accounts, telemetry, or background indexing.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/mwfl/notepad-colon/releases/tag/v0.1.0-beta.1">Download preview</a>
+          <a class="button secondary" href="https://github.com/mwfl/notepad-colon">View source</a>
+        </div>
+        <p class="platform">Windows 10+ · x64 · Early preview</p>
+      </div>
+      <div class="editor-card" aria-label="Notepad Colon product highlights">
+        <div class="window-bar"><i></i><i></i><i></i><span>notes.py — Notepad::</span></div>
+        <pre aria-hidden="true"><code><b>1</b>  <em>from</em> pathlib <em>import</em> Path
+<b>2</b>
+<b>3</b>  files = Path(<q>"."</q>).glob(<q>"*.txt"</q>)
+<b>4</b>  <em>for</em> file <em>in</em> files:
+<b>5</b>      print(file.name)</code></pre>
+        <div class="status"><span>Python</span><span>UTF-8</span><span>Ln 5, Col 21</span></div>
+      </div>
+    </section>
+
+    <section class="features" id="features" aria-labelledby="features-title">
+      <div class="section-heading">
+        <p class="eyebrow">Focused by design</p>
+        <h2 id="features-title">The essentials, done well.</h2>
+      </div>
+      <div class="feature-grid">
+        <article><span>01</span><h3>Native and responsive</h3><p>A focused C++ desktop app built on real Windows controls, with fast startup and a familiar interface.</p></article>
+        <article><span>02</span><h3>Search that scales</h3><p>Find, replace, regular expressions, match highlighting, and a dedicated results view.</p></article>
+        <article><span>03</span><h3>Code-aware editing</h3><p>Built-in highlighting for popular formats, plus lightweight symbols and completion without an LSP.</p></article>
+        <article><span>04</span><h3>Encoding safety</h3><p>UTF-8, UTF-16, ANSI, line-ending controls, change detection, and atomic saves.</p></article>
+      </div>
+    </section>
+
+    <section class="large-files" id="large-files">
+      <div>
+        <p class="eyebrow">Large-file mode</p>
+        <h2>Open files up to 4 GiB without loading all of them into memory.</h2>
+      </div>
+      <div class="large-file-copy">
+        <p>Notepad:: uses an 8 MiB editable window for very large UTF-8 files. Navigate quickly, inspect content, make targeted edits, and save without turning a text editor into a memory benchmark.</p>
+        <dl>
+          <div><dt>4 GiB</dt><dd>maximum file size</dd></div>
+          <div><dt>8 MiB</dt><dd>editable window</dd></div>
+          <div><dt>0</dt><dd>background indexers</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="promise">
+      <p class="eyebrow">Intentionally absent</p>
+      <h2>No plugin marketplace. No cloud account. No telemetry. No heavyweight language server.</h2>
+      <p>Just a dependable place to open a file, understand it, change it, and save it.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span>Notepad::</span>
+    <span>Open source under the MIT License.</span>
+    <a href="https://github.com/mwfl/notepad-colon">GitHub</a>
+  </footer>
+</body>
+</html>
