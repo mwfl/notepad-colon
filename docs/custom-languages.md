@@ -48,6 +48,7 @@ that document's Wasm coloring while the editor and document remain available.
 The extension path is staged:
 
 1. Bundled grammar plus user queries and file associations (implemented).
-2. More bundled grammars selected by stable IDs (C++ and JSON implemented).
+2. More bundled grammars selected by stable IDs (C++, JSON, Python,
+   JavaScript/JSX, and TypeScript/TSX implemented for built-in languages).
 3. WebAssembly grammars in an out-of-process, resource-limited host
    (implemented; native grammar DLLs are not a fallback).

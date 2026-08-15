@@ -71,6 +71,10 @@ bool WrapSelection(mwfl::ScintillaEditor& editor, std::wstring_view before,
 bool InsertText(mwfl::ScintillaEditor& editor, std::wstring_view text) noexcept;
 void HandleCharacterAdded(mwfl::ScintillaEditor& editor, int character) noexcept;
 void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept;
+std::size_t MarkAllMatches(mwfl::ScintillaEditor& editor, std::wstring_view query,
+                           mwfl::ScintillaSearchFlags flags,
+                           mwfl::ScintillaTextRange scope) noexcept;
+void ClearSearchMarks(mwfl::ScintillaEditor& editor) noexcept;
 void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept;
 void ApplyPreferences(mwfl::ScintillaEditor& editor,
                       const Preferences& preferences,

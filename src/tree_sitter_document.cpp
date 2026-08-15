@@ -9,6 +9,10 @@
 
 extern "C" const TSLanguage* tree_sitter_cpp();
 extern "C" const TSLanguage* tree_sitter_json();
+extern "C" const TSLanguage* tree_sitter_python();
+extern "C" const TSLanguage* tree_sitter_javascript();
+extern "C" const TSLanguage* tree_sitter_typescript();
+extern "C" const TSLanguage* tree_sitter_tsx();
 
 namespace notepad_colon {
 namespace {
@@ -57,6 +61,79 @@ constexpr std::string_view kJsonSymbolQuery = R"query(
 (pair key: (string) @symbol.property value: (_))
 )query";
 
+constexpr std::string_view kPythonHighlightQuery = R"query(
+(comment) @comment
+(string) @string
+[(integer) (float)] @number
+(function_definition name: (identifier) @function)
+(call function: (identifier) @function)
+(class_definition name: (identifier) @type)
+[(true) (false) (none)] @constant
+["and" "as" "assert" "async" "await" "break" "case" "class" "continue"
+ "def" "del" "elif" "else" "except" "finally" "for" "from" "global" "if"
+ "import" "in" "is" "lambda" "match" "nonlocal" "not" "or" "pass" "raise"
+ "return" "try" "while" "with" "yield"] @keyword
+)query";
+constexpr std::string_view kPythonSymbolQuery = R"query(
+(function_definition name: (identifier) @symbol.function)
+(class_definition name: (identifier) @symbol.class)
+)query";
+constexpr std::string_view kJavaScriptHighlightQuery = R"query(
+(comment) @comment
+[(string) (template_string) (regex)] @string
+(number) @number
+(function_declaration name: (identifier) @function)
+(generator_function_declaration name: (identifier) @function)
+(method_definition name: [(property_identifier) (private_property_identifier)] @function)
+(call_expression function: (identifier) @function)
+(member_expression property: (property_identifier) @property)
+(class_declaration name: (identifier) @type)
+[(true) (false) (null) (undefined)] @constant
+["as" "async" "await" "break" "case" "catch" "class" "const" "continue"
+ "debugger" "default" "delete" "do" "else" "export" "extends" "finally"
+ "for" "from" "function" "get" "if" "import" "in" "instanceof" "let" "new"
+ "of" "return" "set" "static" "switch" "throw" "try" "typeof" "var" "void"
+ "while" "with" "yield"] @keyword
+)query";
+constexpr std::string_view kJavaScriptSymbolQuery = R"query(
+(function_declaration name: (identifier) @symbol.function)
+(generator_function_declaration name: (identifier) @symbol.function)
+(method_definition name: [(property_identifier) (private_property_identifier)] @symbol.method)
+(class_declaration name: (identifier) @symbol.class)
+)query";
+constexpr std::string_view kTypeScriptHighlightQuery = R"query(
+(comment) @comment
+[(string) (template_string) (regex)] @string
+(number) @number
+(function_declaration name: (identifier) @function)
+(generator_function_declaration name: (identifier) @function)
+(method_definition name: [(property_identifier) (private_property_identifier)] @function)
+(call_expression function: (identifier) @function)
+(member_expression property: (property_identifier) @property)
+[(class_declaration name: (type_identifier) @type)
+ (interface_declaration name: (type_identifier) @type)
+ (type_alias_declaration name: (type_identifier) @type)
+ (enum_declaration name: (identifier) @type)
+ (predefined_type) @type]
+[(true) (false) (null) (undefined)] @constant
+["abstract" "as" "asserts" "async" "await" "break" "case" "catch" "class"
+ "const" "continue" "debugger" "declare" "default" "delete" "do" "else" "enum"
+ "export" "extends" "finally" "for" "from" "function" "get" "if" "implements"
+ "import" "in" "infer" "instanceof" "interface" "is" "keyof" "let" "namespace"
+ "new" "of" "override" "private" "protected" "public" "readonly" "return" "set"
+ "static" "switch" "throw" "try" "type" "typeof" "var" "void" "while" "with"
+ "yield"] @keyword
+)query";
+constexpr std::string_view kTypeScriptSymbolQuery = R"query(
+(function_declaration name: (identifier) @symbol.function)
+(generator_function_declaration name: (identifier) @symbol.function)
+(method_definition name: [(property_identifier) (private_property_identifier)] @symbol.method)
+(class_declaration name: (type_identifier) @symbol.class)
+(interface_declaration name: (type_identifier) @symbol.interface)
+(type_alias_declaration name: (type_identifier) @symbol.type)
+(enum_declaration name: (identifier) @symbol.enum)
+)query";
+
 SyntaxKind CaptureKind(std::string_view capture) noexcept {
     if (capture == "comment") return SyntaxKind::comment;
     if (capture == "string") return SyntaxKind::string;
@@ -72,6 +149,24 @@ SyntaxKind CaptureKind(std::string_view capture) noexcept {
 }
 
 TSPoint Point(std::uint32_t row, std::uint32_t column) noexcept { return {row, column}; }
+
+bool ConfigureParser(TSParser*& parser, TSQuery*& highlight_query, TSQuery*& symbol_query,
+                     const TSLanguage* language, std::string_view highlights,
+                     std::string_view symbols) noexcept {
+    parser = ts_parser_new();
+    if (!parser || !language || !ts_parser_set_language(parser, language)) return false;
+    std::uint32_t offset = 0;
+    TSQueryError error = TSQueryErrorNone;
+    highlight_query = ts_query_new(language, highlights.data(),
+        static_cast<std::uint32_t>(highlights.size()), &offset, &error);
+    if (!highlight_query) return false;
+    if (!symbols.empty()) {
+        symbol_query = ts_query_new(language, symbols.data(),
+            static_cast<std::uint32_t>(symbols.size()), &offset, &error);
+        if (!symbol_query) return false;
+    }
+    return true;
+}
 }
 
 struct TreeSitterDocument::State {
@@ -137,6 +232,24 @@ bool TreeSitterDocument::ConfigureJson(std::string_view highlights_query,
         if (!state_->symbol_query) return false;
     }
     return true;
+}
+
+bool TreeSitterDocument::ConfigurePython() noexcept {
+    state_ = std::make_unique<State>();
+    return ConfigureParser(state_->parser, state_->highlight_query, state_->symbol_query,
+                           tree_sitter_python(), kPythonHighlightQuery, kPythonSymbolQuery);
+}
+bool TreeSitterDocument::ConfigureJavaScript() noexcept {
+    state_ = std::make_unique<State>();
+    return ConfigureParser(state_->parser, state_->highlight_query, state_->symbol_query,
+                           tree_sitter_javascript(), kJavaScriptHighlightQuery,
+                           kJavaScriptSymbolQuery);
+}
+bool TreeSitterDocument::ConfigureTypeScript(bool tsx) noexcept {
+    state_ = std::make_unique<State>();
+    return ConfigureParser(state_->parser, state_->highlight_query, state_->symbol_query,
+                           tsx ? tree_sitter_tsx() : tree_sitter_typescript(),
+                           kTypeScriptHighlightQuery, kTypeScriptSymbolQuery);
 }
 
 bool TreeSitterDocument::Parse(std::string_view utf8) noexcept {

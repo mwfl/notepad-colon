@@ -19,13 +19,20 @@ telemetry, and cloud services.
   line operations, whitespace, wrapping, and zoom.
 - Strict UTF-8/BOM/UTF-16/ANSI analysis, selectable ANSI code-page reopening,
   lossless conversion checks, mixed-EOL reporting, and bidi/zero-width warnings.
-- Incremental Tree-sitter parsing and visible-range coloring for C++ and JSON,
-  with document symbols and JSON-defined languages. Third-party Tree-sitter
+- Incremental Tree-sitter parsing and visible-range coloring for C++, JSON,
+  Python, JavaScript/JSX, and TypeScript/TSX, with document symbols and
+  JSON-defined languages. Third-party Tree-sitter
   Wasm grammars run in a time- and memory-limited helper process, never in the
   GUI process.
-- Workspace tree, fuzzy Quick Open, and cancellable background folder search
-  with literal, multiline, whole-word, regular-expression, preview, persistent
-  history, and `.gitignore` support.
+- Explicit `Ctrl+Space` local completion combines language keywords, words in
+  the current document, and current-document Tree-sitter symbols. It never
+  starts a language server or indexes a folder, and is disabled for large files.
+- Incremental document search, selection scope, wraparound, regular expressions,
+  replace, persistent history, and bounded **Mark All** highlighting.
+- Workspace tree, fuzzy Quick Open, and cancellable background folder/open-file
+  search with literal, multiline, whole-word, regular-expression, preview,
+  include/exclude globs, persistent history, binary skipping, result/file-size
+  limits, and `.gitignore` support.
 - Explicit, reversible per-user `.txt` association under **Tools**. Existing
   associations are never silently overwritten.
 - A native Preferences dialog persists System/Light/Dark theme, editor font,
@@ -39,8 +46,11 @@ telemetry, and cloud services.
   streaming save, and follow-tail are supported. Other large encodings remain
   read-only until their byte/character mapping is made lossless.
 
-Plugins, IDE project systems, accounts, telemetry, and cloud services are
-deliberately out of scope.
+Plugins, LSP processes, semantic project indexing, IDE project systems,
+accounts, telemetry, and cloud services are deliberately out of scope. Opening
+a folder adds a bounded browser and an on-demand search scope; it never turns
+the folder into an IDE project or analyzes files in the background for code
+intelligence.
 
 See [Custom languages](docs/custom-languages.md) and
 [Large-file testing](docs/large-file-testing.md) for extension and verification

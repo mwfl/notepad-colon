@@ -13,6 +13,7 @@ namespace notepad_colon {
 namespace {
 constexpr int kBookmarkMarker = 0;
 constexpr int kTreeSitterStyleBase = 40;
+constexpr int kSearchIndicator = 21;
 
 void SetProperty(mwfl::ScintillaEditor& editor, const char* name, const char* value) noexcept {
     editor.Send(SCI_SETPROPERTY, reinterpret_cast<WPARAM>(name), reinterpret_cast<LPARAM>(value));
@@ -191,6 +192,10 @@ void ConfigureAdvancedEditing(mwfl::ScintillaEditor& editor) noexcept {
     editor.Send(SCI_SETMARGINMASKN, 2, 1 << kBookmarkMarker);
     editor.Send(SCI_SETMARGINSENSITIVEN, 2, 1);
     editor.Send(SCI_SETMARGINWIDTHN, 2, 14);
+    editor.Send(SCI_INDICSETSTYLE, kSearchIndicator, INDIC_ROUNDBOX);
+    editor.Send(SCI_INDICSETFORE, kSearchIndicator, RGB(255, 190, 40));
+    editor.Send(SCI_INDICSETALPHA, kSearchIndicator, 70);
+    editor.Send(SCI_INDICSETOUTLINEALPHA, kSearchIndicator, 120);
 }
 
 void ToggleBookmark(mwfl::ScintillaEditor& editor) noexcept {
@@ -501,6 +506,29 @@ void UpdateBraceHighlight(mwfl::ScintillaEditor& editor) noexcept {
     const auto match = editor.Send(SCI_BRACEMATCH, brace);
     if (match >= 0) editor.Send(SCI_BRACEHIGHLIGHT, brace, match);
     else editor.Send(SCI_BRACEBADLIGHT, brace);
+}
+
+void ClearSearchMarks(mwfl::ScintillaEditor& editor) noexcept {
+    editor.Send(SCI_SETINDICATORCURRENT, kSearchIndicator);
+    editor.Send(SCI_INDICATORCLEARRANGE, 0, editor.GetLength());
+}
+std::size_t MarkAllMatches(mwfl::ScintillaEditor& editor, std::wstring_view query,
+                           mwfl::ScintillaSearchFlags flags,
+                           mwfl::ScintillaTextRange scope) noexcept {
+    ClearSearchMarks(editor);
+    if (query.empty() || scope.end <= scope.start) return 0;
+    std::size_t count = 0;
+    auto cursor = scope.start;
+    editor.Send(SCI_SETINDICATORCURRENT, kSearchIndicator);
+    while (cursor < scope.end && count < 10000) {
+        const auto found = editor.Find(query, cursor, scope.end, flags);
+        if (!found) break;
+        const auto length = found->end - found->start;
+        if (length <= 0) { cursor = found->start + 1; continue; }
+        editor.Send(SCI_INDICATORFILLRANGE, found->start, length);
+        cursor = found->end; ++count;
+    }
+    return count;
 }
 
 void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcept {

@@ -30,6 +30,21 @@ FetchContent_Declare(notepad_colon_tree_sitter_json
     GIT_TAG v0.24.8
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR _use_pregenerated_parser)
+FetchContent_Declare(notepad_colon_tree_sitter_python
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-python.git
+    GIT_TAG v0.25.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _use_pregenerated_parser)
+FetchContent_Declare(notepad_colon_tree_sitter_javascript
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-javascript.git
+    GIT_TAG v0.25.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _use_pregenerated_parser)
+FetchContent_Declare(notepad_colon_tree_sitter_typescript
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-typescript.git
+    GIT_TAG v0.23.2
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _use_pregenerated_parser)
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
 set(JSON_Install OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(notepad_colon_json
@@ -38,6 +53,9 @@ FetchContent_Declare(notepad_colon_json
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(notepad_colon_tree_sitter notepad_colon_tree_sitter_cpp
                            notepad_colon_tree_sitter_json
+                           notepad_colon_tree_sitter_python
+                           notepad_colon_tree_sitter_javascript
+                           notepad_colon_tree_sitter_typescript
                            notepad_colon_json)
 target_compile_definitions(tree-sitter PRIVATE "WASM_API_EXTERN=")
 add_library(tree-sitter-cpp STATIC
@@ -51,6 +69,30 @@ add_library(tree-sitter-json STATIC
 target_include_directories(tree-sitter-json PRIVATE
     "${notepad_colon_tree_sitter_json_SOURCE_DIR}/src")
 set_target_properties(tree-sitter-json PROPERTIES C_STANDARD 11)
+add_library(tree-sitter-python STATIC
+    "${notepad_colon_tree_sitter_python_SOURCE_DIR}/src/parser.c"
+    "${notepad_colon_tree_sitter_python_SOURCE_DIR}/src/scanner.c")
+target_include_directories(tree-sitter-python PRIVATE
+    "${notepad_colon_tree_sitter_python_SOURCE_DIR}/src")
+set_target_properties(tree-sitter-python PROPERTIES C_STANDARD 11)
+add_library(tree-sitter-javascript STATIC
+    "${notepad_colon_tree_sitter_javascript_SOURCE_DIR}/src/parser.c"
+    "${notepad_colon_tree_sitter_javascript_SOURCE_DIR}/src/scanner.c")
+target_include_directories(tree-sitter-javascript PRIVATE
+    "${notepad_colon_tree_sitter_javascript_SOURCE_DIR}/src")
+set_target_properties(tree-sitter-javascript PROPERTIES C_STANDARD 11)
+add_library(tree-sitter-typescript STATIC
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/typescript/src/parser.c"
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/typescript/src/scanner.c")
+target_include_directories(tree-sitter-typescript PRIVATE
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/typescript/src")
+set_target_properties(tree-sitter-typescript PROPERTIES C_STANDARD 11)
+add_library(tree-sitter-tsx STATIC
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/tsx/src/parser.c"
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/tsx/src/scanner.c")
+target_include_directories(tree-sitter-tsx PRIVATE
+    "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/tsx/src")
+set_target_properties(tree-sitter-tsx PROPERTIES C_STANDARD 11)
 
 # Declare Scintilla before mwfl so both projects share the verified source tree
 # and Lexilla can use its required sibling-directory layout on ARM64.
@@ -89,6 +131,7 @@ add_library(notepad_colon_model
     src/large_file_buffer.cpp
     src/language.cpp
     src/language_registry.cpp
+    src/lightweight_completion.cpp
     src/macro.cpp
     src/mapped_file.cpp
     src/output.cpp
@@ -115,6 +158,7 @@ add_executable(notepad-colon-language-host
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
 target_link_libraries(notepad_colon_model PUBLIC tree-sitter tree-sitter-cpp tree-sitter-json
+    tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc)
 target_link_libraries(notepad-colon-language-host PRIVATE tree-sitter)
@@ -226,6 +270,18 @@ endif()
 install(FILES README.md LICENSE THIRD-PARTY-NOTICES.md DESTINATION . COMPONENT product)
 install(FILES "${notepad_colon_wasmtime_SOURCE_DIR}/LICENSE"
         DESTINATION . RENAME WASMTIME-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-CPP-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_json_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-JSON-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_python_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-PYTHON-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_javascript_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-JAVASCRIPT-LICENSE COMPONENT product)
+install(FILES "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/LICENSE"
+        DESTINATION . RENAME TREE-SITTER-TYPESCRIPT-LICENSE COMPONENT product)
 
 set(CPACK_GENERATOR ZIP)
 set(CPACK_PACKAGE_NAME "Notepad-Colon")

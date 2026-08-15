@@ -30,6 +30,8 @@ struct SearchMatch {
 };
 
 struct SearchOptions {
+    std::vector<std::wstring> include_globs;
+    std::vector<std::wstring> exclude_globs;
     bool match_case = false;
     bool whole_word = false;
     bool regular_expression = false;
@@ -64,6 +66,9 @@ SearchResult SearchWorkspace(const std::filesystem::path& root,
                              std::wstring_view query,
                              const SearchOptions& options = {},
                              std::stop_token stop = {});
+SearchResult SearchText(const std::filesystem::path& path, std::wstring_view text,
+                        std::wstring_view query, const SearchOptions& options = {},
+                        std::stop_token stop = {});
 FileState CaptureFileState(const std::filesystem::path& path) noexcept;
 
 }  // namespace notepad_colon

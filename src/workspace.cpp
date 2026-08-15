@@ -123,6 +123,25 @@ bool IsIgnored(const std::filesystem::path& relative, bool directory,
     return ignored;
 }
 
+std::vector<std::wregex> CompileGlobs(const std::vector<std::wstring>& patterns) {
+    std::vector<std::wregex> result;
+    for (const auto& pattern : patterns) {
+        if (pattern.empty()) continue;
+        try {
+            result.emplace_back(GlobRegex(pattern, false),
+                std::regex_constants::ECMAScript | std::regex_constants::icase);
+        } catch (const std::regex_error&) {}
+    }
+    return result;
+}
+bool MatchesAny(const std::filesystem::path& relative,
+                const std::vector<std::wregex>& patterns) {
+    const auto value = relative.generic_wstring();
+    return std::ranges::any_of(patterns, [&](const auto& pattern) {
+        return std::regex_match(value, pattern);
+    });
+}
+
 std::pair<std::size_t, std::size_t> LineColumn(std::wstring_view text, std::size_t offset) {
     std::size_t line = 1, column = 1;
     for (std::size_t index = 0; index < offset && index < text.size(); ++index) {
@@ -195,6 +214,48 @@ WorkspaceScan ScanWorkspace(const std::filesystem::path& root,
     return result;
 }
 
+SearchResult SearchText(const std::filesystem::path& path, std::wstring_view text,
+                        std::wstring_view query, const SearchOptions& options,
+                        std::stop_token stop) {
+    SearchResult result;
+    if (query.empty() || options.maximum_results == 0) return result;
+    ++result.files_searched;
+    std::optional<std::wregex> expression;
+    if (options.regular_expression) {
+        try {
+            auto flags = std::regex_constants::ECMAScript;
+            if (!options.match_case) flags |= std::regex_constants::icase;
+            expression.emplace(std::wstring{query}, flags);
+        } catch (const std::regex_error&) {
+            result.error = L"Invalid regular expression"; return result;
+        }
+        using ViewRegexIterator = std::regex_iterator<std::wstring_view::const_iterator>;
+        for (ViewRegexIterator match{text.begin(), text.end(), *expression}, end;
+             match != end; ++match) {
+            if (stop.stop_requested()) { result.cancelled = true; return result; }
+            const auto offset = static_cast<std::size_t>(match->position());
+            const auto [line, column] = LineColumn(text, offset);
+            result.matches.push_back({path, line, column, Preview(text, offset)});
+            if (result.matches.size() == options.maximum_results) {
+                result.truncated = true; return result;
+            }
+        }
+        return result;
+    }
+    for (std::size_t offset = 0; offset < text.size();) {
+        if (stop.stop_requested()) { result.cancelled = true; return result; }
+        if (MatchAt(text, query, offset, options)) {
+            const auto [line, column] = LineColumn(text, offset);
+            result.matches.push_back({path, line, column, Preview(text, offset)});
+            if (result.matches.size() == options.maximum_results) {
+                result.truncated = true; return result;
+            }
+            offset += query.size();
+        } else ++offset;
+    }
+    return result;
+}
+
 SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_view query,
                              const SearchOptions& options, std::stop_token stop) {
     SearchResult result;
@@ -211,6 +272,8 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
         }
     }
     const auto scan = ScanWorkspace(root, 100000, stop, options.use_gitignore);
+    const auto include_patterns = CompileGlobs(options.include_globs);
+    const auto exclude_patterns = CompileGlobs(options.exclude_globs);
     result.files_skipped += scan.skipped;
     if (stop.stop_requested()) {
         result.cancelled = true;
@@ -219,6 +282,10 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
     for (const auto& entry : scan.entries) {
         if (stop.stop_requested()) { result.cancelled = true; break; }
         if (entry.directory) continue;
+        if ((!include_patterns.empty() && !MatchesAny(entry.relative_path, include_patterns)) ||
+            MatchesAny(entry.relative_path, exclude_patterns)) {
+            ++result.files_skipped; continue;
+        }
         std::wstring text;
         const auto path = root / entry.relative_path;
         if (!DecodeText(path, text, options.maximum_file_size)) {

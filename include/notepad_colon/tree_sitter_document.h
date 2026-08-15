@@ -65,6 +65,9 @@ public:
     bool ConfigureJson() noexcept;
     bool ConfigureJson(std::string_view highlights_query,
                        std::string_view symbols_query = {}) noexcept;
+    bool ConfigurePython() noexcept;
+    bool ConfigureJavaScript() noexcept;
+    bool ConfigureTypeScript(bool tsx = false) noexcept;
     bool Parse(std::string_view utf8) noexcept;
     bool Reparse(std::string_view utf8, const SyntaxEdit& edit) noexcept;
     bool IsReady() const noexcept;

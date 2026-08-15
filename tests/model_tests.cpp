@@ -10,6 +10,7 @@
 #include <notepad_colon/tree_sitter_document.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/language_registry.h>
+#include <notepad_colon/lightweight_completion.h>
 #include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/macro.h>
@@ -37,6 +38,22 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    {
+        constexpr std::string_view source =
+            "def compute_value():\n    print(compute_value())\ncomp";
+        const std::array symbols{notepad_colon::DocumentSymbol{
+            "compute_value", "function", 4, 17}};
+        const auto completion = notepad_colon::CompleteLocally(
+            source, source.size(), notepad_colon::Language::python, symbols);
+        Check(completion.prefix_bytes == 4 &&
+                  std::ranges::find(completion.candidates, "compute_value") !=
+                      completion.candidates.end(),
+              "local completion combines current-document words and Tree-sitter symbols");
+        std::string oversized(8u * 1024u * 1024u + 1, 'a');
+        Check(notepad_colon::CompleteLocally(oversized, oversized.size(),
+                  notepad_colon::Language::python).candidates.empty(),
+              "local completion refuses large documents");
+    }
     {
         const auto root = std::filesystem::temp_directory_path() /
             (L"notepad-colon-editorconfig-" + std::to_wstring(::GetCurrentProcessId()));
@@ -93,6 +110,31 @@ int main() {
             static_cast<std::uint32_t>(value + 3)};
         Check(syntax.Reparse(edited, edit) && !syntax.HasErrors(),
               "Tree-sitter incrementally reparses an edit");
+    }
+    {
+        struct SyntaxCase { notepad_colon::Language language; std::string source; std::string symbol; };
+        const std::array cases{
+            SyntaxCase{notepad_colon::Language::python,
+                       "class Widget:\n    def compute(self):\n        return 42\n", "Widget"},
+            SyntaxCase{notepad_colon::Language::javascript,
+                       "class Widget { compute() { return 42; } }\n", "Widget"},
+            SyntaxCase{notepad_colon::Language::typescript,
+                       "interface Widget { compute(): number }\n", "Widget"}};
+        for (const auto& value : cases) {
+            notepad_colon::TreeSitterDocument syntax;
+            const bool configured = value.language == notepad_colon::Language::python
+                ? syntax.ConfigurePython() : value.language == notepad_colon::Language::javascript
+                    ? syntax.ConfigureJavaScript() : syntax.ConfigureTypeScript();
+            Check(configured && syntax.Parse(value.source) &&
+                      !syntax.Highlights(0, static_cast<std::uint32_t>(value.source.size())).empty() &&
+                      std::ranges::any_of(syntax.Symbols(value.source), [&](const auto& item) {
+                          return item.name == value.symbol;
+                      }), "Python, JavaScript, and TypeScript have built-in Tree-sitter support");
+        }
+        notepad_colon::TreeSitterDocument tsx;
+        constexpr std::string_view source = "export function App() { return <main>Hello</main>; }\n";
+        Check(tsx.ConfigureTypeScript(true) && tsx.Parse(source) && !tsx.HasErrors(),
+              "TSX uses the dedicated built-in grammar");
     }
     {
         const auto source = std::filesystem::temp_directory_path() /
@@ -450,6 +492,10 @@ int main() {
     Check(notepad_colon::DetectLanguage(L"sample.CPP") == Language::cpp, "C++ extension detection");
     Check(notepad_colon::DetectLanguage(L"CMakeLists.txt") == Language::cmake, "CMake filename detection");
     Check(notepad_colon::DetectLanguage(L"script.ps1") == Language::powershell, "PowerShell detection");
+    Check(notepad_colon::DetectLanguage(L"module.cjs") == Language::javascript &&
+              notepad_colon::DetectLanguage(L"module.mts") == Language::typescript &&
+              notepad_colon::DetectLanguage(L"component.TSX") == Language::typescript,
+          "modern JavaScript and TypeScript extensions are detected");
     Check(notepad_colon::DetectLanguage(L"data.yaml") == Language::yaml, "YAML detection");
     Check(notepad_colon::DetectLanguage(L"README") == Language::plain_text, "plain text fallback");
     Check(notepad_colon::LexerName(Language::python) == "python", "Python lexer mapping");
@@ -559,6 +605,16 @@ int main() {
     const auto invalid_regex = notepad_colon::SearchWorkspace(
         advanced_search_path, L"(", regex_options);
     Check(!invalid_regex.error.empty(), "invalid workspace regular expressions report an error");
+    const auto open_text_result = notepad_colon::SearchText(
+        L"open.py", L"alpha\nbeta alpha\n", L"alpha");
+    Check(open_text_result.matches.size() == 2 && open_text_result.matches.back().line == 2,
+          "open-document search reports every match with line positions");
+    notepad_colon::SearchOptions filtered_options;
+    filtered_options.include_globs = {L"*.txt"};
+    filtered_options.exclude_globs = {L"*ignored*"};
+    Check(notepad_colon::SearchWorkspace(
+              advanced_search_path, L"alpha", filtered_options).matches.size() == 1,
+          "workspace search honors include and exclude file globs");
     std::stop_source cancelled;
     cancelled.request_stop();
     Check(notepad_colon::SearchWorkspace(workspace_path, L"needle", {}, cancelled.get_token()).cancelled,

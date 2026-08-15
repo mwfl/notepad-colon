@@ -73,8 +73,10 @@ Language DetectLanguage(const std::filesystem::path& path) noexcept {
         extension == L".hpp" || extension == L".hxx") return Language::cpp;
     if (extension == L".cs") return Language::csharp;
     if (extension == L".java") return Language::java;
-    if (extension == L".js" || extension == L".jsx" || extension == L".mjs") return Language::javascript;
-    if (extension == L".ts" || extension == L".tsx") return Language::typescript;
+    if (extension == L".js" || extension == L".jsx" || extension == L".mjs" ||
+        extension == L".cjs") return Language::javascript;
+    if (extension == L".ts" || extension == L".tsx" || extension == L".mts" ||
+        extension == L".cts") return Language::typescript;
     if (extension == L".py" || extension == L".pyw") return Language::python;
     if (extension == L".json" || extension == L".jsonc") return Language::json;
     if (extension == L".xml" || extension == L".xaml" || extension == L".svg") return Language::xml;

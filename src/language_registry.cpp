@@ -101,8 +101,8 @@ std::vector<std::wstring> BuiltinExtensions(Language language) {
     case Language::cpp: return {L".c", L".cc", L".cpp", L".cxx", L".h", L".hh", L".hpp", L".hxx"};
     case Language::csharp: return {L".cs"};
     case Language::java: return {L".java"};
-    case Language::javascript: return {L".js", L".jsx", L".mjs"};
-    case Language::typescript: return {L".ts", L".tsx"};
+    case Language::javascript: return {L".js", L".jsx", L".mjs", L".cjs"};
+    case Language::typescript: return {L".ts", L".tsx", L".mts", L".cts"};
     case Language::python: return {L".py", L".pyw"};
     case Language::json: return {L".json", L".jsonc"};
     case Language::xml: return {L".xml", L".xaml", L".svg"};
