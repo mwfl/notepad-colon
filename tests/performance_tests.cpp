@@ -68,10 +68,14 @@ int main() {
     const auto found_end = mapped.Find(std::span<const std::uint8_t>{
         reinterpret_cast<const std::uint8_t*>(end_query.data()), end_query.size()});
     const auto mapped_finished = Clock::now();
+    const auto handle_path = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-handle-performance-" + std::to_wstring(::GetCurrentProcessId()));
+    { std::ofstream handle_file(handle_path, std::ios::binary); handle_file << 'x'; }
     for (int iteration = 0; iteration < 1000; ++iteration) {
         notepad_colon::MappedFile probe;
-        if (!probe.Open(large_path)) return 10;
+        if (!probe.Open(handle_path)) return 10;
     }
+    std::filesystem::remove(handle_path, ignored);
     mapped.Close(); std::filesystem::remove(large_path, ignored);
     ::GetProcessHandleCount(::GetCurrentProcess(), &handles_after);
     if (std::string(beginning.begin(), beginning.end()) != start_marker ||

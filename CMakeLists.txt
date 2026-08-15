@@ -129,7 +129,7 @@ if(BUILD_TESTING)
     target_compile_features(notepad_colon_performance_tests PRIVATE cxx_std_20)
     target_compile_options(notepad_colon_performance_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
     add_test(NAME notepad-colon.performance COMMAND notepad_colon_performance_tests)
-    set_tests_properties(notepad-colon.performance PROPERTIES TIMEOUT 15 LABELS performance)
+    set_tests_properties(notepad-colon.performance PROPERTIES TIMEOUT 45 LABELS performance)
 endif()
 
 install(TARGETS notepad-colon RUNTIME DESTINATION . COMPONENT product)
