@@ -12,8 +12,8 @@ Notepad Colon incorporates these components:
 - nlohmann/json v3.12.0 — MIT License.
 - Scintilla 5.6.5 and Lexilla 5.5.1 — Historical Permission Notice and
   Disclaimer license.
-- MWFL and its transitive WTL/WIL components — see their respective repository
-  license files and notices.
+- MWFL and its transitive Microsoft WIL component — see their respective
+  repository license files and notices.
 
 Source locations and exact pinned versions are declared in `CMakeLists.txt`.
 The complete upstream Tree-sitter and Wasmtime license texts are distributed
