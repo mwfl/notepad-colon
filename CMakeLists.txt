@@ -115,7 +115,7 @@ else()
     set(MWFL_BUILD_SCINTILLA ON CACHE BOOL "Build Scintilla" FORCE)
     FetchContent_Declare(mwfl
         GIT_REPOSITORY https://github.com/mwfl/mwfl.git
-        GIT_TAG 6561bb7321e8e05aac7a45b6e463e0af4f1e6fd9)
+        GIT_TAG v0.1.0)
     FetchContent_MakeAvailable(mwfl)
 endif()
 
