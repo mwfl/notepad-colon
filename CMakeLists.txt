@@ -149,6 +149,8 @@ target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 
 add_executable(notepad-colon WIN32
     src/main.cpp
+    update_checker.cpp
+    update_checker.h
     src/scintilla_support.cpp
     src/wasm_syntax_client.cpp
     app.rc
@@ -157,10 +159,11 @@ add_executable(notepad-colon-language-host
     src/wasm_language_host.cpp)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
+target_compile_definitions(notepad-colon PRIVATE MWFL_APP_VERSION=L\"${PROJECT_VERSION}\")
 target_link_libraries(notepad_colon_model PUBLIC mwfl::process tree-sitter tree-sitter-cpp tree-sitter-json
     tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
-target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc)
+target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc winhttp comctl32 advapi32 shell32)
 target_link_libraries(notepad-colon-language-host PRIVATE tree-sitter)
 target_include_directories(notepad-colon-language-host PRIVATE include "${WASMTIME_INCLUDE_DIR}")
 target_compile_features(notepad-colon-language-host PRIVATE cxx_std_20)

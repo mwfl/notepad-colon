@@ -20,11 +20,18 @@ jobs:
         run: ctest --preset vs2026-x64-release
       - name: Package
         run: cmake --build --preset vs2026-x64-release --target package
-      - name: Upload package
+      - name: Stage Portable package
+        shell: pwsh
+        run: |
+          $source = Get-ChildItem build/vs2026-x64/notepad-colon-*.zip | Select-Object -First 1
+          if (-not $source) { throw "CPack did not produce a ZIP" }
+          $archive = "notepad-colon-$env:GITHUB_REF_NAME-windows-x64-portable.zip"
+          Copy-Item $source.FullName $archive
+      - name: Upload Portable package
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: notepad-colon-windows-x64
-          path: build/vs2026-x64/notepad-colon-*.zip
+          path: notepad-colon-*-windows-x64-portable.zip
           if-no-files-found: error
 
   publish:
@@ -42,8 +49,13 @@ jobs:
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content packages/SHA256SUMS.txt -Encoding ascii
-      - name: Publish prerelease
+      - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" packages/* --repo "$env:GITHUB_REPOSITORY" --prerelease --generate-notes --title "Notepad Colon $env:GITHUB_REF_NAME"
+        run: |
+          $assets = @(Get-ChildItem packages -File | ForEach-Object FullName)
+          if ($assets.Count -eq 0) { throw "No release assets were downloaded" }
+          $arguments = @("release", "create", $env:GITHUB_REF_NAME) + $assets + @("--repo", $env:GITHUB_REPOSITORY, "--verify-tag", "--generate-notes", "--title", "Notepad Colon $env:GITHUB_REF_NAME")
+          if ($env:GITHUB_REF_NAME -match '-') { $arguments += "--prerelease" }
+          & gh @arguments

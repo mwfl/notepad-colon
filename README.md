@@ -120,3 +120,7 @@ portable artifact.
 Notepad:: is released under the [MIT License](LICENSE). Third-party
 components and grammar licenses are listed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Updates and Portable releases
+
+The app checks the latest stable GitHub Release at most once per day. Use **Settings > Automatically Check for Updates** to disable or re-enable checks, or **Check for Updates** to run one manually. An available update can open the official Portable release, be deferred for three days or one week, or dismissed until the next day. Tag releases publish a versioned `windows-x64-portable.zip` plus SHA-256 checksums; replacement is always an explicit download-and-extract action.
