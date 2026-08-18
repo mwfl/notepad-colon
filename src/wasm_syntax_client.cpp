@@ -1,6 +1,7 @@
 #include "wasm_syntax_client.h"
 
 #include <notepad_colon/wasm_syntax_protocol.h>
+#include <mwfl/process.h>
 
 #include <algorithm>
 #include <chrono>
@@ -11,51 +12,37 @@ namespace notepad_colon {
 namespace {
 using namespace wasm_protocol;
 
-bool WriteAll(HANDLE pipe, std::span<const std::uint8_t> bytes) noexcept {
+bool WriteAll(mwfl::SupervisedProcess &process,
+              std::span<const std::uint8_t> bytes,
+              mwfl::Deadline deadline) noexcept {
   while (!bytes.empty()) {
-    DWORD written = 0;
-    const auto count =
-        static_cast<DWORD>((std::min<std::size_t>)(bytes.size(), 1024u * 1024));
-    if (!::WriteFile(pipe, bytes.data(), count, &written, nullptr) ||
-        written != count)
+    const auto input = std::as_bytes(bytes.first(
+        (std::min<std::size_t>)(bytes.size(), 1024u * 1024)));
+    auto written = process.WriteInput(input, deadline);
+    if (!written || written.Value().status != mwfl::CompletionStatus::Completed ||
+        !written.Value().value || *written.Value().value == 0)
       return false;
-    bytes = bytes.subspan(written);
+    bytes = bytes.subspan(*written.Value().value);
   }
   return true;
 }
 
-bool ReadExact(HANDLE pipe, HANDLE process, std::span<std::uint8_t> bytes,
-               std::chrono::milliseconds timeout) noexcept {
-  const auto deadline =
-      ::GetTickCount64() + static_cast<ULONGLONG>(timeout.count());
+bool ReadExact(mwfl::SupervisedProcess &process,
+               std::span<std::uint8_t> bytes,
+               mwfl::Deadline deadline) noexcept {
   while (!bytes.empty()) {
-    DWORD available = 0;
-    if (!::PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr))
+    auto read = process.ReadStdout(std::as_writable_bytes(bytes), deadline);
+    if (!read || read.Value().status != mwfl::CompletionStatus::Completed ||
+        !read.Value().value || *read.Value().value == 0)
       return false;
-    if (available == 0) {
-      if (::WaitForSingleObject(process, 0) != WAIT_TIMEOUT ||
-          ::GetTickCount64() >= deadline)
-        return false;
-      ::Sleep(2);
-      continue;
-    }
-    DWORD read = 0;
-    const auto count =
-        static_cast<DWORD>((std::min<std::size_t>)(bytes.size(), available));
-    if (!::ReadFile(pipe, bytes.data(), count, &read, nullptr) || read == 0)
-      return false;
-    bytes = bytes.subspan(read);
+    bytes = bytes.subspan(*read.Value().value);
   }
   return true;
 }
 } // namespace
 
 struct WasmSyntaxClient::State {
-  HANDLE input = INVALID_HANDLE_VALUE;
-  HANDLE output = INVALID_HANDLE_VALUE;
-  HANDLE process = nullptr;
-  HANDLE thread = nullptr;
-  HANDLE job = nullptr;
+  std::unique_ptr<mwfl::SupervisedProcess> process;
   bool ready = false;
 
   ~State() { Stop(); }
@@ -63,31 +50,17 @@ struct WasmSyntaxClient::State {
   void Stop() noexcept {
     if (ready) {
       const RequestHeader request{magic, version, Command::quit, 0};
-      static_cast<void>(
-          WriteAll(input, {reinterpret_cast<const std::uint8_t *>(&request),
-                           sizeof(request)}));
+      static_cast<void>(WriteAll(
+          *process, {reinterpret_cast<const std::uint8_t *>(&request), sizeof(request)},
+          mwfl::Deadline::After(std::chrono::milliseconds(200))));
     }
     ready = false;
-    if (input != INVALID_HANDLE_VALUE) {
-      ::CloseHandle(input);
-      input = INVALID_HANDLE_VALUE;
-    }
-    if (output != INVALID_HANDLE_VALUE) {
-      ::CloseHandle(output);
-      output = INVALID_HANDLE_VALUE;
-    }
     if (process) {
-      static_cast<void>(::WaitForSingleObject(process, 200));
-      ::CloseHandle(process);
-      process = nullptr;
-    }
-    if (thread) {
-      ::CloseHandle(thread);
-      thread = nullptr;
-    }
-    if (job) {
-      ::CloseHandle(job);
-      job = nullptr;
+      process->CloseInput();
+      auto stopped = process->Wait(mwfl::Deadline::After(std::chrono::milliseconds(200)));
+      if (!stopped || stopped.Value().status != mwfl::CompletionStatus::Completed)
+        static_cast<void>(process->TerminateTree(ERROR_TIMEOUT));
+      process.reset();
     }
   }
 
@@ -97,33 +70,31 @@ struct WasmSyntaxClient::State {
     try {
       if (!process || payload.size() > maximum_payload)
         return false;
+      const auto deadline = mwfl::Deadline::After(timeout);
       const RequestHeader request{magic, version, command,
                                   static_cast<std::uint32_t>(payload.size())};
-      if (!WriteAll(input, {reinterpret_cast<const std::uint8_t *>(&request),
-                            sizeof(request)}) ||
-          !WriteAll(input, payload) ||
-          !ReadExact(
-              output, process,
-              {reinterpret_cast<std::uint8_t *>(&response), sizeof(response)},
-              timeout) ||
+      if (!WriteAll(*process, {reinterpret_cast<const std::uint8_t *>(&request),
+                               sizeof(request)}, deadline) ||
+          !WriteAll(*process, payload, deadline) ||
+          !ReadExact(*process,
+                     {reinterpret_cast<std::uint8_t *>(&response), sizeof(response)},
+                     deadline) ||
           response.magic_value != magic || response.version_value != version ||
           response.payload_size > maximum_payload) {
-        if (job)
-          ::TerminateJobObject(job, ERROR_TIMEOUT);
+        static_cast<void>(process->TerminateTree(ERROR_TIMEOUT));
         ready = false;
         return false;
       }
       result.resize(response.payload_size);
-      if (!result.empty() && !ReadExact(output, process, result, timeout)) {
-        if (job)
-          ::TerminateJobObject(job, ERROR_TIMEOUT);
+      if (!result.empty() && !ReadExact(*process, result, deadline)) {
+        static_cast<void>(process->TerminateTree(ERROR_TIMEOUT));
         ready = false;
         return false;
       }
       return response.status == 0;
     } catch (...) {
-      if (job)
-        ::TerminateJobObject(job, ERROR_TIMEOUT);
+      if (process)
+        static_cast<void>(process->TerminateTree(ERROR_TIMEOUT));
       ready = false;
       return false;
     }
@@ -145,70 +116,20 @@ bool WasmSyntaxClient::Start(const std::filesystem::path &host,
         highlights_query.size() > 1024 * 1024 ||
         symbols_query.size() > 1024 * 1024)
       return false;
-    SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
-    HANDLE child_input = nullptr, child_output = nullptr;
-    if (!::CreatePipe(&child_input, &state_->input, &attributes, 0))
-      return false;
-    if (!::CreatePipe(&state_->output, &child_output, &attributes, 0)) {
-      ::CloseHandle(child_input);
-      return false;
-    }
-    ::SetHandleInformation(state_->input, HANDLE_FLAG_INHERIT, 0);
-    ::SetHandleInformation(state_->output, HANDLE_FLAG_INHERIT, 0);
-
-    state_->job = ::CreateJobObjectW(nullptr, nullptr);
-    if (!state_->job) {
-      ::CloseHandle(child_input);
-      ::CloseHandle(child_output);
-      return false;
-    }
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
-        JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-    limits.ProcessMemoryLimit = 256ull * 1024 * 1024;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    if (!::SetInformationJobObject(state_->job,
-                                   JobObjectExtendedLimitInformation, &limits,
-                                   sizeof(limits))) {
-      ::CloseHandle(child_input);
-      ::CloseHandle(child_output);
-      return false;
-    }
-    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION cpu{};
-    cpu.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE |
-                       JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-    cpu.CpuRate = 2500;
-    if (!::SetInformationJobObject(state_->job,
-                                   JobObjectCpuRateControlInformation, &cpu,
-                                   sizeof(cpu))) {
-      ::CloseHandle(child_input);
-      ::CloseHandle(child_output);
-      return false;
-    }
-
-    STARTUPINFOW startup{sizeof(startup)};
-    startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    startup.wShowWindow = SW_HIDE;
-    startup.hStdInput = child_input;
-    startup.hStdOutput = child_output;
-    startup.hStdError = child_output;
-    PROCESS_INFORMATION process{};
-    auto command = L"\"" + host.wstring() + L"\"";
-    const auto started =
-        ::CreateProcessW(host.c_str(), command.data(), nullptr, nullptr, TRUE,
-                         CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr,
-                         host.parent_path().c_str(), &startup, &process);
-    ::CloseHandle(child_input);
-    ::CloseHandle(child_output);
-    if (!started)
-      return false;
-    state_->process = process.hProcess;
-    state_->thread = process.hThread;
-    if (!::AssignProcessToJobObject(state_->job, state_->process))
-      return false;
-    ::ResumeThread(state_->thread);
+    mwfl::ProcessJobOptions limits;
+    limits.active_process_limit = 1;
+    limits.process_memory_limit = 256ull * 1024 * 1024;
+    limits.cpu_rate_hard_cap = 2500;
+    auto launched = mwfl::ProcessBuilder{}
+                        .Executable(host)
+                        .WorkingDirectory(host.parent_path())
+                        .RedirectStdin()
+                        .MergeStderrIntoStdout()
+                        .NoWindow()
+                        .LaunchSupervised(limits);
+    if (!launched) return false;
+    state_->process = std::make_unique<mwfl::SupervisedProcess>(
+        std::move(launched.Value()));
 
     ConfigurePayload prefix{static_cast<std::uint32_t>(language_name.size()),
                             static_cast<std::uint32_t>(wasm.size()),

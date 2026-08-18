@@ -1,56 +1,39 @@
 #include <notepad_colon/git_status.h>
 
-#include <windows.h>
+#include <mwfl/process.h>
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <string>
 
 namespace notepad_colon {
-namespace {
-std::wstring Quote(std::wstring_view value) {
-    std::wstring result = L"\"";
-    for (const auto ch : value) result += ch == L'"' ? L"\\\"" : std::wstring(1, ch);
-    return result + L"\"";
-}
-}
-
 GitChangedLines QueryGitChangedLines(const std::filesystem::path& file) noexcept {
     GitChangedLines result;
     try {
-        SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
-        HANDLE read_pipe = nullptr, write_pipe = nullptr;
-        if (!::CreatePipe(&read_pipe, &write_pipe, &attributes, 0)) return result;
-        ::SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
-        STARTUPINFOW startup{sizeof(startup)};
-        startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        startup.wShowWindow = SW_HIDE;
-        startup.hStdOutput = write_pipe; startup.hStdError = write_pipe;
-        PROCESS_INFORMATION process{};
-        auto command = L"git -C " + Quote(file.parent_path().wstring()) +
-            L" diff --no-color --unified=0 -- " + Quote(file.filename().wstring());
-        const bool started = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE;
-        ::CloseHandle(write_pipe);
-        if (!started) { ::CloseHandle(read_pipe); return result; }
-        std::string output; char buffer[4096]; DWORD read = 0;
-        bool timed_out = false;
-        const auto deadline = ::GetTickCount64() + 2000;
-        while (::WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT) {
-            DWORD available = 0;
-            if (::PeekNamedPipe(read_pipe, nullptr, 0, nullptr, &available, nullptr) && available) {
-                const auto wanted = (std::min<DWORD>)(available, sizeof(buffer));
-                if (::ReadFile(read_pipe, buffer, wanted, &read, nullptr) && read &&
-                    output.size() + read <= 1024 * 1024) output.append(buffer, read);
-            } else ::WaitForSingleObject(process.hProcess, 10);
-            if (::GetTickCount64() >= deadline) { timed_out = true; ::TerminateProcess(process.hProcess, ERROR_TIMEOUT); break; }
+        auto launched = mwfl::ProcessBuilder{}
+                            .Executable(L"git.exe")
+                            .Argument(L"-C")
+                            .Argument(file.parent_path().wstring())
+                            .Argument(L"diff")
+                            .Argument(L"--no-color")
+                            .Argument(L"--unified=0")
+                            .Argument(L"--")
+                            .Argument(file.filename().wstring())
+                            .NoWindow()
+                            .MergeStderrIntoStdout()
+                            .LaunchSupervised();
+        if (!launched) return result;
+        auto collected = launched.Value().RunUntilExit(
+            1024 * 1024, 0, mwfl::Deadline::After(std::chrono::seconds(2)));
+        if (!collected || collected.Value().status != mwfl::CompletionStatus::Completed) {
+            static_cast<void>(launched.Value().TerminateTree(ERROR_TIMEOUT));
+            return result;
         }
-        while (output.size() < 1024 * 1024 &&
-               ::ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read)
-            output.append(buffer, read);
-        DWORD exit_code = 1; ::GetExitCodeProcess(process.hProcess, &exit_code);
-        ::CloseHandle(read_pipe); ::CloseHandle(process.hThread); ::CloseHandle(process.hProcess);
-        if (timed_out || exit_code != 0) return result;
+        const auto& process_output = *collected.Value().value;
+        if (process_output.exit_code != 0 || process_output.stdout_truncated) return result;
+        const std::string output(reinterpret_cast<const char*>(process_output.stdout_bytes.data()),
+                                 process_output.stdout_bytes.size());
         result.repository = true;
         std::size_t cursor = 0;
         while ((cursor = output.find("@@ -", cursor)) != std::string::npos) {

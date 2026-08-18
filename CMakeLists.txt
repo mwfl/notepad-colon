@@ -115,7 +115,7 @@ else()
     set(MWFL_BUILD_SCINTILLA ON CACHE BOOL "Build Scintilla" FORCE)
     FetchContent_Declare(mwfl
         GIT_REPOSITORY https://github.com/mwfl/mwfl.git
-        GIT_TAG v0.1.0)
+        GIT_TAG 06e085c74a209574c292fbee6302ce3676120256)
     FetchContent_MakeAvailable(mwfl)
 endif()
 
@@ -157,7 +157,7 @@ add_executable(notepad-colon-language-host
     src/wasm_language_host.cpp)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
-target_link_libraries(notepad_colon_model PUBLIC tree-sitter tree-sitter-cpp tree-sitter-json
+target_link_libraries(notepad_colon_model PUBLIC mwfl::process tree-sitter tree-sitter-cpp tree-sitter-json
     tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc)
@@ -253,6 +253,7 @@ if(BUILD_TESTING)
     target_include_directories(notepad_colon_wasm_tests PRIVATE include src)
     target_compile_features(notepad_colon_wasm_tests PRIVATE cxx_std_20)
     target_compile_options(notepad_colon_wasm_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
+    target_link_libraries(notepad_colon_wasm_tests PRIVATE mwfl::process)
     add_dependencies(notepad_colon_wasm_tests notepad-colon-language-host)
     add_test(NAME notepad-colon.wasm-host COMMAND notepad_colon_wasm_tests
         "$<TARGET_FILE:notepad-colon-language-host>"
