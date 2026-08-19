@@ -6,7 +6,8 @@
 #include <mwfl/printing_settings.h>
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
-#include "../update_checker.h"
+#include <mwfl/app_support/update_checker.h>
+#include <commdlg.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/comparison.h>
@@ -60,7 +61,7 @@ using mwfl::operator""_dip;
 
 namespace {
 
-mwfl_examples::UpdateChecker g_update_checker;
+mwfl::app_support::UpdateChecker g_update_checker;
 constexpr mwfl::ControlId kNew{100};
 constexpr mwfl::ControlId kOpen{101};
 constexpr mwfl::ControlId kSave{102};

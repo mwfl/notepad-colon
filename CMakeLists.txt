@@ -115,10 +115,9 @@ else()
     set(MWFL_BUILD_SCINTILLA ON CACHE BOOL "Build Scintilla" FORCE)
     FetchContent_Declare(mwfl
         GIT_REPOSITORY https://github.com/mwfl/mwfl.git
-        GIT_TAG v0.2.0)
+        GIT_TAG v0.2.1)
     FetchContent_MakeAvailable(mwfl)
 endif()
-
 add_library(notepad_colon_model
     src/comparison.cpp
     src/configuration.cpp
@@ -149,8 +148,6 @@ target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 
 add_executable(notepad-colon WIN32
     src/main.cpp
-    update_checker.cpp
-    update_checker.h
     src/scintilla_support.cpp
     src/wasm_syntax_client.cpp
     app.rc
@@ -163,7 +160,7 @@ target_compile_definitions(notepad-colon PRIVATE MWFL_APP_VERSION=L\"${PROJECT_V
 target_link_libraries(notepad_colon_model PUBLIC mwfl::process tree-sitter tree-sitter-cpp tree-sitter-json
     tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
-target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::scintilla mwfl::shell mwfl::printing oleacc winhttp comctl32 advapi32 shell32)
+target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::app mwfl::scintilla mwfl::shell mwfl::printing oleacc advapi32 shell32)
 target_link_libraries(notepad-colon-language-host PRIVATE tree-sitter)
 target_include_directories(notepad-colon-language-host PRIVATE include "${WASMTIME_INCLUDE_DIR}")
 target_compile_features(notepad-colon-language-host PRIVATE cxx_std_20)
