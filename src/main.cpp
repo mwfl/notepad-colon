@@ -857,7 +857,7 @@ private:
                 [this] { CompareWithDisk(); }))
             .Add(mwfl::Command(kAbout, L"&About Notepad::",
                 [this] { ::MessageBoxW(GetHwnd(),
-                    L"Notepad:: 0.1.0-beta.1\nNative everyday code editing with MWFL and Scintilla.",
+                    L"Notepad:: 0.1.0\nNative everyday code editing with MWFL and Scintilla.",
                     L"About Notepad::", MB_OK | MB_ICONINFORMATION); }));
         commands_
             .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })

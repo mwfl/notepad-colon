@@ -23,12 +23,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "mwfl"
             VALUE "FileDescription", "Notepad::"
-            VALUE "FileVersion", "0.1.0-beta.1"
+            VALUE "FileVersion", "0.1.0"
             VALUE "InternalName", "notepad-colon"
             VALUE "LegalCopyright", "Copyright (c) 2026 mwfl contributors"
             VALUE "OriginalFilename", "notepad-colon.exe"
             VALUE "ProductName", "Notepad::"
-            VALUE "ProductVersion", "0.1.0-beta.1"
+            VALUE "ProductVersion", "0.1.0"
         END
     END
     BLOCK "VarFileInfo"
