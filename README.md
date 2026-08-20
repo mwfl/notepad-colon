@@ -78,7 +78,7 @@ and 4 GiB verification workflow.
 ## Build from source
 
 Prerequisites: Visual Studio 2026 with Desktop development with C++ and CMake.
-Standalone builds fetch the pinned MWFL `v0.2.0` release; set
+Standalone builds fetch the pinned MWFL `v0.1.0` release; set
 `MWFL_SOURCE_DIR` when developing against a local mwfl checkout.
 
 ```powershell
