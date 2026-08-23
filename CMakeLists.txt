@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(notepad_colon VERSION 0.1.0 LANGUAGES C CXX)
+project(notepad_colon VERSION 0.1.1 LANGUAGES C CXX)
 
 include(CTest)
 include(FetchContent)
@@ -115,7 +115,7 @@ else()
     set(MWFL_BUILD_SCINTILLA ON CACHE BOOL "Build Scintilla" FORCE)
     FetchContent_Declare(mwfl
         GIT_REPOSITORY https://github.com/mwfl/mwfl.git
-        GIT_TAG v0.1.0)
+        GIT_TAG v0.1.1)
     FetchContent_MakeAvailable(mwfl)
 endif()
 add_library(notepad_colon_model
@@ -268,7 +268,7 @@ if(NOTEPAD_COLON_SCINTILLA_DLL)
         "${NOTEPAD_COLON_LEXILLA_DLL}"
         DESTINATION . COMPONENT product)
 endif()
-install(FILES README.md LICENSE THIRD-PARTY-NOTICES.md DESTINATION . COMPONENT product)
+install(FILES README.md CHANGELOG.md LICENSE THIRD-PARTY-NOTICES.md DESTINATION . COMPONENT product)
 install(FILES "${notepad_colon_wasmtime_SOURCE_DIR}/LICENSE"
         DESTINATION . RENAME WASMTIME-LICENSE COMPONENT product)
 install(FILES "${notepad_colon_tree_sitter_SOURCE_DIR}/LICENSE"

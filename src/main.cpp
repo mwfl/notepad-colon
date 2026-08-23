@@ -26,6 +26,7 @@
 #include <notepad_colon/session_writer.h>
 #include <notepad_colon/language.h>
 #include <notepad_colon/language_registry.h>
+#include <notepad_colon/latest_operation.h>
 #include <notepad_colon/lightweight_completion.h>
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/workspace_state.h>
@@ -3539,7 +3540,7 @@ private:
     void StartWorkspaceScan(std::filesystem::path root) {
         ReapCompletedWorkers(workspace_workers_);
         for (auto& worker : workspace_workers_) worker.thread.request_stop();
-        ++workspace_generation_;
+        workspace_operations_.Begin();
         static_cast<void>(workspace_catalog_.AddRoot(root));
         SaveWorkspaceCatalog();
         workspace_root_ = std::move(root);
@@ -3623,14 +3624,9 @@ private:
     }
 
     void CompleteWorkspaceScan() {
-        std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>> scans;
-        {
-            std::scoped_lock lock{worker_mutex_};
-            if (!pending_workspace_scans_ ||
-                pending_workspace_scans_->first != workspace_generation_.load()) return;
-            scans = std::move(pending_workspace_scans_->second);
-            pending_workspace_scans_.reset();
-        }
+        auto completed = workspace_operations_.TakeCurrent();
+        if (!completed) return;
+        auto scans = std::move(*completed);
         if (scans.empty()) return;
         workspace_lazy_ = false;
         workspace_scans_ = std::move(scans);
@@ -3726,7 +3722,7 @@ private:
         RememberSearch(query);
         CancelFolderSearch();
         ReapCompletedWorkers(search_workers_);
-        const auto generation = ++search_generation_;
+        const auto generation = search_operations_.Begin();
         if (auto* command = commands_.Find(kCancelSearch)) command->SetEnabled(true);
         menu_.UpdateCommand(*commands_.Find(kCancelSearch));
         status_.SetText(L"Searching workspace...");
@@ -3764,10 +3760,8 @@ private:
                         if (!part.error.empty()) { result.error = std::move(part.error); break; }
                         if (stop.stop_requested()) { result.cancelled = true; break; }
                     }
-                    {
-                        std::scoped_lock lock{worker_mutex_};
-                        if (generation != search_generation_.load()) { done->store(true); return; }
-                        pending_search_result_ = {generation, std::move(result)};
+                    if (!search_operations_.Publish(generation, std::move(result))) {
+                        done->store(true); return;
                     }
                     ::PostMessageW(window, kSearchCompleteMessage,
                                    static_cast<WPARAM>(generation), 0);
@@ -3794,10 +3788,8 @@ private:
                 result.truncated = result.truncated || part.truncated;
                 result.cancelled = result.cancelled || part.cancelled;
             }
-            {
-                std::scoped_lock lock{worker_mutex_};
-                if (generation != search_generation_.load()) { done->store(true); return; }
-                pending_search_result_ = {generation, std::move(result)};
+            if (!search_operations_.Publish(generation, std::move(result))) {
+                done->store(true); return;
             }
             ::PostMessageW(window, kSearchCompleteMessage,
                            static_cast<WPARAM>(generation), 0);
@@ -3807,17 +3799,16 @@ private:
 
     void CancelFolderSearch() {
         for (auto& worker : search_workers_) worker.thread.request_stop();
+        search_operations_.Begin();
+        if (auto* command = commands_.Find(kCancelSearch)) {
+            command->SetEnabled(false);
+            menu_.UpdateCommand(*command);
+        }
+        status_.SetText(L"Search cancelled.");
     }
 
     void CompleteSearch() {
-        std::optional<notepad_colon::SearchResult> result;
-        {
-            std::scoped_lock lock{worker_mutex_};
-            if (!pending_search_result_ ||
-                pending_search_result_->first != search_generation_.load()) return;
-            result = std::move(pending_search_result_->second);
-            pending_search_result_.reset();
-        }
+        auto result = search_operations_.TakeCurrent();
         if (!result) return;
         search_results_ = std::move(*result);
         ListView_DeleteAllItems(results_.GetHwnd());
@@ -4397,17 +4388,15 @@ private:
             StartWorkspaceScan(test_workspace);
             if (result == 0 && TreeView_GetCount(tree_.GetHwnd()) != 3) result = 29;
             {
-                std::scoped_lock lock{worker_mutex_};
-                pending_workspace_scans_ = std::pair{workspace_generation_.load(),
+                workspace_operations_.Publish(workspace_operations_.CurrentGeneration(),
                     std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>>{
-                        {test_workspace, notepad_colon::ScanWorkspace(test_workspace)}}};
+                        {test_workspace, notepad_colon::ScanWorkspace(test_workspace)}});
             }
             CompleteWorkspaceScan();
             if (result == 0 && TreeView_GetCount(tree_.GetHwnd()) < 3) result = 17;
             {
-                std::scoped_lock lock{worker_mutex_};
-                pending_search_result_ = std::pair{search_generation_.load(),
-                    notepad_colon::SearchWorkspace(test_workspace, L"needle")};
+                search_operations_.Publish(search_operations_.CurrentGeneration(),
+                    notepad_colon::SearchWorkspace(test_workspace, L"needle"));
             }
             CompleteSearch();
             if (result == 0 && ListView_GetItemCount(results_.GetHwnd()) != 1) result = 18;
@@ -4508,13 +4497,10 @@ private:
     notepad_colon::SearchResult search_results_;
     std::vector<BackgroundTask> search_workers_;
     std::vector<BackgroundTask> workspace_workers_;
-    std::atomic<std::uint64_t> search_generation_{0};
-    std::atomic<std::uint64_t> workspace_generation_{0};
-    std::mutex worker_mutex_;
-    std::optional<std::pair<std::uint64_t, notepad_colon::SearchResult>> pending_search_result_;
-    std::optional<std::pair<std::uint64_t,
-        std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>>>>
-        pending_workspace_scans_;
+    notepad_colon::LatestOperation<notepad_colon::SearchResult> search_operations_;
+    notepad_colon::LatestOperation<
+        std::vector<std::pair<std::filesystem::path, notepad_colon::WorkspaceScan>>>
+        workspace_operations_;
     mwfl::UiTimer monitor_timer_;
     std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_recovery_snapshot_ =
