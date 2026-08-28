@@ -129,6 +129,9 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
 
 bool SaveSessionAtomic(const std::filesystem::path& path, const Session& session) noexcept {
     try {
+        std::error_code target_error;
+        if (std::filesystem::is_directory(path, target_error)) return false;
+        if (target_error && target_error != std::errc::no_such_file_or_directory) return false;
         const auto parent = path.parent_path();
         if (!parent.empty()) {
             std::error_code error;

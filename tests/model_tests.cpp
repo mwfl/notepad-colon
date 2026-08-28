@@ -13,6 +13,7 @@
 #include <notepad_colon/lightweight_completion.h>
 #include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/large_file.h>
+#include <notepad_colon/latest_operation.h>
 #include <notepad_colon/macro.h>
 #include <notepad_colon/mapped_file.h>
 #include <notepad_colon/output.h>
@@ -38,6 +39,21 @@ void Check(bool value, const char* message) {
 }
 
 int main() {
+    {
+        notepad_colon::LatestOperation<std::string> operation;
+        const auto first = operation.Begin();
+        const auto second = operation.Begin();
+        Check(!operation.Publish(first, "stale") &&
+                  operation.Publish(second, "current"),
+              "latest operation rejects stale background completion");
+        const auto result = operation.TakeCurrent();
+        Check(result && *result == "current" && !operation.TakeCurrent(),
+              "latest operation delivers the current completion exactly once");
+        const auto cancelled = operation.Begin();
+        operation.Begin();
+        Check(!operation.Publish(cancelled, "cancelled"),
+              "starting another generation invalidates cancelled work");
+    }
     {
         constexpr std::string_view source =
             "def compute_value():\n    print(compute_value())\ncomp";
