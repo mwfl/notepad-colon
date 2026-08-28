@@ -445,6 +445,31 @@ mwfl::FileAssociationSpec TextAssociation() {
             .verbs = {{L"open", L"Open with Notepad::", {}}}};
 }
 
+// Windows does not expose a documented switch that lets classic HMENU bars and
+// popup menus follow app dark mode. Current Windows 10/11 builds expose this
+// best-effort opt-in through uxtheme; keep the native light-theme fallback when
+// the entry points are unavailable.
+enum class PreferredAppMode : int { default_mode, allow_dark };
+
+void EnableNativeDarkMenuSupport() noexcept {
+    const HMODULE theme = ::LoadLibraryExW(
+        L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!theme) return;
+    using SetPreferredAppMode = PreferredAppMode(WINAPI*)(PreferredAppMode);
+    const auto set_mode = reinterpret_cast<SetPreferredAppMode>(
+        ::GetProcAddress(theme, MAKEINTRESOURCEA(135)));
+    if (set_mode) static_cast<void>(set_mode(PreferredAppMode::allow_dark));
+}
+
+void RefreshNativeMenuTheme() noexcept {
+    const HMODULE theme = ::GetModuleHandleW(L"uxtheme.dll");
+    if (!theme) return;
+    using FlushMenuThemes = void(WINAPI*)();
+    const auto flush = reinterpret_cast<FlushMenuThemes>(
+        ::GetProcAddress(theme, MAKEINTRESOURCEA(136)));
+    if (flush) flush();
+}
+
 class MainWindow final : public mwfl::WindowBase {
 public:
     MainWindow(mwfl::SingleInstance& instance,
@@ -551,6 +576,7 @@ public:
         mwfl::Must(mwfl::SetAccessibleName(workspace_filter_.GetHwnd(), L"Filter workspace files"),
                    "name workspace filter");
         mwfl::Must(mwfl::SetAccessibleName(results_.GetHwnd(), L"Folder search results"), "name search results");
+        ApplyNativeControlColors(GetAppearanceState());
 
         ApplyCompactLayout();
 
@@ -656,6 +682,13 @@ public:
 
     mwfl::EventResult OnResize(const mwfl::ResizeEvent&) override {
         adapter_.ArrangePages();
+        return mwfl::EventResult::Propagate();
+    }
+
+    mwfl::EventResult OnAppearanceChanged(const mwfl::AppearanceState& state) {
+        RefreshNativeMenuTheme();
+        ApplyEditorAppearance(state.IsDark());
+        ApplyNativeControlColors(state);
         return mwfl::EventResult::Propagate();
     }
 
@@ -1466,7 +1499,12 @@ private:
 
     void ApplyAppearance() {
         SetAppearance({ToColorMode(preferences_.theme), mwfl::Backdrop::mica});
-        const bool dark = IsDark();
+        const auto& state = GetAppearanceState();
+        ApplyEditorAppearance(state.IsDark());
+        ApplyNativeControlColors(state);
+    }
+
+    void ApplyEditorAppearance(bool dark) {
         for (auto& document : documents_) {
             notepad_colon::ApplyPreferences(*document.editor, preferences_, dark);
             const auto* registered = language_registry_.Find(document.language_id);
@@ -1482,6 +1520,24 @@ private:
                 StyleVisibleSyntax(document);
             }
         }
+    }
+
+    void ApplyNativeControlColors(const mwfl::AppearanceState& state) noexcept {
+        const COLORREF background = state.palette.control_background;
+        const COLORREF text = state.palette.text;
+        if (status_.GetHwnd())
+            ::SendMessageW(status_.GetHwnd(), SB_SETBKCOLOR, 0, background);
+        if (tree_.GetHwnd()) {
+            TreeView_SetBkColor(tree_.GetHwnd(), background);
+            TreeView_SetTextColor(tree_.GetHwnd(), text);
+        }
+        if (results_.GetHwnd()) {
+            ListView_SetBkColor(results_.GetHwnd(), background);
+            ListView_SetTextBkColor(results_.GetHwnd(), background);
+            ListView_SetTextColor(results_.GetHwnd(), text);
+        }
+        ::RedrawWindow(GetHwnd(), nullptr, nullptr,
+                       RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 
     void SetActiveLanguage(notepad_colon::Language language) {
@@ -4531,6 +4587,7 @@ private:
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+    EnableNativeDarkMenuSupport();
     int count{};
     wchar_t** arguments = ::CommandLineToArgvW(::GetCommandLineW(), &count);
     bool self_test = false;

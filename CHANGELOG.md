@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 - 2026-08-27
+
+- Make the native menu, status, tree, result, and editor chrome follow Windows
+  dark mode, including live system-theme changes.
+- Give Scintilla line-number, fold, and bookmark margins coherent light and
+  dark palettes.
+- Reject directory targets before attempting an atomic session save.
+
 ## 0.1.1 - 2026-08-23
 
 - Prevent an older cancelled Find in Files operation from replacing the result

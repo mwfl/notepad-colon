@@ -550,6 +550,16 @@ void ApplyPreferences(mwfl::ScintillaEditor& editor,
     editor.Send(SCI_STYLESETFORE, STYLE_DEFAULT, dark ? RGB(230, 230, 230) : RGB(30, 30, 30));
     editor.Send(SCI_STYLESETBACK, STYLE_DEFAULT, dark ? RGB(30, 30, 30) : RGB(255, 255, 255));
     editor.Send(SCI_STYLECLEARALL);
+    const COLORREF margin_background = dark ? RGB(37, 37, 38) : RGB(245, 245, 245);
+    editor.Send(SCI_STYLESETFORE, STYLE_LINENUMBER,
+                dark ? RGB(155, 155, 155) : RGB(100, 100, 100));
+    editor.Send(SCI_STYLESETBACK, STYLE_LINENUMBER, margin_background);
+    editor.Send(SCI_SETMARGINBACKN, 0, margin_background);
+    editor.Send(SCI_SETMARGINBACKN, 1, margin_background);
+    editor.Send(SCI_SETMARGINBACKN, 2, margin_background);
+    editor.Send(SCI_SETFOLDMARGINCOLOUR, TRUE, margin_background);
+    editor.Send(SCI_SETFOLDMARGINHICOLOUR, TRUE,
+                dark ? RGB(55, 55, 55) : RGB(225, 225, 225));
     editor.Send(SCI_SETTABWIDTH, preferences.tab_width);
     editor.Send(SCI_SETINDENT, preferences.tab_width);
     editor.Send(SCI_SETCARETFORE, dark ? RGB(255, 255, 255) : RGB(0, 0, 0));

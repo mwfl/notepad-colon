@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(notepad_colon VERSION 0.1.1 LANGUAGES C CXX)
+project(notepad_colon VERSION 0.1.2 LANGUAGES C CXX)
 
 include(CTest)
 include(FetchContent)
