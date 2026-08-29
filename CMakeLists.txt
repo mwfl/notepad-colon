@@ -156,7 +156,6 @@ add_executable(notepad-colon-language-host
     src/wasm_language_host.cpp)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
-target_compile_definitions(notepad-colon PRIVATE MWFL_APP_VERSION=L\"${PROJECT_VERSION}\")
 target_link_libraries(notepad_colon_model PUBLIC mwfl::process tree-sitter tree-sitter-cpp tree-sitter-json
     tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
