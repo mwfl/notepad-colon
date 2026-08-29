@@ -12,7 +12,7 @@ code indexing out of the process.
 
 > **Project status:** early preview. Core editing, search, recovery, syntax
 > highlighting, folder browsing, and large-file workflows are implemented and
-> covered by automated tests. Interfaces may still change before 1.0.
+> covered by automated tests. Interfaces may still change during this early preview period.
 
 ## Why Notepad::?
 
