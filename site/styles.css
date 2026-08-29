@@ -57,7 +57,16 @@ dd { margin: 6px 0 0; color: #7d95ac; font-size: 11px; }
 .promise h2 { max-width: 900px; margin-inline: auto; font-size: clamp(30px, 4vw, 48px); }
 .promise > p:last-child { margin-bottom: 0; }
 footer { min-height: 92px; display: flex; align-items: center; gap: 26px; border-top: 1px solid var(--line); color: #7890a6; font-size: 12px; }
-footer span:first-child { color: var(--text); font-weight: 700; } footer a { margin-left: auto; }
+footer span:first-child { color: var(--text); font-weight: 700; }
+footer a:first-of-type { margin-left: auto; }
+
+.policy-page { min-height: calc(100vh - 168px); padding: 90px 0 110px; }
+.policy-page article { max-width: 760px; }
+.policy-page h1 { margin-bottom: 12px; font-size: clamp(46px, 6vw, 72px); }
+.policy-page h2 { margin: 46px 0 14px; font-size: 27px; letter-spacing: -.025em; }
+.policy-page p { color: var(--muted); font-size: 16px; line-height: 1.75; }
+.policy-page .policy-updated { color: #728ba3; font-size: 13px; }
+.policy-page a { color: var(--accent); }
 
 @media (max-width: 850px) {
   .hero { grid-template-columns: 1fr; gap: 52px; padding-top: 70px; }
