@@ -6,7 +6,6 @@
 #include <mwfl/printing_settings.h>
 #include <mwfl/single_instance.h>
 #include <mwfl/dialog.h>
-#include <mwfl/app_support/update_checker.h>
 #include <commdlg.h>
 #include <notepad_colon/large_file.h>
 #include <notepad_colon/large_file_buffer.h>
@@ -62,7 +61,6 @@ using mwfl::operator""_dip;
 
 namespace {
 
-mwfl::app_support::UpdateChecker g_update_checker;
 constexpr mwfl::ControlId kNew{100};
 constexpr mwfl::ControlId kOpen{101};
 constexpr mwfl::ControlId kSave{102};
@@ -589,11 +587,6 @@ public:
         for (const auto& path : startup_paths_) static_cast<void>(OpenPath(path));
         mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
                    "start external-file monitor");
-        if (!IsTestMode()) {
-            g_update_checker.Attach(
-                GetHwnd(), {L"Notepad Colon", L"notepad-colon", MWFL_APP_VERSION,
-                            L"Software\\mwfl\\Notepad Colon\\Updates"});
-        }
         if ((IsSelfTest() || large_file_self_test_) &&
             !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
             throw std::runtime_error("could not schedule GUI self-test");

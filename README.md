@@ -121,6 +121,19 @@ Notepad:: is released under the [MIT License](LICENSE). Third-party
 components and grammar licenses are listed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-## Updates and Portable releases
+## Releases
 
-The app checks the latest stable GitHub Release at most once per day. Use **Settings > Automatically Check for Updates** to disable or re-enable checks, or **Check for Updates** to run one manually. An available update can open the official Portable release, be deferred for three days or one week, or dismissed until the next day. Tag releases publish a versioned `windows-x64-portable.zip` plus SHA-256 checksums; replacement is always an explicit download-and-extract action.
+Notepad:: never checks the network for updates. Microsoft Store installations
+are updated by the Store, while Portable users can choose when to download a
+new version from the GitHub Releases page. Tag releases publish a versioned
+`windows-x64-portable.zip` plus SHA-256 checksums.
+
+Build the Store MSIX from an existing Release configuration with:
+
+```powershell
+./scripts/build-store-msix.ps1
+```
+
+The script stages the product files, applies the Partner Center package identity,
+generates the required logo sizes from the repository icon, and validates the
+manifest while packing `artifacts/store/notepad-colon-1.2.0.0-x64.msix`.

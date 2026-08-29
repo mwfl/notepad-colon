@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+  <Identity Name="20370everettjf.NotepadColon"
+            Publisher="CN=560214DD-F83C-484D-87A6-0E0454EE64B0"
+            Version="@PACKAGE_VERSION@"
+            ProcessorArchitecture="@ARCHITECTURE@" />
+  <Properties>
+    <DisplayName>Notepad Colon</DisplayName>
+    <PublisherDisplayName>DUSTAXIOM</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="NotepadColon" Executable="notepad-colon.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements AppListEntry="default"
+                          DisplayName="Notepad Colon"
+                          Description="A fast, local-first native Windows text editor."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="notepadcolon.text">
+            <uap:DisplayName>Text documents</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.txt</uap:FileType>
+              <uap:FileType>.log</uap:FileType>
+              <uap:FileType>.md</uap:FileType>
+              <uap:FileType>.json</uap:FileType>
+              <uap:FileType>.xml</uap:FileType>
+              <uap:FileType>.yaml</uap:FileType>
+              <uap:FileType>.yml</uap:FileType>
+              <uap:FileType>.ini</uap:FileType>
+              <uap:FileType>.csv</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
