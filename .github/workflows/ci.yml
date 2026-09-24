@@ -17,7 +17,11 @@ jobs:
       - name: Test
         run: ctest --preset vs2026-x64-debug
       - name: Package portable ZIP
-        run: cmake --build --preset vs2026-x64-debug --target package
+        run: cmake --build --preset vs2026-x64-release --target package --parallel
+      - name: Test Release
+        run: ctest --preset vs2026-x64-release
+      - name: Verify portable ZIP
+        run: ./scripts/test-portable-package.ps1 -BuildDirectory build/vs2026-x64
       - name: Upload portable ZIP
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:

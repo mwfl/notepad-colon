@@ -1,6 +1,6 @@
 param(
     [string]$BuildDirectory = (Join-Path $PSScriptRoot "..\build\vs2026-x64"),
-    [ValidateSet("Debug", "Release")]
+    [ValidateSet("Release")]
     [string]$Configuration = "Release",
     [ValidatePattern('^[1-9][0-9]*\.[0-9]+\.[0-9]+\.0$')]
     [string]$PackageVersion = "1.2.0.0",
@@ -34,6 +34,10 @@ $makeAppx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter
     Select-Object -First 1
 if (-not $makeAppx) {
     throw "makeappx.exe was not found in the Windows 10 SDK."
+}
+$makePri = Join-Path $makeAppx.DirectoryName "makepri.exe"
+if (-not (Test-Path -LiteralPath $makePri -PathType Leaf)) {
+    throw "makepri.exe was not found alongside makeappx.exe."
 }
 
 New-Item -ItemType Directory -Path $output -Force | Out-Null
@@ -82,9 +86,36 @@ Write-ScaledPng (Join-Path $assets "Square44x44Logo.png") 44 44 44
 Write-ScaledPng (Join-Path $assets "Square150x150Logo.png") 150 150 150
 Write-ScaledPng (Join-Path $assets "Wide310x150Logo.png") 310 150 120
 
+# Match the manifest's Square44x44Logo resource name. Windows needs all three
+# variants even when their artwork is identical, otherwise it may add a plate.
+foreach ($size in @(16, 20, 24, 30, 32, 36, 40, 44, 48, 60, 64, 72, 80, 96, 256)) {
+    foreach ($variant in @("", "_altform-unplated", "_altform-lightunplated")) {
+        Write-ScaledPng (Join-Path $assets "Square44x44Logo.targetsize-$size$variant.png") $size $size $size
+    }
+}
+
 $manifestTemplate = Get-Content -Raw (Join-Path $repository "packaging\msix\AppxManifest.xml.in")
 $manifest = $manifestTemplate.Replace("@PACKAGE_VERSION@", $PackageVersion).Replace("@ARCHITECTURE@", $Architecture)
 [System.IO.File]::WriteAllText((Join-Path $stage "AppxManifest.xml"), $manifest, [System.Text.UTF8Encoding]::new($false))
+
+# Keep build configuration outside the package. Index the qualified image names
+# before MakeAppx runs so Windows can select their target size and theme.
+$priConfig = Join-Path $output "priconfig-$Architecture.xml"
+& $makePri createconfig /cf $priConfig /dq en-US /o
+if ($LASTEXITCODE -ne 0) {
+    throw "MakePri createconfig failed with exit code $LASTEXITCODE."
+}
+# Deliver one self-contained package, not separate language/scale resource packs.
+[xml]$priConfiguration = Get-Content -Raw -LiteralPath $priConfig
+foreach ($node in @($priConfiguration.SelectNodes("//packaging"))) {
+    [void]$node.ParentNode.RemoveChild($node)
+}
+$priConfiguration.Save($priConfig)
+$priFile = Join-Path $stage "resources.pri"
+& $makePri new /pr $stage /cf $priConfig /of $priFile /o
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $priFile -PathType Leaf)) {
+    throw "MakePri did not generate resources.pri successfully (exit code $LASTEXITCODE)."
+}
 
 if (Test-Path -LiteralPath $package) {
     Remove-Item -LiteralPath $package -Force

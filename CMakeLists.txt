@@ -260,6 +260,21 @@ if(BUILD_TESTING)
     set_tests_properties(notepad-colon.wasm-host PROPERTIES TIMEOUT 20 LABELS security)
 endif()
 
+# Portable and MSIX packages must run on machines without Visual Studio.
+# Keep the redistributable CRT beside the executables (also used by editor DLLs).
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT product)
+set(CMAKE_INSTALL_DEBUG_LIBRARIES OFF)
+set(CMAKE_INSTALL_DEBUG_LIBRARIES_ONLY OFF)
+include(InstallRequiredSystemLibraries)
+if(MSVC AND NOT CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+    message(FATAL_ERROR "MSVC redistributable runtime libraries were not found.")
+endif()
+install(CODE [[
+    if(CMAKE_INSTALL_CONFIG_NAME STREQUAL "Debug")
+        message(FATAL_ERROR "Distributable packages require Release; Debug uses non-redistributable runtime DLLs.")
+    endif()
+]] COMPONENT product)
 install(TARGETS notepad-colon notepad-colon-language-host RUNTIME DESTINATION . COMPONENT product)
 if(NOTEPAD_COLON_SCINTILLA_DLL)
     install(FILES

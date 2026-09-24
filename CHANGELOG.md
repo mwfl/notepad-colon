@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Include target-size icons for default, dark, and light themes in MSIX packages
+  and generate resources.pri so Windows can select icons without a system plate.
+- Bundle the MSVC runtime DLLs with portable ZIP and Store MSIX packages so
+  machines without Visual Studio can launch the editor. Distribute Release
+  builds only and verify the extracted portable package in CI.
+
 ## 1.2.0 - 2026-08-28
 
 - Remove automatic and manual GitHub update checks from every distribution;

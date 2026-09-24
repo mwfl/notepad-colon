@@ -93,8 +93,11 @@ Create the portable ZIP:
 cmake --build --preset vs2026-x64-release --target package
 ```
 
-The package contains `notepad-colon.exe`, Scintilla, Lexilla, notices, and this
-guide. Launching it makes no registry changes. The optional `.txt` association
+The Release package contains `notepad-colon.exe`, its language host, Scintilla,
+Lexilla, the MSVC runtime DLLs, notices, and this guide. Extract the entire ZIP
+to one folder before launching; copying only the EXE leaves required DLLs behind.
+Debug builds are for development and cannot be packaged for distribution.
+Launching it makes no registry changes. The optional `.txt` association
 is explicit, reversible, and available under **Tools**.
 
 ## Project scope
