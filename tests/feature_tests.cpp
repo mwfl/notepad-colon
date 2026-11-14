@@ -1,5 +1,6 @@
 // Model-layer coverage for language coverage, legacy-encoding detection and
 // the other features added after 1.2.0. Each section is independent.
+#include <notepad_colon/comparison.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/encoding_detection.h>
 #include <notepad_colon/language.h>
@@ -626,6 +627,85 @@ void TestHighlightRules() {
 }
 }  // namespace
 
+void TestChangeReview() {
+    using notepad_colon::CompareText;
+    using notepad_colon::GroupChangeHunks;
+    using notepad_colon::MergeReviewedText;
+    const std::wstring before = L"alpha\r\nbeta\r\ngamma\r\ndelta\r\nepsilon\r\nzeta\r\n";
+    const std::wstring after = L"alpha\r\nBETA\r\nbeta two\r\ngamma\r\nepsilon\r\nzeta\r\nomega\r\n";
+    const auto comparison = CompareText(before, after);
+    const auto hunks = GroupChangeHunks(comparison);
+    Check(hunks.size() == 3, "three separate hunks");
+    if (hunks.size() == 3) {
+        Check(hunks[0].left_line == 2 && hunks[0].right_line == 2 && hunks[0].removed == 1 &&
+                  hunks[0].added == 2, "replacement hunk counts both sides");
+        Check(hunks[1].removed == 1 && hunks[1].added == 0 && hunks[1].left_line == 4,
+              "deletion hunk");
+        Check(hunks[2].removed == 0 && hunks[2].added == 1 && hunks[2].right_line == 7,
+              "insertion hunk at the end");
+    }
+    Check(MergeReviewedText(before, after, comparison, {false, false, false}) == after,
+          "accepting every hunk yields the new text");
+    Check(MergeReviewedText(before, after, comparison, {true, true, true}) == before,
+          "rejecting every hunk restores the old text");
+    Check(MergeReviewedText(before, after, comparison, {true, false, false}) ==
+              L"alpha\r\nbeta\r\ngamma\r\nepsilon\r\nzeta\r\nomega\r\n", "rejecting only the first hunk");
+    Check(MergeReviewedText(before, after, comparison, {false, true, false}) ==
+              L"alpha\r\nBETA\r\nbeta two\r\ngamma\r\ndelta\r\nepsilon\r\nzeta\r\nomega\r\n",
+          "rejecting only the deletion puts the line back");
+    Check(MergeReviewedText(before, after, comparison, {false, false, true}) ==
+              L"alpha\r\nBETA\r\nbeta two\r\ngamma\r\nepsilon\r\nzeta\r\n", "rejecting only the addition");
+    Check(MergeReviewedText(before, after, comparison, {}) == after,
+          "missing decisions mean accepted");
+
+    // A final line without a line break must not be glued to what follows it.
+    const std::wstring short_before = L"one\ntwo";
+    const std::wstring short_after = L"one\ntwo\nthree\n";
+    const auto short_comparison = CompareText(short_before, short_after);
+    Check(MergeReviewedText(short_before, short_after, short_comparison, {true}) == L"one\ntwo\n" ||
+              MergeReviewedText(short_before, short_after, short_comparison, {true}) == L"one\ntwo",
+          "rejected trailing addition");
+    const std::wstring tail_before = L"one\ntwo\nlast";
+    const std::wstring tail_after = L"one\nlast";
+    const auto tail_comparison = CompareText(tail_before, tail_after);
+    Check(MergeReviewedText(tail_before, tail_after, tail_comparison, {true}) == tail_before,
+          "rejected deletion before an unterminated last line");
+    Check(GroupChangeHunks(CompareText(L"same\n", L"same\n")).empty(), "identical text has no hunks");
+    Check(MergeReviewedText(L"", L"new\n", CompareText(L"", L"new\n"), {true}).empty(),
+          "rejecting everything added to an empty file");
+
+    // Head and tail trimming: a change deep inside a long file stays one hunk,
+    // and files too large to align still merge correctly.
+    std::wstring long_before, long_after;
+    for (int line = 0; line < 6000; ++line) {
+        const auto text = L"line " + std::to_wstring(line) + L"\n";
+        long_before += text;
+        long_after += line == 3000 ? L"changed\n" : text;
+    }
+    const auto long_comparison = CompareText(long_before, long_after);
+    const auto long_hunks = GroupChangeHunks(long_comparison);
+    Check(long_comparison.changed_lines == 1 && long_hunks.size() == 1 &&
+              long_hunks.front().left_line == 3001, "single change inside a long file");
+    Check(MergeReviewedText(long_before, long_after, long_comparison, {true}) == long_before,
+          "long file hunk rejected");
+    std::wstring huge_before, huge_after;
+    for (int line = 0; line < 5000; ++line) {
+        huge_before += L"a" + std::to_wstring(line) + L"\n";
+        huge_after += L"b" + std::to_wstring(line) + L"\n";
+    }
+    const auto huge_comparison = CompareText(L"head\n" + huge_before + L"tail\n",
+                                             L"head\n" + huge_after + L"tail\n");
+    Check(GroupChangeHunks(huge_comparison).size() == 1 &&
+              huge_comparison.lines.front().kind == notepad_colon::DifferenceKind::equal &&
+              huge_comparison.lines.back().kind == notepad_colon::DifferenceKind::equal,
+          "region too large to align becomes one hunk");
+    Check(MergeReviewedText(L"head\n" + huge_before + L"tail\n", L"head\n" + huge_after + L"tail\n",
+                            huge_comparison, {true}) == L"head\n" + huge_before + L"tail\n" &&
+              MergeReviewedText(L"head\n" + huge_before + L"tail\n", L"head\n" + huge_after + L"tail\n",
+                                huge_comparison, {false}) == L"head\n" + huge_after + L"tail\n",
+          "oversized hunk merges both ways");
+}
+
 int main() {
     TestLanguages();
     TestEncodingDetection();
@@ -636,6 +716,7 @@ int main() {
     TestDelimited();
     TestLineFilter();
     TestHighlightRules();
+    TestChangeReview();
     if (failures == 0) std::cout << "feature tests passed\n";
     return failures == 0 ? 0 : 1;
 }

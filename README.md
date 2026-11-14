@@ -68,6 +68,16 @@ code indexing out of the process.
 - Safe atomic replacement, optional backup-before-save, conflict detection, and
   crash/session recovery—including unsaved documents.
 
+### Working next to a coding agent
+
+- **Review External Changes** (`F8`): when another program rewrites a file you
+  have open, Notepad:: reloads it, keeps the text from before, marks every
+  changed line in the margin, and shows the changes side by side so each one
+  can be kept or rejected. Rejected changes go back into the editor as a
+  normal, undoable edit.
+- The editor never talks to a model or a network. It only compares the two
+  versions of your own file, so it works with any agent, formatter or script.
+
 ### Large files without large memory use
 
 - Files through 32 MiB open in the regular editor.

@@ -38,11 +38,19 @@ function Format-Hex([byte[]]$Bytes) { return [BitConverter]::ToString($Bytes) }
 $path = Join-Path $env:TEMP ("notepad-colon-large-self-test-{0}.cpp" -f $PID)
 $line = [Text.Encoding]::UTF8.GetBytes("int original_value = 42; // streaming edit`r`n")
 $target = [long]($line.Length * [Math]::Ceiling(34MB / $line.Length))
+# Write whole megabyte-sized blocks: one write per line means some 800,000
+# interpreted loop iterations, which occasionally took longer than the test's
+# time limit on a busy machine.
+$linesPerBlock = [int][Math]::Floor(1MB / $line.Length)
+$block = [byte[]]::new($line.Length * $linesPerBlock)
+for ($index = 0; $index -lt $linesPerBlock; $index++) {
+    [Array]::Copy($line, 0, $block, $index * $line.Length, $line.Length)
+}
 $stream = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
 try {
-    while ($stream.Length -lt $target) {
-        $count = [Math]::Min($line.Length, $target - $stream.Length)
-        $stream.Write($line, 0, $count)
+    for ($remaining = $target; $remaining -gt 0; $remaining -= $count) {
+        $count = [int][Math]::Min($block.Length, $remaining)
+        $stream.Write($block, 0, $count)
     }
 } finally {
     $stream.Dispose()

@@ -661,6 +661,7 @@ void MainWindow::CheckExternalChanges(bool force) {
         }
         if (!metadata->dirty && current.exists) {
             const auto loaded = mwfl::ReadTextFile(metadata->path);
+            auto before = document.editor->GetText();
             if (loaded.Succeeded() && document.editor->SetText(loaded.value->text)) {
                 document.encoding = loaded.value->encoding;
                 document.line_ending = notepad_colon::DetectLineEnding(loaded.value->text);
@@ -668,7 +669,10 @@ void MainWindow::CheckExternalChanges(bool force) {
                 document.file_state = current;
                 document.editor->SetSavePoint();
                 workspace_.SetDirty(document.id, false);
-                SyncPresentation(Tr(L"Reloaded external change"));
+                const auto changes = before ? NoteExternalReload(document, std::move(*before)) : 0;
+                SyncPresentation(changes == 0 ? Tr(L"Reloaded external change")
+                    : metadata->title + Tr(L" changed on disk: ") + std::to_wstring(changes) +
+                      Tr(L" change(s) to review (F8)"));
             }
         } else if (!IsTestMode() && current.exists) {
             const auto answer = ::MessageBoxW(GetHwnd(),

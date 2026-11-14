@@ -124,6 +124,9 @@ constexpr mwfl::ControlId kRainbowColumns{464};
 constexpr mwfl::ControlId kFilterLines{465};
 constexpr mwfl::ControlId kHighlightLines{466};
 constexpr mwfl::ControlId kHighlightRules{467};
+constexpr mwfl::ControlId kReviewChanges{468};
+// Margin marker on lines another program changed and nobody reviewed yet.
+constexpr int kReviewMarker = 4;
 constexpr mwfl::ControlId kRecentBase{300};
 constexpr mwfl::ControlId kToggleFold{320};
 constexpr mwfl::ControlId kToggleBookmark{321};
@@ -308,6 +311,8 @@ struct EditorDocument {
         std::uint64_t rules = 0;
     };
     Decoration decorations[2];     // Primary view, split view.
+    // Text before the first external change that has not been reviewed yet.
+    std::optional<std::wstring> review_base;
     // Second view onto the same Scintilla document (declared last so it is
     // destroyed before the primary editor that owns the document).
     std::unique_ptr<mwfl::ScintillaEditor> split_editor;
@@ -859,6 +864,16 @@ private:
     void ShowReplaceOutcome(const notepad_colon::ReplaceResult& result);
 
     void CheckExternalChanges(bool force);
+    // External change review (main_window_review.cpp).
+    std::size_t PendingReviewCount() const noexcept;
+    // Records `before` as the review baseline after a reload; returns the
+    // number of changes now waiting for review.
+    std::size_t NoteExternalReload(EditorDocument& document, std::wstring before);
+    // Ends the review: hunks flagged in `rejected` go back to the old text.
+    bool FinishReview(EditorDocument& document, const std::vector<bool>& rejected);
+    void ClearReview(EditorDocument& document);
+    void ReviewExternalChanges();
+    void ShowChangeReview(EditorDocument& document);
 
     void StopWorkers();
 

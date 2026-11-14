@@ -231,7 +231,9 @@ void MainWindow::BuildCommands() {
         .Add(mwfl::Command(kFilterLines, L"Filter Lines...", [this] { ShowFilterLines(); })
                  .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'G'}))
         .Add(mwfl::Command(kHighlightLines, L"Highlight Log Lines", [this] { ToggleHighlightLines(); }))
-        .Add(mwfl::Command(kHighlightRules, L"Highlight Rules...", [this] { ShowHighlightRules(); }));
+        .Add(mwfl::Command(kHighlightRules, L"Highlight Rules...", [this] { ShowHighlightRules(); }))
+        .Add(mwfl::Command(kReviewChanges, L"Review External Changes...", [this] { ReviewExternalChanges(); })
+                 .SetShortcut({FVIRTKEY, VK_F8}));
     commands_
         .Add(mwfl::Command(kSplitView, L"Split View (Clone Document)", [this] { ToggleSplitView(); })
                  .SetShortcut({FVIRTKEY | FCONTROL, VK_OEM_5}))
@@ -451,7 +453,7 @@ void MainWindow::BuildMenu() {
                           kShortcutSettings, kExportConfiguration, kImportConfiguration,
                           kDocumentStatistics,
                           kPreferences, kRecoveryManager, kCompareWithFile,
-                          kCompareWithDisk, kRegisterAssociation, kRemoveAssociation,
+                          kCompareWithDisk, kReviewChanges, kRegisterAssociation, kRemoveAssociation,
                           kAddShellMenus, kRemoveShellMenus,
                           kEnglishUi, kChineseUi, kOpenTerminal})
         mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");

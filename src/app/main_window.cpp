@@ -523,7 +523,9 @@ void MainWindow::SyncPresentation(std::wstring_view action) {
             std::wstring(LineEndingName(document->line_ending)) + L" | " +
             std::wstring(notepad_colon::LanguageName(document->language)) + L" | " +
             DelimitedFieldStatus(*document) +
-            std::to_wstring(workspace_.GetCount()) + Tr(L" document(s)"));
+            std::to_wstring(workspace_.GetCount()) + Tr(L" document(s)") +
+            (PendingReviewCount() == 0 ? std::wstring{}
+                : L" | " + std::to_wstring(PendingReviewCount()) + Tr(L" to review")));
     } else status_.SetText(action);
 
     const bool has_editor = document != nullptr;

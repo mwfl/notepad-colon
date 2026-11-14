@@ -471,6 +471,50 @@ void MainWindow::RunSelfTest() noexcept {
             static_cast<void>(workspace_catalog_.RemoveRoot(folder));
         }
         if (result == 0) {
+            // Another program rewrites an open, unmodified file: the document
+            // reloads, remembers the old text, and each change can be rejected.
+            const auto review_file = test_workspace / L"review.txt";
+            const std::wstring before = L"one\r\ntwo\r\nthree\r\n";
+            const std::wstring after = L"one\r\nTWO\r\nthree\r\nfour\r\n";
+            if (!mwfl::WriteTextFileAtomic(review_file, before, mwfl::TextEncoding::utf8).Succeeded() ||
+                !OpenPath(review_file)) result = 101;
+            const auto review_id = workspace_.GetActiveId();
+            const auto reload = [&](const std::wstring& text) {
+                return mwfl::WriteTextFileAtomic(review_file, text, mwfl::TextEncoding::utf8).Succeeded() &&
+                       (CheckExternalChanges(true), true);
+            };
+            auto* review = result == 0 && review_id ? FindDocument(*review_id) : nullptr;
+            if (result == 0) {
+                if (!review) result = 110;
+                else if (!reload(after)) result = 111;
+                else if (review->editor->GetText() != after) result = 112;
+                else if (review->review_base != before) result = 113;
+                else if (PendingReviewCount() == 0) result = 114;
+                else if ((review->editor->Send(SCI_MARKERGET, 1) & (1 << kReviewMarker)) == 0) result = 115;
+                else if ((review->editor->Send(SCI_MARKERGET, 0) & (1 << kReviewMarker)) != 0) result = 116;
+            }
+            // A second external edit is reviewed against the same original text.
+            const std::wstring later = L"one\r\nTWO\r\nthree\r\nfour\r\nfive\r\n";
+            if (result == 0 && (!reload(later) || review->review_base != before)) result = 103;
+            // Reject the first change, keep the appended lines.
+            if (result == 0 && (!FinishReview(*review, {true, false}) ||
+                review->editor->GetText() != L"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n" ||
+                review->review_base ||
+                review->editor->Send(SCI_MARKERNEXT, 0, 1 << kReviewMarker) != -1)) result = 104;
+            const auto* review_metadata = review_id ? workspace_.Find(*review_id) : nullptr;
+            if (result == 0 && (!review_metadata || !review_metadata->dirty)) result = 105;
+            // Once the tool undoes its own edit there is nothing left to review.
+            if (result == 0) {
+                review->editor->SetSavePoint();
+                workspace_.SetDirty(*review_id, false);
+                review->file_state = notepad_colon::CaptureFileState(review_file);
+                const auto current = review->editor->GetText().value_or(L"");
+                if (!reload(before) || !review->review_base || !reload(current) ||
+                    review->review_base) result = 106;
+            }
+            if (review_id) { workspace_.Activate(*review_id); static_cast<void>(CloseActive(true)); }
+        }
+        if (result == 0) {
             // Replace in Files: disk files are rewritten, open documents are
             // changed in the editor and stay unsaved.
             const auto open_file = test_workspace / L"src" / L"open.txt";

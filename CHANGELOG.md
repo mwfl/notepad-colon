@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add Review External Changes (F8). When another program, such as a coding
+  agent, rewrites an open file, the editor still reloads it but now keeps the
+  previous text, marks the changed lines, and lets each change be kept or
+  rejected side by side. Nothing is sent anywhere: the review compares two
+  local texts.
+- Compare long files that differ in a small region without building a table
+  for the whole file.
+
 ## 1.3.0 - 2026-11-14
 
 - Add built-in syntax highlighting for more than 60 languages (was 19),
