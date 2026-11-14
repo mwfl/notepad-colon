@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.0 - 2026-11-14
+
 - Add built-in syntax highlighting for more than 60 languages (was 19),
   driven by one language table with extensions, file names and comment
   prefixes. `CMakeLists.txt`, `Dockerfile` and `Makefile` are now recognised
