@@ -33,6 +33,9 @@ void SplitDelimitedLine(std::string_view line, char delimiter, std::vector<Delim
 std::optional<std::size_t> DelimitedFieldAt(std::string_view line, char delimiter,
                                             std::size_t offset);
 
+// The text of a field without its surrounding quotes and with "" unescaped.
+std::string UnquoteDelimitedField(std::string_view field);
+
 // ---- Line filter ----------------------------------------------------------
 
 struct LineFilterOptions {
@@ -71,6 +74,47 @@ LineFilterResult FilterLines(std::string_view text, std::string_view query,
 
 // "    12: text" rows, the line number right-aligned to the widest one.
 std::string FormatFilteredLines(const LineFilterResult& result);
+
+// The source line number at the start of a row written by FormatFilteredLines.
+std::optional<std::uint64_t> FilteredLineNumber(std::string_view row) noexcept;
+
+// ---- Column tools ---------------------------------------------------------
+
+struct ColumnExtractOptions {
+    bool unquote = true;                              // Strip quotes from quoted fields.
+    std::uint64_t maximum_rows = 2000000;
+    std::size_t maximum_bytes = 32u * 1024 * 1024;    // Of extracted text.
+    std::size_t maximum_line_bytes = 1024 * 1024;     // Longer rows are skipped.
+};
+
+struct ColumnExtractResult {
+    std::string text;              // One value per line, "\r\n" separated.
+    std::uint64_t rows = 0;        // Rows that had the column.
+    std::uint64_t missing = 0;     // Rows that were too short or too long to read.
+    bool truncated = false;
+    bool cancelled = false;
+};
+
+// Copies one column (zero-based) of delimited rows, streaming the source like
+// FilterLines. A quoted field that contains a line break is not supported: its
+// physical lines are treated as separate rows.
+ColumnExtractResult ExtractColumn(const ChunkReader& read, std::uint64_t size, char delimiter,
+                                  std::size_t column, const ColumnExtractOptions& options = {},
+                                  std::stop_token stop = {});
+ColumnExtractResult ExtractColumn(std::string_view text, char delimiter, std::size_t column,
+                                  const ColumnExtractOptions& options = {}, std::stop_token stop = {});
+
+enum class HeaderRow { detect, present, absent };
+
+// True when the first row looks like column titles: none of its fields is a
+// number while some field of a later row is.
+bool HasHeaderRow(std::string_view text, char delimiter);
+
+// Sorts delimited rows by one column (zero-based). Values that are numbers
+// compare as numbers and sort before text; equal rows keep their order. A
+// header row stays first. Line endings and a missing final line break are kept.
+std::string SortDelimitedRows(std::string_view text, char delimiter, std::size_t column,
+                              bool descending, HeaderRow header = HeaderRow::detect);
 
 // ---- Highlight rules ------------------------------------------------------
 

@@ -359,6 +359,7 @@ void MainWindow::CancelFolderSearch() {
     search_operations_.Begin();
     replace_operations_.Begin();
     filter_operations_.Begin();
+    extract_operations_.Begin();
     if (auto* command = commands_.Find(kCancelSearch)) {
         command->SetEnabled(false);
         menu_.UpdateCommand(*command);

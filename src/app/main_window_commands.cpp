@@ -228,6 +228,11 @@ void MainWindow::BuildCommands() {
         }).SetShortcut({FVIRTKEY | FCONTROL, 'J'}));
     commands_
         .Add(mwfl::Command(kRainbowColumns, L"Rainbow Columns (CSV / TSV)", [this] { ToggleRainbowColumns(); }))
+        .Add(mwfl::Command(kExtractColumn, L"Extract Column to New Tab", [this] { StartColumnExtract(); }))
+        .Add(mwfl::Command(kSortColumnAscending, L"Sort Rows by Column (Ascending)", [this] { SortByColumn(false); }))
+        .Add(mwfl::Command(kSortColumnDescending, L"Sort Rows by Column (Descending)", [this] { SortByColumn(true); }))
+        .Add(mwfl::Command(kGoToSourceLine, L"Go to Source Line of Filter Result", [this] { GoToFilterSource(); })
+                 .SetShortcut({FVIRTKEY, VK_F4}))
         .Add(mwfl::Command(kFilterLines, L"Filter Lines...", [this] { ShowFilterLines(); })
                  .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'G'}))
         .Add(mwfl::Command(kHighlightLines, L"Highlight Log Lines", [this] { ToggleHighlightLines(); }))
@@ -430,7 +435,8 @@ void MainWindow::BuildMenu() {
     for (const auto id : {kToggleFindBar, kToggleWorkspace, kToggleResults,
                           kSplitView, kRotateSplit, kFocusOtherView, kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
                           kRectangular, kToggleFold, kToggleBookmark, kNextBookmark,
-                          kFollowTail, kRainbowColumns, kFilterLines, kHighlightLines,
+                          kFollowTail, kRainbowColumns, kExtractColumn, kSortColumnAscending,
+                          kSortColumnDescending, kFilterLines, kGoToSourceLine, kHighlightLines,
                           kHighlightRules, kRefreshGitChanges})
         mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
     for (const auto id : {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,

@@ -108,6 +108,9 @@ void MainWindow::ShowChangeReview(EditorDocument& document) {
     const auto hunks = notepad_colon::GroupChangeHunks(comparison);
     if (hunks.empty()) { ClearReview(document); SyncPresentation(Tr(L"Review finished: all changes kept")); return; }
     std::vector<bool> rejected(hunks.size(), false);
+    // Documents can be opened while the dialog is up, which moves them in memory.
+    const auto document_id = document.id;
+    const auto language = document.language;
     std::size_t current = 0;
     bool apply = false;
 
@@ -172,7 +175,7 @@ void MainWindow::ShowChangeReview(EditorDocument& document) {
                 for (auto* editor : {&left, &right}) {
                     editor->ConfigureCodeEditing();
                     notepad_colon::ApplyPreferences(*editor, preferences_, dark);
-                    static_cast<void>(notepad_colon::ConfigureLanguage(*editor, lexilla_, document.language, dark));
+                    static_cast<void>(notepad_colon::ConfigureLanguage(*editor, lexilla_, language, dark));
                     // Folding would hide parts of a change; the fold margin stays closed.
                     editor->Send(SCI_SETPROPERTY, reinterpret_cast<WPARAM>("fold"), reinterpret_cast<LPARAM>("0"));
                     editor->Send(SCI_SETMARGINWIDTHN, 1, 0);
@@ -231,7 +234,15 @@ void MainWindow::ShowChangeReview(EditorDocument& document) {
             }}});
     pointer = &dialog;
     static_cast<void>(dialog.ShowModal());
-    if (apply) static_cast<void>(FinishReview(document, rejected));
+    auto* reviewed = FindDocument(document_id);
+    if (!reviewed) return;
+    // The decisions belong to the text that was shown; it may have been
+    // reloaded again while the dialog was open.
+    if (apply && reviewed->editor->GetText() != after_text) {
+        status_.SetText(Tr(L"The file changed again during the review; review it once more"));
+        return;
+    }
+    if (apply) static_cast<void>(FinishReview(*reviewed, rejected));
     else status_.SetText(Tr(L"Review postponed; the changed lines stay marked"));
 }
 

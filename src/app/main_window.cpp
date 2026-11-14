@@ -190,6 +190,12 @@ mwfl::EventResult MainWindow::OnNotify(const mwfl::NotifyEvent& event) {
     if (!document) return mwfl::EventResult::Propagate();
     // Markers and indicators applied by DecorateVisibleLines are not edits.
     if (decorating_) return mwfl::EventResult::Propagate();
+    // Double-clicking a row of a line-filter result opens the line it came from.
+    if (event.header.code == SCN_DOUBLECLICK && document->filter_link &&
+        document->editor->GetHwnd() == event.header.hwndFrom) {
+        GoToFilterSource();
+        return mwfl::EventResult::Handled();
+    }
     if (document->split_editor && document->split_editor->GetHwnd() == event.header.hwndFrom) {
         // The clone shares the document: content changes are handled once, from
         // the primary view. Only view-local feedback is handled here.
@@ -279,6 +285,10 @@ mwfl::EventResult MainWindow::OnMessage(const mwfl::WindowMessage& event) {
     }
     if (event.id == kFilterCompleteMessage) {
         CompleteLineFilter();
+        return mwfl::EventResult::Handled();
+    }
+    if (event.id == kExtractCompleteMessage) {
+        CompleteColumnExtract();
         return mwfl::EventResult::Handled();
     }
     if (event.id == kWorkspaceCompleteMessage) {

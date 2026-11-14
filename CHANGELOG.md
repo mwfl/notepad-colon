@@ -7,6 +7,11 @@
   previous text, marks the changed lines, and lets each change be kept or
   rejected side by side. Nothing is sent anywhere: the review compares two
   local texts.
+- Add column tools for CSV/TSV data: **Extract Column to New Tab** (streamed,
+  so it also works on multi-gigabyte files) and **Sort Rows by Column**, which
+  compares numbers as numbers and keeps a header row first.
+- Line-filter results lead back to their source: double-click a row or press
+  F4 to open the line it came from, including in large files.
 - Compare long files that differ in a small region without building a table
   for the whole file.
 

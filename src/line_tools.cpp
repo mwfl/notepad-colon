@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <regex>
 
 namespace notepad_colon {
@@ -108,6 +109,202 @@ std::optional<std::size_t> DelimitedFieldAt(std::string_view line, char delimite
     for (std::size_t index = 0; index < fields.size(); ++index)
         if (offset <= fields[index].start + fields[index].length) return index;
     return fields.empty() ? std::nullopt : std::optional{fields.size() - 1};
+}
+
+std::string UnquoteDelimitedField(std::string_view field) {
+    field = Trim(field);
+    if (field.size() < 2 || field.front() != '"' || field.back() != '"') return std::string{field};
+    std::string value;
+    value.reserve(field.size() - 2);
+    for (std::size_t index = 1; index + 1 < field.size(); ++index) {
+        value += field[index];
+        if (field[index] == '"' && index + 2 < field.size() && field[index + 1] == '"') ++index;
+    }
+    return value;
+}
+
+namespace {
+// Calls `row(line)` for every line of a chunked source; `line` has no
+// line ending. A line longer than `maximum_line_bytes` is reported truncated
+// to that length plus one byte, so the callee can tell it was too long.
+template <typename Row>
+bool ForEachLine(const ChunkReader& read, std::uint64_t size, std::size_t maximum_line_bytes,
+                 std::stop_token stop, Row&& row) {
+    std::string carry;
+    bool carrying = false;
+    const auto room = [&] { return maximum_line_bytes + 1 - (std::min)(carry.size(), maximum_line_bytes + 1); };
+    const auto emit = [&](std::string_view line) {
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        return row(line);
+    };
+    for (std::uint64_t offset = 0; offset < size;) {
+        if (stop.stop_requested()) return false;
+        const auto wanted = static_cast<std::size_t>((std::min<std::uint64_t>)(kChunkBytes, size - offset));
+        const auto chunk = read(offset, wanted);
+        if (chunk.empty()) break;
+        const std::string_view bytes{reinterpret_cast<const char*>(chunk.data()), chunk.size()};
+        std::size_t start = 0;
+        while (start < bytes.size()) {
+            const auto end = bytes.find('\n', start);
+            if (end == std::string_view::npos) break;
+            if (!carrying) {
+                if (!emit(bytes.substr(start, (std::min)(end - start, maximum_line_bytes + 1)))) return true;
+            } else {
+                carry.append(bytes.substr(start, (std::min)(end - start, room())));
+                const bool keep_going = emit(carry);
+                carry.clear();
+                carrying = false;
+                if (!keep_going) return true;
+            }
+            start = end + 1;
+        }
+        if (start < bytes.size()) {
+            const auto rest = bytes.substr(start);
+            carry.append(rest.substr(0, (std::min)(rest.size(), room())));
+            carrying = true;
+        }
+        offset += chunk.size();
+        if (chunk.size() < wanted) break;
+    }
+    if (carrying) emit(carry);
+    return true;
+}
+
+std::optional<double> NumberValue(std::string_view value) noexcept {
+    value = Trim(value);
+    if (value.empty()) return std::nullopt;
+    if (value.front() == '+') value.remove_prefix(1);
+    double number = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) return std::nullopt;
+    return number;
+}
+
+std::string FieldValue(std::string_view line, char delimiter, std::size_t column,
+                       std::vector<DelimitedField>& fields) {
+    SplitDelimitedLine(line, delimiter, fields);
+    if (column >= fields.size()) return {};
+    return UnquoteDelimitedField(line.substr(fields[column].start, fields[column].length));
+}
+}  // namespace
+
+ColumnExtractResult ExtractColumn(const ChunkReader& read, std::uint64_t size, char delimiter,
+                                  std::size_t column, const ColumnExtractOptions& options,
+                                  std::stop_token stop) {
+    ColumnExtractResult result;
+    std::vector<DelimitedField> fields;
+    const bool finished = ForEachLine(read, size, options.maximum_line_bytes, stop,
+        [&](std::string_view line) {
+            if (line.size() > options.maximum_line_bytes) { ++result.missing; return true; }
+            SplitDelimitedLine(line, delimiter, fields);
+            if (column >= fields.size()) {
+                // A blank line is not a row; a short row is reported.
+                if (!line.empty()) ++result.missing;
+                return true;
+            }
+            const auto raw = line.substr(fields[column].start, fields[column].length);
+            const auto value = options.unquote ? UnquoteDelimitedField(raw) : std::string{raw};
+            if (result.rows >= options.maximum_rows ||
+                result.text.size() + value.size() + 2 > options.maximum_bytes) {
+                result.truncated = true;
+                return false;
+            }
+            result.text += value;
+            result.text += "\r\n";
+            ++result.rows;
+            return true;
+        });
+    result.cancelled = !finished;
+    return result;
+}
+
+ColumnExtractResult ExtractColumn(std::string_view text, char delimiter, std::size_t column,
+                                  const ColumnExtractOptions& options, std::stop_token stop) {
+    const ChunkReader read = [text](std::uint64_t offset, std::size_t length) {
+        const auto start = static_cast<std::size_t>((std::min<std::uint64_t>)(offset, text.size()));
+        const auto part = text.substr(start, length);
+        return std::vector<std::uint8_t>{part.begin(), part.end()};
+    };
+    return ExtractColumn(read, text.size(), delimiter, column, options, stop);
+}
+
+namespace {
+struct Row { std::string_view text; std::string_view ending; };
+
+std::vector<Row> SplitRows(std::string_view text) {
+    std::vector<Row> rows;
+    for (std::size_t start = 0; start < text.size();) {
+        const auto end = text.find('\n', start);
+        if (end == std::string_view::npos) { rows.push_back({text.substr(start), {}}); break; }
+        const bool crlf = end > start && text[end - 1] == '\r';
+        rows.push_back({text.substr(start, end - start - (crlf ? 1 : 0)),
+                        text.substr(end - (crlf ? 1 : 0), crlf ? 2 : 1)});
+        start = end + 1;
+    }
+    return rows;
+}
+
+bool AnyNumber(std::string_view line, char delimiter, std::vector<DelimitedField>& fields) {
+    SplitDelimitedLine(line, delimiter, fields);
+    for (const auto& field : fields)
+        if (NumberValue(UnquoteDelimitedField(line.substr(field.start, field.length)))) return true;
+    return false;
+}
+
+bool HasHeader(const std::vector<Row>& rows, char delimiter) {
+    std::vector<DelimitedField> fields;
+    if (rows.size() < 2 || rows.front().text.empty() || AnyNumber(rows.front().text, delimiter, fields))
+        return false;
+    for (std::size_t index = 1; index < rows.size() && index <= 64; ++index)
+        if (AnyNumber(rows[index].text, delimiter, fields)) return true;
+    return false;
+}
+}  // namespace
+
+bool HasHeaderRow(std::string_view text, char delimiter) {
+    return HasHeader(SplitRows(text), delimiter);
+}
+
+std::string SortDelimitedRows(std::string_view text, char delimiter, std::size_t column,
+                              bool descending, HeaderRow header) {
+    auto rows = SplitRows(text);
+    if (rows.size() < 2) return std::string{text};
+    const bool unterminated = rows.back().ending.empty();
+    std::string_view ending = "\r\n";
+    for (const auto& row : rows) if (!row.ending.empty()) { ending = row.ending; break; }
+    const bool keep_first = header == HeaderRow::present ||
+        (header == HeaderRow::detect && HasHeader(rows, delimiter));
+
+    struct Key { std::optional<double> number; std::string value; std::size_t row; };
+    std::vector<Key> keys;
+    std::vector<DelimitedField> fields;
+    keys.reserve(rows.size());
+    for (std::size_t index = keep_first ? 1 : 0; index < rows.size(); ++index) {
+        auto value = FieldValue(rows[index].text, delimiter, column, fields);
+        const auto number = NumberValue(value);
+        keys.push_back({number, std::move(value), index});
+    }
+    const auto less = [](const Key& left, const Key& right) {
+        if (left.number && right.number) return *left.number < *right.number;
+        if (left.number.has_value() != right.number.has_value()) return left.number.has_value();
+        return left.value < right.value;
+    };
+    std::ranges::stable_sort(keys, [&](const Key& left, const Key& right) {
+        return descending ? less(right, left) : less(left, right);
+    });
+
+    std::string sorted;
+    sorted.reserve(text.size() + ending.size());
+    const auto append = [&](const Row& row, bool last) {
+        sorted += row.text;
+        // The row that had no line break may no longer be last: every row gets
+        // one except the new last row of a text that did not end with one.
+        if (!last || !unterminated) sorted += row.ending.empty() ? ending : row.ending;
+    };
+    if (keep_first) append(rows.front(), keys.empty());
+    for (std::size_t index = 0; index < keys.size(); ++index)
+        append(rows[keys[index].row], index + 1 == keys.size());
+    return sorted;
 }
 
 LineFilterResult FilterLines(const ChunkReader& read, std::uint64_t size, std::string_view query,
@@ -218,6 +415,15 @@ std::string FormatFilteredLines(const LineFilterResult& result) {
         output += "\r\n";
     }
     return output;
+}
+
+std::optional<std::uint64_t> FilteredLineNumber(std::string_view row) noexcept {
+    while (!row.empty() && row.front() == ' ') row.remove_prefix(1);
+    std::uint64_t number = 0;
+    const auto parsed = std::from_chars(row.data(), row.data() + row.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr == row.data() || number == 0) return std::nullopt;
+    if (parsed.ptr == row.data() + row.size() || *parsed.ptr != ':') return std::nullopt;
+    return number;
 }
 
 std::string_view HighlightColorName(HighlightColor color) noexcept {

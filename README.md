@@ -93,12 +93,17 @@ code indexing out of the process.
 - **Filter Lines** (`Ctrl+Shift+G`) collects the lines that match — or do not
   match — a text or regular expression into a new tab with their original line
   numbers. Large files are streamed from disk in fixed-size chunks.
+  Double-click a result row or press `F4` to jump back to that line in the
+  source, even in a multi-gigabyte file.
 - **Highlight Log Lines** colours whole lines by rule (`red=ERROR|FATAL;
   orange=WARN; gray=DEBUG|TRACE` by default, editable). It turns on
   automatically for `.log` files and when following a growing file.
 - **Rainbow Columns** colours each field of CSV/TSV data and shows the field
   number of the caret. Only visible lines are decorated, so it costs the same
   in a 4 GiB file as in a small one.
+- **Extract Column to New Tab** copies the column under the caret, streaming
+  large files the same way. **Sort Rows by Column** compares numbers as
+  numbers and keeps a header row first.
 
 See [Large-file testing](docs/large-file-testing.md) for the reproducible 100 MiB
 and 4 GiB verification workflow.

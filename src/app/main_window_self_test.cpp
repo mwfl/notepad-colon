@@ -425,6 +425,20 @@ void MainWindow::RunSelfTest() noexcept {
                 !filtered_metadata->title.starts_with(L"Filter: error") ||
                 filtered->editor->GetText() != std::optional<std::wstring>{L"2: ERROR bad\r\n"} ||
                 !filtered->highlight_lines)) result = 98;
+            if (result == 0) {
+                // A result row leads back to the line it came from.
+                const auto filtered_id = filtered->id;
+                GoToFilterSource();
+                const auto* source = ActiveDocument();
+                // Opening the result tab may have moved the documents: compare editors.
+                if (!source || source->editor.get() != &view ||
+                    view.Send(SCI_LINEFROMPOSITION, view.Send(SCI_GETCURRENTPOS)) != 1) result = 120;
+                // A tab that is not a filter result refuses politely.
+                GoToFilterSource();
+                if (result == 0 && (!ActiveDocument() || ActiveDocument()->editor.get() != &view)) result = 125;
+                workspace_.Activate(filtered_id);
+                SynchronizeTabs(false);
+            }
             if (workspace_.GetCount() == documents_before + 1 && !CloseActive(true)) result = 99;
             // A filter with no matches opens nothing.
             workspace_.Activate(table->id);
@@ -435,6 +449,40 @@ void MainWindow::RunSelfTest() noexcept {
             if (result == 0 && workspace_.GetCount() != documents_before) result = 99;
             workspace_.Activate(table->id);
             SynchronizeTabs(false);
+            if (result == 0) {
+                // Column tools work on the column under the caret, with or
+                // without rainbow columns switched on.
+                view.SetText(L"name,score\r\nbeta,10\r\nalpha,9\r\ngamma,100\r\n");
+                view.Send(SCI_GOTOPOS, 6);  // inside "score"
+                SortByColumn(false);
+                if (view.GetText() != std::optional<std::wstring>{
+                        L"name,score\r\nalpha,9\r\nbeta,10\r\ngamma,100\r\n"}) result = 121;
+                view.Send(SCI_GOTOPOS, 6);
+                SortByColumn(true);
+                if (result == 0 && view.GetText() != std::optional<std::wstring>{
+                        L"name,score\r\ngamma,100\r\nbeta,10\r\nalpha,9\r\n"}) result = 122;
+                view.Send(SCI_GOTOPOS, 1);  // inside "name"
+                StartColumnExtract();
+                for (auto& worker : search_workers_)
+                    if (worker.thread.joinable()) worker.thread.join();
+                CompleteColumnExtract();
+                const auto* column = ActiveDocument();
+                const auto* column_metadata = column ? workspace_.Find(column->id) : nullptr;
+                if (result == 0 && (workspace_.GetCount() != documents_before + 1 || !column_metadata ||
+                    !column_metadata->title.starts_with(L"Column 1") ||
+                    column->editor->GetText() != std::optional<std::wstring>{
+                        L"name\r\ngamma\r\nbeta\r\nalpha\r\n"})) result = 123;
+                if (workspace_.GetCount() == documents_before + 1 && !CloseActive(true)) result = 99;
+                if (const auto* owner = FindByHwnd(view.GetHwnd())) workspace_.Activate(owner->id);
+                SynchronizeTabs(false);
+                // Prose has no columns: nothing is changed and nothing opens.
+                view.SetText(L"Just a sentence, with one comma.\r\nAnd a second line.\r\n");
+                SortByColumn(false);
+                StartColumnExtract();
+                if (result == 0 && (workspace_.GetCount() != documents_before ||
+                    view.GetText() != std::optional<std::wstring>{
+                        L"Just a sentence, with one comma.\r\nAnd a second line.\r\n"})) result = 124;
+            }
             if (!CloseActive(true)) result = 99;
         }
         const auto test_workspace = std::filesystem::temp_directory_path() /

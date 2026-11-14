@@ -706,6 +706,67 @@ void TestChangeReview() {
           "oversized hunk merges both ways");
 }
 
+void TestColumnTools() {
+    using notepad_colon::ExtractColumn;
+    using notepad_colon::HeaderRow;
+    using notepad_colon::SortDelimitedRows;
+    Check(notepad_colon::UnquoteDelimitedField("\"a \"\"quoted\"\" b\"") == "a \"quoted\" b",
+          "quoted field unescaped");
+    Check(notepad_colon::UnquoteDelimitedField(" plain ") == "plain", "plain field trimmed");
+
+    const std::string table =
+        "id,name,city\r\n1,alpha,\"Paris, FR\"\r\n2,beta,Rome\r\n\r\nshort\r\n3,gamma,\"say \"\"hi\"\"\"\r\n";
+    const auto city = ExtractColumn(table, ',', 2);
+    Check(city.text == "city\r\nParis, FR\r\nRome\r\nsay \"hi\"\r\n" && city.rows == 4 &&
+              city.missing == 1 && !city.truncated, "column extracted and unquoted");
+    Check(ExtractColumn(table, ',', 2, {.unquote = false}).text ==
+              "city\r\n\"Paris, FR\"\r\nRome\r\n\"say \"\"hi\"\"\"\r\n", "column extracted verbatim");
+    Check(ExtractColumn(table, ',', 9).rows == 0, "column past the end is empty");
+    const auto limited = ExtractColumn(table, ',', 0, {.maximum_rows = 2});
+    Check(limited.truncated && limited.text == "id\r\n1\r\n", "row limit stops extraction");
+    Check(ExtractColumn("a\tb\nc\td", '\t', 1).text == "b\r\nd\r\n", "last row without a line break");
+
+    // Rows that span chunk boundaries (4 MiB chunks) must come out whole.
+    std::string big;
+    std::string expected;
+    for (int row = 0; row < 300000; ++row) {
+        const auto number = std::to_string(row);
+        big += "row," + number + ",padding-padding-padding\n";
+        expected += number + "\r\n";
+    }
+    const auto streamed = ExtractColumn(big, ',', 1);
+    Check(streamed.rows == 300000 && streamed.text == expected, "extraction across chunk boundaries");
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    Check(ExtractColumn(big, ',', 1, {}, cancelled.get_token()).cancelled, "extraction can be cancelled");
+
+    const std::string scores = "name,score\r\nbeta,10\r\nalpha,9\r\ngamma,100\r\ndelta,n/a\r\n";
+    Check(notepad_colon::HasHeaderRow(scores, ','), "header row detected");
+    Check(!notepad_colon::HasHeaderRow("1,2\r\n3,4\r\n", ','), "numeric first row is data");
+    Check(!notepad_colon::HasHeaderRow("a,b\r\nc,d\r\n", ','), "all-text table has no detectable header");
+    Check(SortDelimitedRows(scores, ',', 1, false) ==
+              "name,score\r\nalpha,9\r\nbeta,10\r\ngamma,100\r\ndelta,n/a\r\n",
+          "numbers sort numerically, before text, under the header");
+    Check(SortDelimitedRows(scores, ',', 1, true) ==
+              "name,score\r\ndelta,n/a\r\ngamma,100\r\nbeta,10\r\nalpha,9\r\n", "descending order");
+    Check(SortDelimitedRows(scores, ',', 0, false) ==
+              "name,score\r\nalpha,9\r\nbeta,10\r\ndelta,n/a\r\ngamma,100\r\n", "text column");
+    Check(SortDelimitedRows(scores, ',', 0, false, HeaderRow::absent) ==
+              "alpha,9\r\nbeta,10\r\ndelta,n/a\r\ngamma,100\r\nname,score\r\n", "header treated as data on request");
+    Check(SortDelimitedRows("b,2\na,1", ',', 0, false) == "a,1\nb,2",
+          "missing final line break stays missing");
+    Check(SortDelimitedRows("x,1\ny,1\nz,0\n", ',', 1, false) == "z,0\nx,1\ny,1\n", "equal keys keep their order");
+    Check(SortDelimitedRows("only\n", ',', 0, false) == "only\n", "single row unchanged");
+    Check(SortDelimitedRows("k,v\n\"b, x\",2\n\"a, y\",1\n", ',', 0, false, HeaderRow::present) ==
+              "k,v\n\"a, y\",1\n\"b, x\",2\n", "quoted fields sort by their value");
+
+    using notepad_colon::FilteredLineNumber;
+    Check(FilteredLineNumber("   12: text") == std::optional<std::uint64_t>{12}, "filtered row number");
+    Check(FilteredLineNumber("7: 9: nested") == std::optional<std::uint64_t>{7}, "first number wins");
+    Check(!FilteredLineNumber("text 12: no") && !FilteredLineNumber("12 no colon") &&
+              !FilteredLineNumber("0: zero") && !FilteredLineNumber(""), "rows without a line number");
+}
+
 int main() {
     TestLanguages();
     TestEncodingDetection();
@@ -717,6 +778,7 @@ int main() {
     TestLineFilter();
     TestHighlightRules();
     TestChangeReview();
+    TestColumnTools();
     if (failures == 0) std::cout << "feature tests passed\n";
     return failures == 0 ? 0 : 1;
 }

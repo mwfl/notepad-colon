@@ -125,6 +125,10 @@ constexpr mwfl::ControlId kFilterLines{465};
 constexpr mwfl::ControlId kHighlightLines{466};
 constexpr mwfl::ControlId kHighlightRules{467};
 constexpr mwfl::ControlId kReviewChanges{468};
+constexpr mwfl::ControlId kGoToSourceLine{469};
+constexpr mwfl::ControlId kExtractColumn{470};
+constexpr mwfl::ControlId kSortColumnAscending{471};
+constexpr mwfl::ControlId kSortColumnDescending{472};
 // Margin marker on lines another program changed and nobody reviewed yet.
 constexpr int kReviewMarker = 4;
 constexpr mwfl::ControlId kRecentBase{300};
@@ -247,6 +251,7 @@ constexpr UINT kSearchCompleteMessage = WM_APP + 0x241;
 constexpr UINT kWorkspaceCompleteMessage = WM_APP + 0x242;
 constexpr UINT kReplaceCompleteMessage = WM_APP + 0x243;
 constexpr UINT kFilterCompleteMessage = WM_APP + 0x244;
+constexpr UINT kExtractCompleteMessage = WM_APP + 0x245;
 constexpr mwfl::TimerId kMonitorTimer{1};
 constexpr mwfl::TimerId kActivationTestTimer{2};
 constexpr mwfl::TimerId kWorkspaceFilterTimer{3};
@@ -273,6 +278,13 @@ inline std::vector<std::wstring> SplitGlobs(std::wstring_view value) {
 }
 constexpr mwfl::ControlId kTabs{140};
 constexpr UINT kSelfTestMessage = WM_APP + 0x240;
+
+// Where the rows of a line-filter result came from.
+struct FilterLink {
+    mwfl::DocumentId source{};
+    std::filesystem::path path;                                  // Empty for an unsaved source.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> lines;  // Line number, byte offset; ascending.
+};
 
 struct EditorDocument {
     mwfl::DocumentId id{};
@@ -311,6 +323,8 @@ struct EditorDocument {
         std::uint64_t rules = 0;
     };
     Decoration decorations[2];     // Primary view, split view.
+    // Set on a line-filter result tab so a row can lead back to its source line.
+    std::shared_ptr<const FilterLink> filter_link;
     // Text before the first external change that has not been reviewed yet.
     std::optional<std::wstring> review_base;
     // Second view onto the same Scintilla document (declared last so it is
@@ -659,6 +673,14 @@ private:
     void StartLineFilter(std::wstring query, notepad_colon::LineFilterOptions options);
     void CompleteLineFilter();
     std::wstring DelimitedFieldStatus(const EditorDocument& document) const;
+    // Zero-based field of the caret's row, for the given delimiter.
+    std::optional<std::size_t> CaretField(const EditorDocument& document, char delimiter) const;
+    // The document's delimiter, detecting it when rainbow columns are off; 0 if none.
+    char DocumentDelimiter(EditorDocument& document) const;
+    void GoToFilterSource();
+    void StartColumnExtract();
+    void CompleteColumnExtract();
+    void SortByColumn(bool descending);
 
     void UpdateLargeBuffer(EditorDocument& document, const SCNotification& notification) noexcept;
 
@@ -955,6 +977,11 @@ private:
     notepad_colon::LatestOperation<notepad_colon::LineFilterResult> filter_operations_;
     std::wstring filter_title_;
     bool filter_source_highlighted_ = false;
+    mwfl::DocumentId filter_source_{};
+    std::filesystem::path filter_source_path_;
+    notepad_colon::LatestOperation<notepad_colon::ColumnExtractResult> extract_operations_;
+    std::wstring extract_title_;
+    std::size_t extract_column_ = 0;
     std::vector<notepad_colon::HighlightRule> highlight_rules_ = notepad_colon::DefaultHighlightRules();
     std::uint64_t highlight_rules_revision_ = 1;
     bool decorating_ = false;

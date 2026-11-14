@@ -173,20 +173,190 @@ void MainWindow::ToggleHighlightLines() {
                                               : Tr(L"Line highlighting off"));
 }
 
-std::wstring MainWindow::DelimitedFieldStatus(const EditorDocument& document) const {
-    if (document.delimiter == 0) return {};
-    auto& view = *document.editor;
-    const auto caret = view.Send(SCI_GETCURRENTPOS);
-    const auto line = view.Send(SCI_LINEFROMPOSITION, caret);
+namespace {
+// The caret's line as UTF-8 without its line ending; empty when it is too long.
+std::string CaretLine(mwfl::ScintillaEditor& view, LRESULT* line_start = nullptr) {
+    const auto line = view.Send(SCI_LINEFROMPOSITION, view.Send(SCI_GETCURRENTPOS));
+    if (line_start) *line_start = view.Send(SCI_POSITIONFROMLINE, line);
     const auto length = view.Send(SCI_LINELENGTH, line);
     if (length <= 0 || length > kMaximumDecoratedLineBytes) return {};
     std::string text(static_cast<std::size_t>(length) + 1, '\0');
     view.Send(SCI_GETLINE, line, reinterpret_cast<LPARAM>(text.data()));
     text.resize(static_cast<std::size_t>(length));
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
-    const auto field = notepad_colon::DelimitedFieldAt(
-        text, document.delimiter, static_cast<std::size_t>(caret - view.Send(SCI_POSITIONFROMLINE, line)));
+    return text;
+}
+
+// Reads a file in the chunks the streaming line tools ask for.
+notepad_colon::ChunkReader FileChunkReader(std::ifstream& input) {
+    return [&input](std::uint64_t offset, std::size_t length) {
+        std::vector<std::uint8_t> bytes(length);
+        input.clear();
+        input.seekg(static_cast<std::streamoff>(offset));
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+        bytes.resize(static_cast<std::size_t>((std::max<std::streamsize>)(0, input.gcount())));
+        return bytes;
+    };
+}
+}  // namespace
+
+std::optional<std::size_t> MainWindow::CaretField(const EditorDocument& document, char delimiter) const {
+    if (delimiter == 0) return std::nullopt;
+    auto& view = *document.editor;
+    LRESULT line_start = 0;
+    const auto text = CaretLine(view, &line_start);
+    if (text.empty()) return std::nullopt;
+    return notepad_colon::DelimitedFieldAt(
+        text, delimiter, static_cast<std::size_t>(view.Send(SCI_GETCURRENTPOS) - line_start));
+}
+
+std::wstring MainWindow::DelimitedFieldStatus(const EditorDocument& document) const {
+    const auto field = CaretField(document, document.delimiter);
     return field ? Tr(L"Field ") + std::to_wstring(*field + 1) + L" | " : std::wstring{};
+}
+
+char MainWindow::DocumentDelimiter(EditorDocument& document) const {
+    return document.delimiter != 0 ? document.delimiter
+        : notepad_colon::DetectDelimiter(ViewSample(*document.editor, 64 * 1024));
+}
+
+void MainWindow::GoToFilterSource() {
+    auto* document = ActiveDocument();
+    if (!document || !document->filter_link) {
+        status_.SetText(Tr(L"This tab is not a line-filter result"));
+        return;
+    }
+    const auto number = notepad_colon::FilteredLineNumber(CaretLine(*document->editor));
+    if (!number) {
+        status_.SetText(Tr(L"This row has no source line number"));
+        return;
+    }
+    const auto link = document->filter_link;  // Activating another tab may invalidate `document`.
+    auto* source = FindDocument(link->source);
+    if (!source && !link->path.empty() && OpenPath(link->path)) source = ActiveDocument();
+    if (!source) {
+        status_.SetText(Tr(L"The filtered document is no longer open"));
+        return;
+    }
+    workspace_.Activate(source->id);
+    SynchronizeTabs(true);
+    if (source->large_buffer) {
+        // A large file shows one window at a time: load the one that starts at the line.
+        const auto found = std::ranges::lower_bound(link->lines, *number, {},
+            &std::pair<std::uint64_t, std::uint64_t>::first);
+        if (found == link->lines.end() || found->first != *number ||
+            !LoadLargeFileWindow(*source, found->second)) {
+            SyncPresentation(Tr(L"The source line could not be located"));
+            return;
+        }
+        source->editor->Send(SCI_GOTOPOS, 0);
+    } else {
+        notepad_colon::GoToLine(*source->editor, static_cast<std::size_t>(*number));
+    }
+    source->editor->Focus();
+    SyncPresentation(Tr(L"Source line ") + std::to_wstring(*number));
+}
+
+void MainWindow::StartColumnExtract() {
+    auto* document = ActiveDocument();
+    const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+    if (!document || !metadata) return;
+    const char delimiter = DocumentDelimiter(*document);
+    const auto column = CaretField(*document, delimiter);
+    if (delimiter == 0 || !column) {
+        status_.SetText(delimiter == 0
+            ? Tr(L"No consistent comma, tab, semicolon or pipe delimiter was found")
+            : Tr(L"Place the caret in the column to extract"));
+        return;
+    }
+    std::filesystem::path source;
+    std::uint64_t source_size = 0;
+    std::optional<std::string> text;
+    if (document->large_buffer) {
+        if (document->large_buffer->IsModified()) {
+            status_.SetText(Tr(L"Save the large file before extracting a column"));
+            return;
+        }
+        source = metadata->path;
+        source_size = document->large_buffer->Size();
+    } else {
+        text = EditorUtf8(*document->editor);
+        if (!text) return;
+    }
+    for (auto& worker : search_workers_) worker.thread.request_stop();
+    ReapCompletedWorkers(search_workers_);
+    const auto generation = extract_operations_.Begin();
+    extract_column_ = *column;
+    extract_title_ = Tr(L"Column ") + std::to_wstring(*column + 1) + L" — " + metadata->title;
+    if (auto* command = commands_.Find(kCancelSearch)) {
+        command->SetEnabled(true);
+        menu_.UpdateCommand(*command);
+    }
+    status_.SetText(Tr(L"Extracting column..."));
+    const HWND window = GetHwnd();
+    auto done = std::make_shared<std::atomic_bool>(false);
+    search_workers_.push_back({done, std::jthread(
+        [this, window, generation, done, delimiter, column = *column, source, source_size,
+         text = std::move(text)](std::stop_token stop) {
+            notepad_colon::ColumnExtractResult result;
+            if (text) {
+                result = notepad_colon::ExtractColumn(*text, delimiter, column, {}, stop);
+            } else {
+                std::ifstream input(source, std::ios::binary);
+                result = notepad_colon::ExtractColumn(FileChunkReader(input), source_size,
+                                                      delimiter, column, {}, stop);
+            }
+            if (extract_operations_.Publish(generation, std::move(result)))
+                ::PostMessageW(window, kExtractCompleteMessage, static_cast<WPARAM>(generation), 0);
+            done->store(true);
+        })});
+}
+
+void MainWindow::CompleteColumnExtract() {
+    auto result = extract_operations_.TakeCurrent();
+    if (!result) return;
+    if (auto* command = commands_.Find(kCancelSearch)) {
+        command->SetEnabled(false);
+        menu_.UpdateCommand(*command);
+    }
+    if (result->cancelled) { status_.SetText(Tr(L"Column extraction cancelled")); return; }
+    if (result->rows == 0) { status_.SetText(Tr(L"No row has that column")); return; }
+    const auto text = mwfl::FromUtf8(result->text);
+    if (!text) { status_.SetText(Tr(L"The column is not valid UTF-8")); return; }
+    NewDocument(*text, extract_title_);
+    status_.SetText(Tr(L"Extracted ") + std::to_wstring(result->rows) + Tr(L" value(s) from column ") +
+        std::to_wstring(extract_column_ + 1) +
+        (result->missing ? L" (" + std::to_wstring(result->missing) + Tr(L" row(s) without it)") : L"") +
+        (result->truncated ? Tr(L" (limit reached)") : L""));
+}
+
+void MainWindow::SortByColumn(bool descending) {
+    auto* document = ActiveDocument();
+    if (!document) return;
+    if (document->large_buffer || document->read_only) {
+        status_.SetText(Tr(L"Sorting by column needs an editable document that is fully loaded"));
+        return;
+    }
+    const char delimiter = DocumentDelimiter(*document);
+    const auto column = CaretField(*document, delimiter);
+    if (delimiter == 0 || !column) {
+        status_.SetText(delimiter == 0
+            ? Tr(L"No consistent comma, tab, semicolon or pipe delimiter was found")
+            : Tr(L"Place the caret in the column to sort by"));
+        return;
+    }
+    const auto text = EditorUtf8(*document->editor);
+    if (!text) return;
+    const bool header = notepad_colon::HasHeaderRow(*text, delimiter);
+    const auto sorted = notepad_colon::SortDelimitedRows(*text, delimiter, *column, descending);
+    if (sorted == *text) { status_.SetText(Tr(L"The rows are already in that order")); return; }
+    const auto wide = mwfl::FromUtf8(sorted);
+    if (!wide || !notepad_colon::ReplaceDocumentText(*document->editor, *wide, {0, 0})) {
+        status_.SetText(Tr(L"The rows could not be sorted"));
+        return;
+    }
+    SyncPresentation(Tr(L"Sorted by column ") + std::to_wstring(*column + 1) +
+        (header ? Tr(L"; the header row stayed first") : L""));
 }
 
 void MainWindow::ShowHighlightRules() {
@@ -320,6 +490,8 @@ void MainWindow::StartLineFilter(std::wstring query, notepad_colon::LineFilterOp
     ReapCompletedWorkers(search_workers_);
     const auto generation = filter_operations_.Begin();
     filter_title_ = Tr(L"Filter: ") + query + L" — " + metadata->title;
+    filter_source_ = document->id;
+    filter_source_path_ = metadata->path;
     filter_source_highlighted_ = document->highlight_lines;
     if (auto* command = commands_.Find(kCancelSearch)) {
         command->SetEnabled(true);
@@ -336,15 +508,7 @@ void MainWindow::StartLineFilter(std::wstring query, notepad_colon::LineFilterOp
                 result = notepad_colon::FilterLines(*text, needle, options, stop);
             } else {
                 std::ifstream input(source, std::ios::binary);
-                const notepad_colon::ChunkReader read = [&](std::uint64_t offset, std::size_t length) {
-                    std::vector<std::uint8_t> bytes(length);
-                    input.clear();
-                    input.seekg(static_cast<std::streamoff>(offset));
-                    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
-                    bytes.resize(static_cast<std::size_t>((std::max<std::streamsize>)(0, input.gcount())));
-                    return bytes;
-                };
-                result = notepad_colon::FilterLines(read, source_size, needle, options, stop);
+                result = notepad_colon::FilterLines(FileChunkReader(input), source_size, needle, options, stop);
             }
             if (filter_operations_.Publish(generation, std::move(result)))
                 ::PostMessageW(window, kFilterCompleteMessage, static_cast<WPARAM>(generation), 0);
@@ -371,9 +535,17 @@ void MainWindow::CompleteLineFilter() {
     const auto text = mwfl::FromUtf8(notepad_colon::FormatFilteredLines(*result));
     if (!text) { status_.SetText(Tr(L"The filtered lines are not valid UTF-8")); return; }
     NewDocument(*text, filter_title_);
-    if (auto* created = ActiveDocument(); created && filter_source_highlighted_) {
-        created->highlight_lines = true;
-        DecorateVisibleLines(*created, *created->editor, 0);
+    if (auto* created = ActiveDocument()) {
+        auto link = std::make_shared<FilterLink>();
+        link->source = filter_source_;
+        link->path = filter_source_path_;
+        link->lines.reserve(result->lines.size());
+        for (const auto& line : result->lines) link->lines.emplace_back(line.line_number, line.offset);
+        created->filter_link = std::move(link);
+        if (filter_source_highlighted_) {
+            created->highlight_lines = true;
+            DecorateVisibleLines(*created, *created->editor, 0);
+        }
     }
     status_.SetText(Tr(L"Filter kept ") + std::to_wstring(result->lines.size()) + Tr(L" of ") +
         std::to_wstring(result->lines_scanned) + Tr(L" line(s)") +
