@@ -50,7 +50,7 @@ void MainWindow::BuildCommands() {
         .Add(mwfl::Command(kDocumentSymbols, L"Document Symbols...", [this] {
             ShowDocumentSymbols(); }).SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'O'}))
         .Add(mwfl::Command(kQuickOpen, L"Quick Open File...", [this] {
-            ShowQuickOpen(); }).SetShortcut({FVIRTKEY | FCONTROL, 'P'}))
+            ShowQuickOpen(); }).SetShortcut({FVIRTKEY | FCONTROL, 'E'}))
         .Add(mwfl::Command(kPreviousSearch, L"Use Previous Search", [this] {
             if (search_history_.empty()) status_.SetText(Tr(L"Search history is empty"));
             else { search_.SetText(search_history_.front()); search_.Focus(); }

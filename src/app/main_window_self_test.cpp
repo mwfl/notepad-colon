@@ -79,6 +79,15 @@ void MainWindow::RunSelfTest() noexcept {
                 if (!command || CommandLabel(*command, true) != english) { result = 85; break; }
             }
         }
+        {
+            // Two built-in commands on one key would make one unreachable and
+            // block every change in the shortcut editor. Menus must show the key.
+            if (!notepad_colon::FindShortcutConflicts(CaptureShortcuts()).empty()) result = 87;
+            const auto* print = commands_.Find(kPrint);
+            const auto* quick_open = commands_.Find(kQuickOpen);
+            if (!print || !print->GetText().ends_with(L"	Ctrl+P") ||
+                !quick_open || !quick_open->GetText().ends_with(L"	Ctrl+E")) result = 88;
+        }
         const auto command_processor = CommandProcessorPath();
         auto command_line = L"\"" + command_processor.wstring() + L"\" /D /C exit";
         STARTUPINFOW terminal_startup{sizeof(terminal_startup)};

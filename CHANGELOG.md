@@ -28,6 +28,9 @@
 - Split the 4,600-line main.cpp into per-area files under `src/app`.
 - Show each command's keyboard shortcut in the menus, and name keys such as
   Space and the brackets instead of showing `Key32`.
+- Move Quick Open to Ctrl+E. It shared Ctrl+P with Print, which made Quick
+  Open unreachable from the keyboard and made the shortcut editor reject every
+  change.
 - Size dialog buttons to their captions so Chinese captions are no longer
   cramped, and stop leaving an empty Untitled tab when files are opened from
   the command line.
