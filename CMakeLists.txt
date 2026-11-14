@@ -220,12 +220,22 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
         SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/editor-runtime/lexilla"
         SOURCE_SUBDIR _not_a_cmake_project)
     FetchContent_MakeAvailable(notepad_colon_lexilla_runtime)
-    include_external_msproject(notepad_colon_scintilla_runtime_project
-        "${mwfl_scintilla_source_SOURCE_DIR}/win32/Scintilla.vcxproj"
-        PLATFORM ARM64)
-    include_external_msproject(notepad_colon_lexilla_runtime_project
-        "${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/Lexilla.vcxproj"
-        PLATFORM ARM64)
+    # The upstream projects pin the Visual Studio 2022 toolset. Build them with
+    # the toolset this build uses; only a command-line property can override
+    # the value in the project file.
+    foreach(runtime
+            "scintilla|${mwfl_scintilla_source_SOURCE_DIR}/win32/Scintilla.vcxproj"
+            "lexilla|${notepad_colon_lexilla_runtime_SOURCE_DIR}/src/Lexilla.vcxproj")
+        string(REPLACE "|" ";" runtime "${runtime}")
+        list(GET runtime 0 runtime_name)
+        list(GET runtime 1 runtime_project)
+        add_custom_target(notepad_colon_${runtime_name}_runtime_project
+            COMMAND "${CMAKE_VS_MSBUILD_COMMAND}" "${runtime_project}" -nologo -v:m
+                    "-p:Configuration=$<CONFIG>" -p:Platform=ARM64
+                    "-p:PlatformToolset=${CMAKE_VS_PLATFORM_TOOLSET}"
+            COMMENT "Building the ARM64 ${runtime_name} runtime"
+            VERBATIM)
+    endforeach()
     add_dependencies(notepad-colon notepad_colon_scintilla_runtime_project
                                    notepad_colon_lexilla_runtime_project)
     set(NOTEPAD_COLON_SCINTILLA_DLL
