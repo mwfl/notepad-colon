@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+# Template: scripts/update-package-manifests.ps1 fills in the placeholders.
+PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageVersion: {{Version}}
+MinimumOSVersion: 10.0.17763.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: notepad-colon.exe
+  PortableCommandAlias: notepad-colon
+# The editor loads Scintilla, Lexilla and its language host from its own
+# folder, so winget must keep the extracted files together.
+ArchiveBinariesDependOnPath: true
+UpgradeBehavior: uninstallPrevious
+FileExtensions:
+- txt
+- log
+- md
+- json
+- xml
+- ini
+- yaml
+ReleaseDate: {{ReleaseDate}}
+Installers:
+- Architecture: x64
+  InstallerUrl: {{X64Url}}
+  InstallerSha256: {{X64Hash}}
+{{Arm64Installer}}
+ManifestType: installer
+ManifestVersion: 1.9.0

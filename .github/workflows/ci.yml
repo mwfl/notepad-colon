@@ -28,3 +28,22 @@ jobs:
           name: notepad-colon-windows-x64
           path: build/vs2026-x64/notepad-colon-*.zip
           if-no-files-found: error
+
+  # Cross-compiled on the x64 runner: this proves the ARM64 configuration
+  # builds and packages. The binaries cannot execute here, so the test suite
+  # runs only for x64 above.
+  windows-arm64:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Configure
+        run: cmake --preset vs2026-arm64 -DMWFL_SOURCE_DIR= -DBUILD_TESTING=OFF
+      - name: Package portable ZIP
+        run: cmake --build --preset vs2026-arm64-release --target package --parallel
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: notepad-colon-windows-arm64
+          path: build/vs2026-arm64/notepad-colon-*.zip
+          if-no-files-found: error
+

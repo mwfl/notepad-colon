@@ -4,9 +4,19 @@ project(notepad_colon VERSION 1.2.0 LANGUAGES C CXX)
 include(CTest)
 include(FetchContent)
 
+# The language host links the prebuilt Wasmtime C API for the target architecture.
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+    set(NOTEPAD_COLON_WASMTIME_ARCH aarch64)
+    set(NOTEPAD_COLON_WASMTIME_SHA256 0465b9177cbe7c86c5a3c989755b6544d246c36f15a1974d203e000983d23648)
+    set(NOTEPAD_COLON_PACKAGE_ARCH ARM64)
+else()
+    set(NOTEPAD_COLON_WASMTIME_ARCH x86_64)
+    set(NOTEPAD_COLON_WASMTIME_SHA256 a376367a026f1b7d03bf8bec2e77abf1634b06f56366b04df7dbc71862f40b0e)
+    set(NOTEPAD_COLON_PACKAGE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 FetchContent_Declare(notepad_colon_wasmtime
-    URL https://github.com/bytecodealliance/wasmtime/releases/download/v36.0.10/wasmtime-v36.0.10-x86_64-windows-c-api.zip
-    URL_HASH SHA256=a376367a026f1b7d03bf8bec2e77abf1634b06f56366b04df7dbc71862f40b0e
+    URL https://github.com/bytecodealliance/wasmtime/releases/download/v36.0.10/wasmtime-v36.0.10-${NOTEPAD_COLON_WASMTIME_ARCH}-windows-c-api.zip
+    URL_HASH SHA256=${NOTEPAD_COLON_WASMTIME_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _use_prebuilt_c_api)
 FetchContent_MakeAvailable(notepad_colon_wasmtime)
@@ -58,6 +68,18 @@ FetchContent_MakeAvailable(notepad_colon_tree_sitter notepad_colon_tree_sitter_c
                            notepad_colon_tree_sitter_typescript
                            notepad_colon_json)
 target_compile_definitions(tree-sitter PRIVATE "WASM_API_EXTERN=")
+# The editor parses only with native grammars. It gets its own Tree-sitter
+# runtime compiled without the Wasm feature, so the Wasm engine (and the
+# system libraries it links) exists only in the isolated language host.
+add_library(notepad_colon_tree_sitter_native STATIC
+    "${notepad_colon_tree_sitter_SOURCE_DIR}/lib/src/lib.c")
+target_include_directories(notepad_colon_tree_sitter_native
+    PRIVATE "${notepad_colon_tree_sitter_SOURCE_DIR}/lib/src"
+            "${notepad_colon_tree_sitter_SOURCE_DIR}/lib/src/wasm"
+    PUBLIC "${notepad_colon_tree_sitter_SOURCE_DIR}/lib/include")
+target_compile_options(notepad_colon_tree_sitter_native PRIVATE
+    /wd4018 /wd4232 /wd4244 /wd4267 /wd4701)
+set_target_properties(notepad_colon_tree_sitter_native PROPERTIES C_STANDARD 11)
 add_library(tree-sitter-cpp STATIC
     "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/src/parser.c"
     "${notepad_colon_tree_sitter_cpp_SOURCE_DIR}/src/scanner.c")
@@ -126,17 +148,21 @@ add_library(notepad_colon_model
     src/git_status.cpp
     src/editing.cpp
     src/encoding_analysis.cpp
+    src/encoding_detection.cpp
     src/large_file.cpp
     src/large_file_buffer.cpp
     src/language.cpp
     src/language_registry.cpp
+    src/localization.cpp
     src/lightweight_completion.cpp
+    src/line_tools.cpp
     src/macro.cpp
     src/mapped_file.cpp
     src/output.cpp
     src/preferences.cpp
     src/recovery.cpp
     src/session.cpp
+    src/shell_menu.cpp
     src/session_writer.cpp
     src/text.cpp
     src/tree_sitter_document.cpp
@@ -148,6 +174,18 @@ target_compile_features(notepad_colon_model PUBLIC cxx_std_20)
 
 add_executable(notepad-colon WIN32
     src/main.cpp
+    src/app/main_window.cpp
+    src/app/main_window_commands.cpp
+    src/app/main_window_files.cpp
+    src/app/main_window_languages.cpp
+    src/app/main_window_lines.cpp
+    src/app/main_window_replace.cpp
+    src/app/main_window_search.cpp
+    src/app/main_window_self_test.cpp
+    src/app/main_window_session.cpp
+    src/app/main_window_tools.cpp
+    src/app/main_window_views.cpp
+    src/app/main_window_workspace.cpp
     src/scintilla_support.cpp
     src/wasm_syntax_client.cpp
     app.rc
@@ -156,7 +194,8 @@ add_executable(notepad-colon-language-host
     src/wasm_language_host.cpp)
 set_property(SOURCE app.manifest PROPERTY VS_TOOL_OVERRIDE "Manifest")
 target_compile_features(notepad-colon PRIVATE cxx_std_20)
-target_link_libraries(notepad_colon_model PUBLIC mwfl::process tree-sitter tree-sitter-cpp tree-sitter-json
+target_link_libraries(notepad_colon_model PUBLIC mwfl::process advapi32
+    notepad_colon_tree_sitter_native tree-sitter-cpp tree-sitter-json
     tree-sitter-python tree-sitter-javascript tree-sitter-typescript tree-sitter-tsx
     nlohmann_json::nlohmann_json)
 target_link_libraries(notepad-colon PRIVATE notepad_colon_model mwfl::app mwfl::scintilla mwfl::shell mwfl::printing oleacc advapi32 shell32)
@@ -165,6 +204,10 @@ target_include_directories(notepad-colon-language-host PRIVATE include "${WASMTI
 target_compile_features(notepad-colon-language-host PRIVATE cxx_std_20)
 target_compile_options(notepad-colon-language-host PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
 target_compile_definitions(notepad-colon-language-host PRIVATE "WASM_API_EXTERN=")
+# Wasmtime's static library carries code for features the host never enables
+# (WASI sockets among them). Discard unreferenced code in every configuration
+# so even a Debug host imports no networking library.
+target_link_options(notepad-colon-language-host PRIVATE /OPT:REF /OPT:ICF /INCREMENTAL:NO)
 FetchContent_GetProperties(mwfl_scintilla_binary)
 FetchContent_GetProperties(mwfl_scintilla_source)
 set(NOTEPAD_COLON_NATIVE_EDITOR_RUNTIME OFF)
@@ -228,6 +271,29 @@ if(BUILD_TESTING)
     target_compile_features(notepad_colon_model_tests PRIVATE cxx_std_20)
     target_compile_options(notepad_colon_model_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
     add_test(NAME notepad-colon.model COMMAND notepad_colon_model_tests)
+    add_executable(notepad_colon_feature_tests tests/feature_tests.cpp)
+    target_link_libraries(notepad_colon_feature_tests PRIVATE notepad_colon_model)
+    target_compile_features(notepad_colon_feature_tests PRIVATE cxx_std_20)
+    target_compile_options(notepad_colon_feature_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
+    add_test(NAME notepad-colon.features COMMAND notepad_colon_feature_tests)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        # Every interface string in the sources must be in the translation catalog.
+        add_test(NAME notepad-colon.translations
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract-strings.py" --check)
+        set_tests_properties(notepad-colon.translations PROPERTIES
+            ENVIRONMENT "PYTHONIOENCODING=utf-8")
+    endif()
+    # The privacy claim is checked against the binaries that ship: none of them
+    # may import, or even name, a Windows networking library.
+    add_test(NAME notepad-colon.no-network
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-no-network.ps1"
+                "$<TARGET_FILE:notepad-colon>"
+                "$<TARGET_FILE:notepad-colon-language-host>"
+                "$<TARGET_FILE_DIR:notepad-colon>/Scintilla.dll"
+                "$<TARGET_FILE_DIR:notepad-colon>/Lexilla.dll")
+    set_tests_properties(notepad-colon.no-network PROPERTIES TIMEOUT 60 LABELS security)
     add_test(NAME notepad-colon.gui COMMAND notepad-colon --self-test)
     set_tests_properties(notepad-colon.gui PROPERTIES TIMEOUT 30)
     add_test(NAME notepad-colon.single-instance
@@ -300,7 +366,7 @@ install(FILES "${notepad_colon_tree_sitter_typescript_SOURCE_DIR}/LICENSE"
 
 set(CPACK_GENERATOR ZIP)
 set(CPACK_PACKAGE_NAME "Notepad-Colon")
-set(CPACK_PACKAGE_FILE_NAME "notepad-colon-${PROJECT_VERSION}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_FILE_NAME "notepad-colon-${PROJECT_VERSION}-${NOTEPAD_COLON_PACKAGE_ARCH}")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 set(CPACK_COMPONENTS_ALL product)
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)

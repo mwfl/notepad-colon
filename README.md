@@ -22,7 +22,8 @@ code indexing out of the process.
 | **Focused** | Editing and search without plugins, LSP processes, or IDE project systems |
 | **Safe** | Atomic saves, external-change detection, backups, session recovery, and encoding checks |
 | **Large-file aware** | Editable fixed-memory windows for UTF-8 files through exactly 4 GiB |
-| **Private** | No accounts, telemetry, analytics, or cloud services |
+| **Private** | No accounts, telemetry, analytics, or cloud services — and no networking code: [verify it yourself](docs/security-model.md) |
+| **Safely extensible** | Grammars run as sandboxed WebAssembly in a separate process; no native plugin DLLs |
 
 ## Highlights
 
@@ -31,7 +32,11 @@ code indexing out of the process.
 - Native multi-document tabs, recent files, drag and drop, bookmarks, folding,
   multiple and rectangular selections, brace matching, line operations,
   whitespace controls, wrapping, and zoom.
-- Syntax highlighting for 19 common languages through Scintilla and Lexilla.
+- Split view: a second, independently scrolled view of the same document,
+  side by side or stacked (`Ctrl+\`, `F6` to switch views).
+- Syntax highlighting for more than 60 languages through Scintilla and Lexilla,
+  from C++, Python and TypeScript to Go, Kotlin, Swift, PHP, Ruby, Lua, shell,
+  Dockerfile, TOML, Zig and Verilog.
 - Incremental Tree-sitter parsing for C++, JSON, Python, JavaScript/JSX, and
   TypeScript/TSX, including document symbols and visible-range coloring.
 - Explicit `Ctrl+Space` completion from language keywords, current-document
@@ -44,6 +49,10 @@ code indexing out of the process.
   scope, wraparound, replace, history, and bounded **Mark All**.
 - Cancellable folder and open-document search with previews, include/exclude
   globs, `.gitignore`, multiline patterns, binary detection, and safety limits.
+- **Replace in Files** with a count-first preview. Every file keeps its
+  encoding, byte order mark and line endings, is replaced atomically, and can
+  keep a `.bak` copy; documents open in the editor are changed in the editor
+  (undoable) instead of behind your back.
 - A lazy workspace tree and fuzzy Quick Open. Opening a folder does not trigger
   background analysis.
 
@@ -51,6 +60,9 @@ code indexing out of the process.
 
 - UTF-8/BOM, UTF-16 LE/BE, checked ANSI code pages, CRLF/LF conversion, and
   `.editorconfig`.
+- Automatic detection of legacy CJK encodings — GB18030, Big5, Shift-JIS,
+  EUC-JP and EUC-KR — independent of the system code page, with **Reopen as**
+  and **Convert to** commands for each.
 - Lossless conversion checks, mixed-EOL reporting, and warnings for bidi and
   zero-width characters.
 - Safe atomic replacement, optional backup-before-save, conflict detection, and
@@ -66,13 +78,26 @@ code indexing out of the process.
 - Other large encodings remain read-only until byte-to-character mapping can be
   guaranteed lossless.
 
+### Logs and tables
+
+- **Filter Lines** (`Ctrl+Shift+G`) collects the lines that match — or do not
+  match — a text or regular expression into a new tab with their original line
+  numbers. Large files are streamed from disk in fixed-size chunks.
+- **Highlight Log Lines** colours whole lines by rule (`red=ERROR|FATAL;
+  orange=WARN; gray=DEBUG|TRACE` by default, editable). It turns on
+  automatically for `.log` files and when following a growing file.
+- **Rainbow Columns** colours each field of CSV/TSV data and shows the field
+  number of the caret. Only visible lines are decorated, so it costs the same
+  in a 4 GiB file as in a small one.
+
 See [Large-file testing](docs/large-file-testing.md) for the reproducible 100 MiB
 and 4 GiB verification workflow.
 
 ## Supported systems
 
 - Windows 10 or newer
-- x64 (current packaged build)
+- x64 (tested packaged build); ARM64 (cross-compiled in CI)
+- English and Simplified Chinese interface (**Tools > 简体中文界面**)
 - MSVC C++20 with Visual Studio 2026
 
 ## Build from source
@@ -107,15 +132,18 @@ indexing, IDE project systems, accounts, telemetry, and cloud services. Opening
 a folder provides bounded navigation and on-demand search; it does not turn the
 folder into a project or analyze its code in the background.
 
-Read the detailed [product scope](docs/product-scope.md) and the guide for
-[custom languages](docs/custom-languages.md).
+Read the detailed [product scope](docs/product-scope.md), the
+[security and privacy model](docs/security-model.md), the guide for
+[custom languages](docs/custom-languages.md), and the notes on
+[distribution](docs/distribution.md) (winget, Scoop, ARM64, Explorer menu).
 
 ## Validation
 
 CTest covers the model layer, real native-window GUI behavior, single-instance
 forwarding, isolated Shell registration, a 34 MiB edit/save integration path,
-Tree-sitter and Wasm syntax handling, and an exact-4-GiB piece-table/search
-performance guard. GitHub Actions builds, tests, packages, and uploads the x64
+Tree-sitter and Wasm syntax handling, an exact-4-GiB piece-table/search
+performance guard, translation-catalog completeness, and a check that no
+shipped binary imports a networking library. GitHub Actions builds, tests, packages, and uploads the x64
 portable artifact.
 
 ## License

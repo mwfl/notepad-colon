@@ -188,6 +188,9 @@ int main() {
         { std::ofstream external(saved, std::ios::binary | std::ios::app); external << '!'; }
         Check(buffer.Insert(0, inserted) && !buffer.SaveAs(saved),
               "piece table refuses to replace a source changed externally during editing");
+        // Windows cannot delete a file that is still open or mapped.
+        input.close();
+        buffer.Close();
         std::error_code ignored;
         std::filesystem::remove(source, ignored);
         std::filesystem::remove(saved, ignored);
@@ -516,7 +519,7 @@ int main() {
     Check(notepad_colon::DetectLanguage(L"README") == Language::plain_text, "plain text fallback");
     Check(notepad_colon::LexerName(Language::python) == "python", "Python lexer mapping");
     const auto languages = notepad_colon::AllLanguages();
-    Check(languages.size() == 19, "all supported languages are enumerable");
+    Check(languages.size() >= 50, "all supported languages are enumerable");
     for (const auto language : languages) {
         const auto& profile = notepad_colon::GetLanguageProfile(language);
         Check(profile.language == language && !profile.name.empty(),

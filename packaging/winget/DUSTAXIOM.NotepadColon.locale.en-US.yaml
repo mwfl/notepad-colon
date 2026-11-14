@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+# Template: scripts/update-package-manifests.ps1 fills in the placeholders.
+PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageVersion: {{Version}}
+PackageLocale: en-US
+Publisher: DUSTAXIOM
+PublisherUrl: https://github.com/mwfl
+PublisherSupportUrl: https://github.com/{{Repository}}/issues
+PrivacyUrl: https://mwfl.github.io/notepad-colon/privacy.html
+PackageName: Notepad Colon
+PackageUrl: https://github.com/{{Repository}}
+License: MIT
+LicenseUrl: https://github.com/{{Repository}}/blob/main/LICENSE
+ShortDescription: A fast, focused, local-first text and code editor for Windows.
+Description: |-
+  Notepad Colon (Notepad::) is a native Windows text and code editor. It offers
+  multi-document tabs, split views, syntax highlighting for more than 60
+  languages, folder search and replace, legacy-encoding detection, session
+  recovery, and fixed-memory editing of UTF-8 files up to 4 GiB.
+  It uses no account, telemetry, cloud service, plugin system, language server
+  or background indexing, and never connects to the network.
+Moniker: notepad-colon
+Tags:
+- editor
+- text-editor
+- code-editor
+- notepad
+- large-files
+- scintilla
+ReleaseNotesUrl: https://github.com/{{Repository}}/releases/tag/v{{Version}}
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

@@ -1,116 +1,321 @@
 #include <notepad_colon/language.h>
 
 #include <algorithm>
-#include <cwctype>
 #include <array>
+#include <cwctype>
+#include <string>
 
 namespace notepad_colon {
 namespace {
 constexpr std::array languages{
     Language::plain_text, Language::cpp, Language::csharp, Language::java,
     Language::javascript, Language::typescript, Language::python, Language::json,
-    Language::xml, Language::html, Language::css, Language::markdown, Language::cmake,
-    Language::powershell, Language::batch, Language::ini, Language::yaml, Language::sql,
-    Language::rust};
+    Language::xml, Language::html, Language::css, Language::markdown,
+    Language::cmake, Language::powershell, Language::batch, Language::ini,
+    Language::yaml, Language::sql, Language::rust, Language::go,
+    Language::kotlin, Language::swift, Language::scala, Language::groovy,
+    Language::objective_c, Language::protobuf, Language::glsl, Language::php,
+    Language::dart, Language::ruby, Language::perl, Language::lua,
+    Language::shell, Language::makefile, Language::dockerfile, Language::toml,
+    Language::diff, Language::delphi, Language::fortran, Language::assembly,
+    Language::visual_basic, Language::r, Language::matlab, Language::julia,
+    Language::haskell, Language::erlang, Language::lisp, Language::clojure,
+    Language::ocaml, Language::fsharp, Language::tcl, Language::latex,
+    Language::registry, Language::nim, Language::zig, Language::gdscript,
+    Language::verilog, Language::vhdl, Language::autoit, Language::nsis,
+    Language::inno_setup, Language::ada, Language::cobol, Language::coffeescript,
+    Language::d, Language::properties};
 
 constexpr std::array profiles{
-    LanguageProfile{Language::plain_text, L"Plain Text", {}, {}, {}, false},
+    LanguageProfile{Language::plain_text, L"Plain Text", {}, {}, {}, false,
+        "plain-text", L".txt;.log;.text", L"", "", {}},
     LanguageProfile{Language::cpp, L"C/C++", "cpp",
         "alignas alignof asm auto bool break case catch char class const consteval constexpr constinit continue co_await co_return co_yield decltype default delete do double else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept nullptr operator override private protected public register reinterpret_cast requires return short signed sizeof static static_assert struct switch template this thread_local throw true try typedef typename union unsigned using virtual void volatile wchar_t while",
-        "std string string_view vector array span optional unique_ptr shared_ptr size_t uint8_t uint16_t uint32_t uint64_t", true},
+        "std string string_view vector array span optional unique_ptr shared_ptr size_t uint8_t uint16_t uint32_t uint64_t", true,
+        "cpp", L".c;.cc;.cpp;.cxx;.h;.hh;.hpp;.hxx;.inl;.ipp;.tpp;.ino", L"", "//", {}},
     LanguageProfile{Language::csharp, L"C#", "cpp",
         "abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly record ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while async await dynamic get init set value var when where with yield",
-        "DateTime Guid IEnumerable IList Dictionary List Task CancellationToken", true},
+        "DateTime Guid IEnumerable IList Dictionary List Task CancellationToken", true,
+        "csharp", L".cs;.csx", L"", "//", {}},
     LanguageProfile{Language::java, L"Java", "cpp",
         "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new null package private protected public return short static strictfp super switch synchronized this throw throws transient true try void volatile while record sealed permits non-sealed var yield",
-        "String Object Class Integer Long Double Boolean List Map Set Optional Stream", true},
+        "String Object Class Integer Long Double Boolean List Map Set Optional Stream", true,
+        "java", L".java", L"", "//", {}},
     LanguageProfile{Language::javascript, L"JavaScript", "cpp",
         "as async await break case catch class const continue debugger default delete do else export extends false finally for from function get if import in instanceof let new null of return set static super switch this throw true try typeof undefined var void while with yield",
-        "Array BigInt Boolean Date Error JSON Map Math Number Object Promise Proxy Reflect RegExp Set String Symbol WeakMap WeakSet console document globalThis window", true},
+        "Array BigInt Boolean Date Error JSON Map Math Number Object Promise Proxy Reflect RegExp Set String Symbol WeakMap WeakSet console document globalThis window", true,
+        "javascript", L".js;.jsx;.mjs;.cjs", L"", "//", {}},
     LanguageProfile{Language::typescript, L"TypeScript", "cpp",
         "abstract any as asserts async await bigint boolean break case catch class const constructor continue debugger declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface is keyof let module namespace never new null number object of override private protected public readonly require return satisfies set static string super switch symbol this throw true try tuple type typeof undefined unique unknown var void while with yield",
-        "Array Date Error Map Promise Record Set String Partial Pick Omit Readonly Required", true},
+        "Array Date Error Map Promise Record Set String Partial Pick Omit Readonly Required", true,
+        "typescript", L".ts;.tsx;.mts;.cts", L"", "//", {}},
     LanguageProfile{Language::python, L"Python", "python",
         "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield match case",
-        "abs all any bool bytes callable chr dict enumerate filter float format frozenset getattr hasattr hash help hex id input int isinstance issubclass iter len list map max memoryview min next object oct open ord pow print property range repr reversed round set slice sorted str sum super tuple type vars zip __import__", true},
-    LanguageProfile{Language::json, L"JSON", "json", "false true null", {}, false},
-    LanguageProfile{Language::xml, L"XML", "hypertext", {}, {}, true},
+        "abs all any bool bytes callable chr dict enumerate filter float format frozenset getattr hasattr hash help hex id input int isinstance issubclass iter len list map max memoryview min next object oct open ord pow print property range repr reversed round set slice sorted str sum super tuple type vars zip __import__", true,
+        "python", L".py;.pyw;.pyi", L"", "#", {}},
+    LanguageProfile{Language::json, L"JSON", "json", "false true null", {}, false,
+        "json", L".json;.jsonc;.jsonl;.geojson;.webmanifest", L"", "//", {}},
+    LanguageProfile{Language::xml, L"XML", "hypertext", {}, {}, true,
+        "xml", L".xml;.xaml;.svg;.xsd;.xsl;.xslt;.csproj;.vcxproj;.props;.targets;.resx;.plist", L"", "", {}},
     LanguageProfile{Language::html, L"HTML", "hypertext",
         "html head title base link meta style body article section nav aside h1 h2 h3 h4 h5 h6 header footer address p hr pre blockquote ol ul li dl dt dd figure figcaption main div a em strong small s cite q dfn abbr ruby rt rp data time code var samp kbd sub sup i b u mark bdi bdo span br wbr ins del picture source img iframe embed object param video audio track map area table caption colgroup col tbody thead tfoot tr td th form label input button select datalist optgroup option textarea output progress meter fieldset legend details summary dialog script noscript template slot canvas",
-        "id class style title lang dir hidden tabindex href src alt width height name value type rel media charset content role aria-label", true},
+        "id class style title lang dir hidden tabindex href src alt width height name value type rel media charset content role aria-label", true,
+        "html", L".html;.htm;.xhtml;.vue;.svelte", L"", "", {}},
     LanguageProfile{Language::css, L"CSS", "css",
         "color background border margin padding display position top right bottom left width height min-width max-width min-height max-height font font-family font-size font-weight line-height text-align text-decoration overflow opacity transform transition animation grid flex align-items justify-content gap content cursor visibility z-index",
-        "active after before checked disabled empty enabled first-child focus hover last-child link not nth-child root target visited", true},
-    LanguageProfile{Language::markdown, L"Markdown", "markdown", {}, {}, false},
+        "active after before checked disabled empty enabled first-child focus hover last-child link not nth-child root target visited", true,
+        "css", L".css;.scss;.less", L"", "", {}},
+    LanguageProfile{Language::markdown, L"Markdown", "markdown", {}, {}, false,
+        "markdown", L".md;.markdown", L"", "", {}},
     LanguageProfile{Language::cmake, L"CMake", "cmake",
         "add_compile_definitions add_compile_options add_custom_command add_custom_target add_definitions add_dependencies add_executable add_library add_link_options add_subdirectory add_test aux_source_directory block break build_command cmake_file_api cmake_host_system_information cmake_language cmake_minimum_required cmake_parse_arguments cmake_path cmake_policy configure_file continue create_test_sourcelist define_property else elseif enable_language enable_testing endforeach endfunction endif endmacro endwhile execute_process file find_file find_library find_package find_path find_program foreach function get_cmake_property get_directory_property get_filename_component get_property if include include_directories include_external_msproject include_guard install link_directories link_libraries list load_cache macro mark_as_advanced math message option project return separate_arguments set set_directory_properties set_property site_name source_group string target_compile_definitions target_compile_features target_compile_options target_include_directories target_link_directories target_link_libraries target_link_options target_precompile_headers target_sources try_compile try_run unset variable_watch while",
-        "WIN32 UNIX APPLE MSVC CMAKE_SOURCE_DIR CMAKE_BINARY_DIR CMAKE_CURRENT_SOURCE_DIR CMAKE_CURRENT_BINARY_DIR PROJECT_SOURCE_DIR PROJECT_BINARY_DIR PROJECT_NAME", true},
+        "WIN32 UNIX APPLE MSVC CMAKE_SOURCE_DIR CMAKE_BINARY_DIR CMAKE_CURRENT_SOURCE_DIR CMAKE_CURRENT_BINARY_DIR PROJECT_SOURCE_DIR PROJECT_BINARY_DIR PROJECT_NAME", true,
+        "cmake", L".cmake", L"cmakelists.txt", "#", {}},
     LanguageProfile{Language::powershell, L"PowerShell", "powershell",
         "begin break catch class continue data define do dynamicparam else elseif end enum exit filter finally for foreach from function hidden if in inlinescript parallel param process return sequence switch throw trap try until using var while workflow",
-        "Get-ChildItem Get-Content Set-Content Select-Object Where-Object ForEach-Object Test-Path Join-Path Resolve-Path New-Item Remove-Item Move-Item Copy-Item Write-Output Write-Error Write-Warning Start-Process Get-Process Stop-Process", true},
+        "Get-ChildItem Get-Content Set-Content Select-Object Where-Object ForEach-Object Test-Path Join-Path Resolve-Path New-Item Remove-Item Move-Item Copy-Item Write-Output Write-Error Write-Warning Start-Process Get-Process Stop-Process", true,
+        "powershell", L".ps1;.psm1;.psd1", L"", "#", {}},
     LanguageProfile{Language::batch, L"Batch", "batch",
         "assoc attrib break call cd chdir cls color copy date del dir echo endlocal erase exit for ftype goto if md mkdir mklink move path pause popd prompt pushd rd rem ren rename rmdir set setlocal shift start time title type ver verify vol choice find findstr powershell cmd",
-        {}, false},
-    LanguageProfile{Language::ini, L"INI", "props", {}, {}, false},
-    LanguageProfile{Language::yaml, L"YAML", "yaml", "true false yes no null on off", {}, true},
+        {}, false,
+        "batch", L".bat;.cmd", L"", "rem ", {}},
+    LanguageProfile{Language::ini, L"INI", "props", {}, {}, false,
+        "ini", L".ini;.cfg;.conf", L"", ";", {}},
+    LanguageProfile{Language::yaml, L"YAML", "yaml", "true false yes no null on off", {}, true,
+        "yaml", L".yaml;.yml", L"", "#", {}},
     LanguageProfile{Language::sql, L"SQL", "sql",
         "add all alter and any as asc authorization backup begin between break browse bulk by cascade case check checkpoint close clustered coalesce collate column commit compute constraint contains containstable continue convert create cross current current_date current_time current_timestamp cursor database dbcc deallocate declare default delete deny desc disk distinct distributed double drop dump else end errlvl escape except exec execute exists exit external fetch file fillfactor for foreign freetext freetexttable from full function goto grant group having holdlock identity identity_insert identitycol if in index inner insert intersect into is join key kill left like lineno load merge national nocheck nonclustered not null nullif of off offsets on open opendatasource openquery openrowset openxml option or order outer over percent pivot plan precision primary print proc procedure public raiserror read readtext reconfigure references replication restore restrict return revert revoke right rollback rowcount rowguidcol rule save schema securityaudit select semantickeyphrasetable semanticsimilaritydetailstable semanticsimilaritytable session_user set setuser shutdown some statistics system_user table tablesample textsize then to top tran transaction trigger truncate try_convert tsequal union unique unpivot update updatetext use user values varying view waitfor when where while with within group writetext",
-        "count sum avg min max cast substring trim upper lower length now date timestamp integer varchar nvarchar bigint decimal numeric boolean", true},
+        "count sum avg min max cast substring trim upper lower length now date timestamp integer varchar nvarchar bigint decimal numeric boolean", true,
+        "sql", L".sql", L"", "--", {}},
     LanguageProfile{Language::rust, L"Rust", "rust",
         "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
-        "bool char str i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 Option Result String Vec Box Rc Arc Cow HashMap HashSet", true}
+        "bool char str i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 Option Result String Vec Box Rc Arc Cow HashMap HashSet", true,
+        "rust", L".rs", L"", "//", {}},
+    LanguageProfile{Language::go, L"Go", "cpp",
+        "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil iota",
+        "any bool byte comparable complex64 complex128 error float32 float64 int int8 int16 int32 int64 rune string uint uint8 uint16 uint32 uint64 uintptr append cap clear close complex copy delete imag len make max min new panic print println real recover", true,
+        "go", L".go", L"", "//", ""},
+    LanguageProfile{Language::kotlin, L"Kotlin", "cpp",
+        "abstract actual annotation as break by catch class companion const constructor continue crossinline data do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private protected public reified return sealed set super suspend tailrec this throw true try typealias val value var vararg when where while",
+        "Any Array Boolean Byte Char Double Float Int List Long Map MutableList MutableMap MutableSet Nothing Pair Set Short String Unit", true,
+        "kotlin", L".kt;.kts", L"", "//", ""},
+    LanguageProfile{Language::swift, L"Swift", "cpp",
+        "actor any as associatedtype async await break case catch class continue convenience default defer deinit do dynamic else enum extension fallthrough false fileprivate final for func get guard if import in indirect infix init inout internal is lazy let mutating nil nonisolated nonmutating open operator optional override postfix precedencegroup prefix private protocol public repeat required rethrows return self Self set some static struct subscript super switch throw throws true try typealias unowned var weak where while willSet didSet",
+        "Any AnyObject Array Bool Character Dictionary Double Float Int Int8 Int16 Int32 Int64 Never Optional Result Set String UInt UInt8 UInt16 UInt32 UInt64 Void", true,
+        "swift", L".swift", L"", "//", ""},
+    LanguageProfile{Language::scala, L"Scala", "cpp",
+        "abstract case catch class def do else enum export extends extension false final finally for forSome given if implicit import inline lazy match new null object opaque override package private protected return sealed super then this throw trait transparent true try type using val var while with yield",
+        "Any AnyRef AnyVal Array Boolean Byte Char Double Either Float Future Int List Long Map Nothing Option Seq Set Short String Unit Vector", true,
+        "scala", L".scala;.sc", L"", "//", ""},
+    LanguageProfile{Language::groovy, L"Groovy", "cpp",
+        "abstract as assert boolean break byte case catch char class const continue def default do double else enum extends false final finally float for goto if implements import in instanceof int interface long native new null package private protected public return short static strictfp super switch synchronized this throw throws trait transient true try var void volatile while",
+        "BigDecimal BigInteger Boolean Closure Date Double Integer List Long Map Object Set String", true,
+        "groovy", L".groovy;.gradle;.gvy", L"jenkinsfile", "//", ""},
+    LanguageProfile{Language::objective_c, L"Objective-C", "cpp",
+        "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while @autoreleasepool @catch @class @dynamic @end @finally @implementation @import @interface @optional @private @property @protected @protocol @public @required @selector @synchronized @synthesize @throw @try self super nil Nil YES NO id instancetype nonatomic atomic strong weak copy assign readonly readwrite",
+        "BOOL CGFloat CGPoint CGRect CGSize NSArray NSData NSDate NSDictionary NSError NSInteger NSMutableArray NSMutableDictionary NSMutableString NSNumber NSObject NSString NSUInteger NSURL SEL", true,
+        "objective-c", L".m;.mm", L"", "//", ""},
+    LanguageProfile{Language::protobuf, L"Protocol Buffers", "cpp",
+        "syntax import weak public package option message enum service rpc returns stream oneof map extend extensions reserved to max repeated optional required group true false",
+        "double float int32 int64 uint32 uint64 sint32 sint64 fixed32 fixed64 sfixed32 sfixed64 bool string bytes", true,
+        "protobuf", L".proto", L"", "//", ""},
+    LanguageProfile{Language::glsl, L"GLSL / HLSL", "cpp",
+        "attribute break case cbuffer centroid const continue default discard do else false flat for highp if in inout invariant layout lowp mediump noperspective out patch precision register return sample smooth struct subroutine switch technique true uniform varying void while",
+        "bool bvec2 bvec3 bvec4 double dvec2 dvec3 dvec4 float float2 float3 float4 float4x4 half int ivec2 ivec3 ivec4 mat2 mat3 mat4 sampler1D sampler2D sampler3D samplerCube Texture2D SamplerState uint uvec2 uvec3 uvec4 vec2 vec3 vec4", true,
+        "glsl", L".glsl;.vert;.frag;.geom;.comp;.tesc;.tese;.hlsl;.fx;.shader", L"", "//", ""},
+    LanguageProfile{Language::php, L"PHP", "phpscript",
+        "abstract and array as break callable case catch class clone const continue declare default die do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile enum eval exit extends false final finally fn for foreach function global goto if implements include include_once instanceof insteadof interface isset list match namespace new null or print private protected public readonly require require_once return static switch throw trait true try unset use var while xor yield",
+        "", true,
+        "php", L".php;.phtml;.php5;.php7;.phps", L"", "//", "c:124,125;s:119,120;n:122;k:121;a:123,126"},
+    LanguageProfile{Language::dart, L"Dart", "dart",
+        "abstract as assert async await base break case catch class const continue covariant default deferred do dynamic else enum export extends extension external factory false final finally for Function get hide if implements import in interface is late library mixin new null on operator part required rethrow return sealed set show static super switch sync this throw true try typedef var void when while with yield",
+        "bool double int num BigInt DateTime Duration Future Iterable List Map Never Null Object Pattern Record Set Stream String Symbol Type Uri", true,
+        "dart", L".dart", L"", "//", "c:1,2,3,4;s:5,6,7,8,9,10,11,12;n:20;k:23;t:24,25,26;p:22;a:21"},
+    LanguageProfile{Language::ruby, L"Ruby", "ruby",
+        "__ENCODING__ __FILE__ __LINE__ BEGIN END alias and begin break case class def defined? do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield attr_accessor attr_reader attr_writer include extend require require_relative private protected public raise puts",
+        "", true,
+        "ruby", L".rb;.rake;.gemspec;.ru", L"rakefile;gemfile;vagrantfile", "#", "c:2,3;n:4;k:5;s:6,7,18,21,22,23,24,25,26,28;t:8,15;a:9,13,14,16,17;p:12,27"},
+    LanguageProfile{Language::perl, L"Perl", "perl",
+        "and cmp continue do else elsif eq for foreach ge gt if last le local lt my ne next no not or our package redo require return sub unless until use while xor bless chomp chop chdir close closedir defined delete die each eval exists exit grep join keys length map open opendir pop print printf push ref reverse say scalar shift sort splice split sprintf substr undef unshift values wantarray warn",
+        "", true,
+        "perl", L".pl;.pm;.t;.pod", L"", "#", "c:2,3,31;n:4;k:5;s:6,7,20,23,24,25,26,27,28,30;a:12,13,14,15;p:9,17,18,29"},
+    LanguageProfile{Language::lua, L"Lua", "lua",
+        "and break do else elseif end false for function goto if in local nil not or repeat return then true until while",
+        "assert collectgarbage dofile error getmetatable ipairs load loadfile next pairs pcall print rawequal rawget rawlen rawset require select setmetatable tonumber tostring type xpcall coroutine debug io math os package string table utf8", true,
+        "lua", L".lua", L"", "--", "c:1,2,3;n:4;k:5;s:6,7,8;p:9;t:13,14;a:20"},
+    LanguageProfile{Language::shell, L"Shell Script", "bash",
+        "alias bg bind break builtin caller case cd command compgen complete continue declare dirs disown do done echo elif else enable esac eval exec exit export false fc fg fi for function getopts hash help history if in jobs kill let local logout popd printf pushd pwd read readonly return select set shift shopt source suspend test then time times trap true type typeset ulimit umask unalias unset until wait while",
+        "", true,
+        "shell", L".sh;.bash;.zsh;.ksh;.fish;.command", L".bashrc;.bash_profile;.zshrc;.profile;.bash_aliases", "#", "c:2;n:3;k:4;s:5,6,13;a:9,10;p:11,12"},
+    LanguageProfile{Language::makefile, L"Makefile", "makefile",
+        "",
+        "", false,
+        "makefile", L".mk;.mak", L"makefile;gnumakefile", "#", "c:1;p:2;a:3;k:5;x:9"},
+    LanguageProfile{Language::dockerfile, L"Dockerfile", "bash",
+        "ADD ARG CMD COPY ENTRYPOINT ENV EXPOSE FROM HEALTHCHECK LABEL MAINTAINER ONBUILD RUN SHELL STOPSIGNAL USER VOLUME WORKDIR AS add arg cmd copy entrypoint env expose from healthcheck label maintainer onbuild run shell stopsignal user volume workdir as",
+        "", false,
+        "dockerfile", L".dockerfile", L"dockerfile;containerfile", "#", "c:2;n:3;k:4;s:5,6,13;a:9,10;p:11,12"},
+    LanguageProfile{Language::toml, L"TOML", "toml",
+        "true false inf nan",
+        "", true,
+        "toml", L".toml", L"cargo.lock;poetry.lock", "#", "c:1;k:3;n:4,14;h:5;a:6;s:9,10,11,12;x:7"},
+    LanguageProfile{Language::diff, L"Diff / Patch", "diff",
+        "",
+        "", true,
+        "diff", L".diff;.patch;.rej", L"", "", "c:1;k:2;h:3;p:4;x:5,9;g:6,8;t:7"},
+    LanguageProfile{Language::delphi, L"Pascal / Delphi", "pascal",
+        "absolute abstract and array as asm assembler begin case cdecl class const constructor default destructor div do downto dynamic else end except export exports external far file finalization finally for forward function goto if implementation in inherited initialization inline interface is label library mod near nil not object of on operator or out overload override packed pascal private procedure program property protected public published raise record register reintroduce repeat resourcestring safecall set shl shr stdcall string then threadvar to try type unit until uses var virtual while with xor",
+        "", true,
+        "pascal", L".pas;.pp;.dpr;.lpr;.dfm", L"", "//", "c:2,3,4;p:5,6;n:7,8;k:9;s:10,12,15"},
+    LanguageProfile{Language::fortran, L"Fortran", "fortran",
+        "allocatable allocate assign associate backspace block call case character class close common complex contains continue critical cycle data deallocate default dimension do double else elseif elsewhere end enddo endif entry enum equivalence error exit extends external final forall format function generic go goto if implicit import in include inout integer intent interface intrinsic kind logical module namelist none nullify only open operator optional out parameter pause pointer precision print private procedure program protected public pure read real recursive result return rewind save select sequence stop submodule subroutine target then to type use value volatile where while write",
+        "abs acos aimag aint all any asin atan atan2 ceiling cmplx conjg cos cosh count dble dot_product exp floor huge iand int ior len log log10 matmul max maxval min minval mod nint present product real reshape shape sign sin sinh size sqrt sum tan tanh tiny trim", true,
+        "fortran", L".f;.for;.f77;.f90;.f95;.f03;.f08", L"", "!", "c:1;n:2;s:3,4;k:8;t:9,10;p:11;a:13"},
+    LanguageProfile{Language::assembly, L"Assembly", "asm",
+        "aaa aad aam aas adc add and call cbw clc cld cli cmc cmp cmpsb cmpsw cwd daa das dec div hlt idiv imul in inc int into iret ja jae jb jbe jc je jg jge jl jle jmp jna jnae jnb jnbe jnc jne jng jnge jnl jnle jno jnp jns jnz jo jp jpe jpo js jz lahf lea leave lods loop loope loopne mov movs movsb movsd movsq movsw movsx movzx mul neg nop not or out pop popa popf push pusha pushf rcl rcr rep repe repne ret rol ror sahf sal sar sbb scas setc sete setg setl setne setz shl shr stc std sti stos sub syscall test xchg xlat xor cmova cmovb cmove cmovg cmovl cmovne cmovz bswap cpuid rdtsc",
+        "", false,
+        "assembly", L".asm;.s;.nasm;.masm", L"", ";", "c:1,11,15;n:2;s:3,12,16;k:6,7,14;t:8;p:9,10"},
+    LanguageProfile{Language::visual_basic, L"Visual Basic", "vb",
+        "addhandler addressof alias and andalso as boolean byref byte byval call case catch cbool cbyte cchar cdate cdbl cdec char cint class clng cobj const continue csbyte cshort csng cstr ctype cuint culng cushort date decimal declare default delegate dim directcast do double each else elseif end endif enum erase error event exit false finally for friend function get gettype global gosub goto handles if implements imports in inherits integer interface is isnot let lib like long loop me mod module mustinherit mustoverride mybase myclass namespace narrowing new next not nothing notinheritable notoverridable object of on operator option optional or orelse overloads overridable overrides paramarray partial private property protected public raiseevent readonly redim rem removehandler resume return sbyte select set shadows shared short single static step stop string structure sub synclock then throw to true try trycast typeof uinteger ulong ushort using variant wend when while widening with withevents writeonly xor",
+        "", true,
+        "visual-basic", L".vb;.bas;.vbs;.frm;.cls", L"", "'", "c:1;n:2,8;k:3;s:4;p:5;t:10,11,12"},
+    LanguageProfile{Language::r, L"R", "r",
+        "if else repeat while function for next break in TRUE FALSE NULL Inf NaN NA NA_integer_ NA_real_ NA_character_ library require return",
+        "abs all any apply as.character as.numeric c cat cbind class colnames data.frame dim factor head is.na lapply length levels list matrix max mean median min names nchar ncol nrow paste paste0 print range rbind rep round sapply seq sd sort sqrt str subset sum summary table tail unique var which", true,
+        "r", L".r;.rmd;.rprofile", L"", "#", "c:1;k:2;t:3,4;n:5;s:6,7,13,14;a:12"},
+    LanguageProfile{Language::matlab, L"MATLAB", "matlab",
+        "break case catch classdef continue else elseif end enumeration events for function global if methods otherwise parfor persistent properties return spmd switch try while",
+        "", true,
+        "matlab", L".mat;.mlx;.matlab", L"", "%", "c:1;p:2;n:3;k:4;s:5,8"},
+    LanguageProfile{Language::julia, L"Julia", "julia",
+        "abstract baremodule begin break catch const continue do else elseif end export false finally for function global if import in isa let local macro module mutable primitive quote return struct true try type using where while",
+        "Any Array Bool Char Complex Dict Float32 Float64 Function Int Int8 Int16 Int32 Int64 Integer Matrix Nothing Number Real Set String Symbol Tuple UInt UInt8 UInt16 UInt32 UInt64 Vector", true,
+        "julia", L".jl", L"", "#", "c:1;n:2;k:3;t:4,5,18;s:6,10,14,15,16;a:11;p:12"},
+    LanguageProfile{Language::haskell, L"Haskell", "haskell",
+        "as case class data default deriving do else family forall foreign hiding if import in infix infixl infixr instance let mdo module newtype of proc qualified rec then type where",
+        "", true,
+        "haskell", L".hs;.lhs", L"", "--", "k:2;n:3;s:4,5;t:7,8;c:13,14,15,16,21;p:17,18"},
+    LanguageProfile{Language::erlang, L"Erlang", "erlang",
+        "after and andalso band begin bnot bor bsl bsr bxor case catch cond div end fun if let not of or orelse receive rem try when xor",
+        "", true,
+        "erlang", L".erl;.hrl", L"", "%", "c:1,14,15;a:2;n:3;k:4;s:5,9;t:8,22,23;p:10,12,24"},
+    LanguageProfile{Language::lisp, L"Lisp / Scheme", "lisp",
+        "and assert begin block case catch cond declaim declare defclass defconstant defgeneric define define-syntax defmacro defmethod defpackage defparameter defstruct defun defvar do dolist dotimes eval-when flet funcall if in-package labels lambda let let* letrec loop multiple-value-bind nil not or progn quote return setf setq t unless unwind-protect when",
+        "append apply car cdr cons eq eql equal format length list map mapcar nth null print reverse", true,
+        "lisp", L".lisp;.lsp;.cl;.el;.scm;.ss;.rkt", L"", ";", "c:1,12;n:2;k:3;t:4;a:5;s:6;p:11"},
+    LanguageProfile{Language::clojure, L"Clojure", "lisp",
+        "and binding case catch cond def defmacro defmethod defmulti defn defn- defonce defprotocol defrecord defstruct deftype do doseq dotimes doto finally fn for if if-let if-not import let letfn loop monitor-enter monitor-exit new nil ns or quote recur refer require set! throw try use var when when-let when-not while true false",
+        "apply assoc atom concat conj cons count dec deref dissoc filter first get inc into keys map merge nth partial println range reduce rest second seq str swap! update vals vec", true,
+        "clojure", L".clj;.cljs;.cljc;.edn", L"", ";", "c:1,12;n:2;k:3;t:4;a:5;s:6;p:11"},
+    LanguageProfile{Language::ocaml, L"OCaml", "caml",
+        "and as assert begin class constraint do done downto else end exception external false for fun function functor if in include inherit initializer lazy let match method module mutable new nonrec object of open or private rec sig struct then to true try type val virtual when while with",
+        "array bool char exn float format int int32 int64 list nativeint option ref string unit", true,
+        "ocaml", L".ml;.mli;.mll;.mly", L"", "", "t:2,4,5;k:3;p:6;n:8;s:9,11;c:12,13,14,15"},
+    LanguageProfile{Language::fsharp, L"F#", "fsharp",
+        "abstract and as assert base begin class default delegate do done downcast downto elif else end exception extern false finally fixed for fun function global if in inherit inline interface internal lazy let match member module mutable namespace new not null of open or override private public rec return select sig static struct then to true try type upcast use val void when while with yield",
+        "array bool byte char decimal double float float32 int int16 int32 int64 list nativeint obj option sbyte seq single string uint16 uint32 uint64 unit", true,
+        "fsharp", L".fs;.fsx;.fsi", L"", "//", "k:1;t:2,3;c:8,9;p:10,18;n:13;s:14,15,16"},
+    LanguageProfile{Language::tcl, L"Tcl", "tcl",
+        "after append apply array binary break catch cd chan clock close concat continue dict else elseif encoding eof error eval exec exit expr fblocked fconfigure file flush for foreach format gets glob global if incr info interp join lappend lassign lindex linsert list llength lmap load lrange lrepeat lreplace lreverse lsearch lset lsort namespace open package pid proc puts pwd read regexp regsub rename return scan seek set socket source split string subst switch tell then time trace try unset update uplevel upvar variable vwait while",
+        "", true,
+        "tcl", L".tcl;.tk", L"", "#", "c:1,2,20,21;n:3;s:5;a:8,9;k:12;t:13,14;p:10"},
+    LanguageProfile{Language::latex, L"LaTeX", "latex",
+        "",
+        "", true,
+        "latex", L".tex;.sty;.ltx;.bib", L"", "%", "k:1,9;t:2,5;s:3,6;c:4,7;m:8;a:11;x:12"},
+    LanguageProfile{Language::registry, L"Registry", "registry",
+        "",
+        "", true,
+        "registry", L".reg", L"", ";", "c:1;a:2;s:3;n:4;t:5;h:6;x:7;p:9,10"},
+    LanguageProfile{Language::nim, L"Nim", "nim",
+        "addr and as asm bind block break case cast concept const continue converter defer discard distinct div do elif else end enum except export finally for from func if import in include interface is isnot iterator let macro method mixin mod nil not notin object of or out proc ptr raise ref return shl shr static template try tuple type using var when while xor yield true false",
+        "", true,
+        "nim", L".nim;.nims;.nimble", L"", "#", "c:1,2,3,4;n:5;s:6,7,9,10;k:8;a:12"},
+    LanguageProfile{Language::zig, L"Zig", "zig",
+        "addrspace align allowzero and anyframe anytype asm async await break callconv catch comptime const continue defer else enum errdefer error export extern false fn for if inline linksection noalias noinline nosuspend null opaque or orelse packed pub resume return struct suspend switch test threadlocal true try undefined union unreachable usingnamespace var volatile while",
+        "", true,
+        "zig", L".zig;.zon", L"", "//", "c:1,2,3;n:4;s:6,7,8;a:11;p:12;k:13;t:14,15,16"},
+    LanguageProfile{Language::gdscript, L"GDScript", "gdscript",
+        "and as assert await break breakpoint class class_name const continue elif else enum extends false for func if in is match not null or pass preload return self signal static super true var void while yield",
+        "bool float int String Array Dictionary Vector2 Vector3 Color Node Object", true,
+        "gdscript", L".gd", L"", "#", "c:1,12;n:2;s:3,4,6,7;k:5;t:8,14;a:9,16;p:15"},
+    LanguageProfile{Language::verilog, L"Verilog / SystemVerilog", "verilog",
+        "always always_comb always_ff always_latch and assign automatic begin bit buf case casex casez class default defparam disable else end endcase endclass endfunction endgenerate endinterface endmodule endpackage endtask enum for forever fork function generate genvar if import initial inout input integer interface join localparam logic module nand negedge nor not or output package parameter posedge real reg repeat signed struct task time typedef unsigned wait while wire xnor xor",
+        "", true,
+        "verilog", L".v;.sv;.vh;.svh", L"", "//", "c:1,2,3;n:4;k:5;s:6;t:7,8;p:9"},
+    LanguageProfile{Language::vhdl, L"VHDL", "vhdl",
+        "access after alias all architecture array assert attribute begin block body buffer bus case component configuration constant disconnect downto else elsif end entity exit file for function generate generic group guarded if impure in inertial inout is label library linkage literal loop map new next null of on open others out package port postponed procedure process pure range record register reject report return select severity shared signal subtype then to transport type unaffected units until use variable wait when while with",
+        "", true,
+        "vhdl", L".vhd;.vhdl", L"", "--", "c:1,2,15;n:3;s:4;k:8;t:9,11,12,13;a:10"},
+    LanguageProfile{Language::autoit, L"AutoIt", "au3",
+        "and byref case const continuecase continueloop default dim do else elseif endfunc endif endselect endswitch endwith enum exit exitloop false for func global if in local next not null or redim return select static step switch then to true until volatile wend while with",
+        "", true,
+        "autoit", L".au3", L"", ";", "c:1,2;n:3;t:4,15;k:5;p:6,11;s:7;a:9"},
+    LanguageProfile{Language::nsis, L"NSIS", "nsis",
+        "abort addsize brandingtext call callinstdll caption createdirectory createshortcut delete deleteregkey deleteregvalue detailprint exec execwait file function functionend goto iferrors iffileexists installdir installdirregkey messagebox name outfile page pop push quit readregstr requestexecutionlevel rmdir section sectionend sectiongroup sectiongroupend setoutpath setoverwrite showinstdetails strcmp strcpy unicode var writeregdword writeregstr writeuninstaller",
+        "", true,
+        "nsis", L".nsi;.nsh", L"", ";", "c:1,18;s:2,3,4;k:5,17;a:6,13;t:9,10,15,16;p:11,12;n:14"},
+    LanguageProfile{Language::inno_setup, L"Inno Setup", "inno",
+        "code components custommessages dirs files icons ini installdelete langoptions languages messages registry run setup tasks types uninstalldelete uninstallrun",
+        "", true,
+        "inno-setup", L".iss", L"", ";", "c:1,7;k:2,8;a:3;h:4;p:5,6;s:10,11"},
+    LanguageProfile{Language::ada, L"Ada", "ada",
+        "abort abs abstract accept access aliased all and array at begin body case constant declare delay delta digits do else elsif end entry exception exit for function generic goto if in interface is limited loop mod new not null of or others out overriding package pragma private procedure protected raise range record rem renames requeue return reverse select separate some subtype synchronized tagged task terminate then type until use when while with xor",
+        "", false,
+        "ada", L".adb;.ads;.ada", L"", "--", "k:1;n:3;s:5,7;a:9;c:10;x:11"},
+    LanguageProfile{Language::cobol, L"COBOL", "COBOL",
+        "accept add alter call cancel close compute continue delete display divide else end-if end-perform end-read evaluate exit go goback if initialize inspect merge move multiply open perform read release return rewrite search set sort start stop string subtract unstring write division section identification environment data procedure program-id working-storage linkage file-control pic picture value to from by giving using until varying when other not and or",
+        "", true,
+        "cobol", L".cob;.cbl;.cpy;.cobol", L"", "*>", "c:2,3;n:4;k:5;s:6,7;t:8,16;p:9"},
+    LanguageProfile{Language::coffeescript, L"CoffeeScript", "coffeescript",
+        "and await break by catch class continue debugger delete do else extends false finally for if in instanceof is isnt loop new no not null of off on or return super switch then this throw true try typeof undefined unless until when while yes yield",
+        "", true,
+        "coffeescript", L".coffee;.litcoffee", L"cakefile", "#", "c:1,2,3,22;n:4;k:5;s:6,7,21;t:16,19;p:14,23;a:25"},
+    LanguageProfile{Language::d, L"D", "d",
+        "abstract alias align asm assert auto body bool break byte case cast catch char class const continue dchar debug default delegate deprecated do double else enum export extern false final finally float for foreach foreach_reverse function goto if immutable import in inout int interface invariant is lazy long macro mixin module new nothrow null out override package pragma private protected public pure real ref return scope shared short static struct super switch synchronized template this throw true try typeid typeof ubyte uint ulong union unittest ushort version void wchar while with",
+        "", true,
+        "d", L".d;.di", L"", "//", "c:1,2,3,4,15;n:5;k:6;t:7,8,9;s:10,12,18,19"},
+    LanguageProfile{Language::properties, L"Properties", "props",
+        "",
+        "", false,
+        "properties", L".properties;.env;.editorconfig;.gitconfig", L".gitconfig;.editorconfig;.npmrc;.env", "#", ""}
 };
+
+// True when `value` is one of the semicolon-separated items of `list`.
+bool ListContains(std::wstring_view list, std::wstring_view value) noexcept {
+    if (value.empty()) return false;
+    std::size_t start = 0;
+    while (start <= list.size()) {
+        const auto end = list.find(L';', start);
+        const auto item = list.substr(start, (end == std::wstring_view::npos ? list.size() : end) - start);
+        if (item == value) return true;
+        if (end == std::wstring_view::npos) break;
+        start = end + 1;
+    }
+    return false;
 }
+}  // namespace
 
 Language DetectLanguage(const std::filesystem::path& path) noexcept {
-    auto name = path.filename().wstring();
-    std::transform(name.begin(), name.end(), name.begin(), std::towlower);
-    if (name == L"cmakelists.txt" || name.ends_with(L".cmake")) return Language::cmake;
-    if (name == L"makefile") return Language::plain_text;
-    const auto extension = std::filesystem::path{name}.extension().wstring();
-    if (extension == L".c" || extension == L".cc" || extension == L".cpp" ||
-        extension == L".cxx" || extension == L".h" || extension == L".hh" ||
-        extension == L".hpp" || extension == L".hxx") return Language::cpp;
-    if (extension == L".cs") return Language::csharp;
-    if (extension == L".java") return Language::java;
-    if (extension == L".js" || extension == L".jsx" || extension == L".mjs" ||
-        extension == L".cjs") return Language::javascript;
-    if (extension == L".ts" || extension == L".tsx" || extension == L".mts" ||
-        extension == L".cts") return Language::typescript;
-    if (extension == L".py" || extension == L".pyw") return Language::python;
-    if (extension == L".json" || extension == L".jsonc") return Language::json;
-    if (extension == L".xml" || extension == L".xaml" || extension == L".svg") return Language::xml;
-    if (extension == L".html" || extension == L".htm") return Language::html;
-    if (extension == L".css" || extension == L".scss" || extension == L".less") return Language::css;
-    if (extension == L".md" || extension == L".markdown") return Language::markdown;
-    if (extension == L".ps1" || extension == L".psm1" || extension == L".psd1") return Language::powershell;
-    if (extension == L".bat" || extension == L".cmd") return Language::batch;
-    if (extension == L".ini" || extension == L".cfg" || extension == L".conf") return Language::ini;
-    if (extension == L".yaml" || extension == L".yml") return Language::yaml;
-    if (extension == L".sql") return Language::sql;
-    if (extension == L".rs") return Language::rust;
+    try {
+        auto name = path.filename().wstring();
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+        for (const auto& profile : profiles)
+            if (ListContains(profile.filenames, name)) return profile.language;
+        if (name.starts_with(L"dockerfile.") || name.starts_with(L"makefile."))
+            return name.front() == L'd' ? Language::dockerfile : Language::makefile;
+        const auto dot = name.rfind(L'.');
+        if (dot == std::wstring::npos || dot == 0) return Language::plain_text;
+        const auto extension = std::wstring_view{name}.substr(dot);
+        for (const auto& profile : profiles)
+            if (ListContains(profile.extensions, extension)) return profile.language;
+    } catch (...) {}
     return Language::plain_text;
 }
 
 std::string_view LexerName(Language language) noexcept {
-    switch (language) {
-    case Language::cpp: case Language::csharp: case Language::java:
-    case Language::javascript: case Language::typescript: return "cpp";
-    case Language::python: return "python";
-    case Language::json: return "json";
-    case Language::xml: case Language::html: return "hypertext";
-    case Language::css: return "css";
-    case Language::markdown: return "markdown";
-    case Language::cmake: return "cmake";
-    case Language::powershell: return "powershell";
-    case Language::batch: return "batch";
-    case Language::ini: return "props";
-    case Language::yaml: return "yaml";
-    case Language::sql: return "sql";
-    case Language::rust: return "rust";
-    case Language::plain_text: return {};
-    }
-    return {};
+    return GetLanguageProfile(language).lexer;
 }
 
 std::wstring_view LanguageName(Language language) noexcept {
@@ -125,4 +330,3 @@ const LanguageProfile& GetLanguageProfile(Language language) noexcept {
 std::span<const Language> AllLanguages() noexcept { return languages; }
 
 }  // namespace notepad_colon
-

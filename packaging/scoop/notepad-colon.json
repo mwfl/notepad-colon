@@ -1,0 +1,22 @@
+{
+    "version": "{{Version}}",
+    "description": "A fast, focused, local-first text and code editor for Windows.",
+    "homepage": "https://github.com/{{Repository}}",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "{{X64Url}}",
+            "hash": "{{X64HashLower}}"
+        }{{ScoopArm64}}
+    },
+    "bin": "notepad-colon.exe",
+    "shortcuts": [
+        [
+            "notepad-colon.exe",
+            "Notepad Colon"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/{{Repository}}"
+    }
+}

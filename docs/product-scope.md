@@ -29,6 +29,19 @@ definitions, references, refactoring, or background diagnostics. The unused
 LanguageService placeholder was removed so the architecture reflects that
 product decision rather than advertising a future IDE subsystem.
 
+## Line tools
+
+Rainbow columns and highlighted log lines decorate only the lines a view is
+showing, at most 16 KiB per line, and are recomputed only when the visible
+range or the text changes. The line filter reads the source in 4 MiB chunks,
+keeps at most 100,000 lines or 16 MiB of text, and is cancellable. A large
+file must be saved before it is filtered, because the scan reads the file on
+disk rather than the in-memory edit list.
+
+Replace in Files scans at most 100,000 entries, skips binary files and files
+over 8 MiB, and never rewrites a file whose result cannot be represented in
+that file's own encoding.
+
 ## Folder behavior
 
 Folder mode is optional. Users can continue to open one file or several tabs

@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <climits>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -52,9 +53,56 @@ void ConfigureCommonStyles(mwfl::ScintillaEditor& editor, Language language, boo
     const COLORREF muted = dark ? RGB(128, 128, 128) : RGB(100, 100, 100);
     const COLORREF link = dark ? RGB(78, 148, 206) : RGB(0, 70, 180);
     const COLORREF heading = dark ? RGB(220, 220, 170) : RGB(70, 70, 130);
+    const auto& profile = GetLanguageProfile(language);
+    if (!profile.styles.empty()) {
+        // Data-driven palette: "role:style,style;role:style".
+        const auto role_colour = [&](char role) -> std::optional<COLORREF> {
+            switch (role) {
+            case 'c': case 'g': return comment;
+            case 's': return string;
+            case 'n': return number;
+            case 'k': return keyword;
+            case 't': return type;
+            case 'p': return preprocessor;
+            case 'a': return property;
+            case 'h': return heading;
+            case 'm': return muted;
+            case 'l': return link;
+            case 'x': return dark ? RGB(244, 112, 103) : RGB(200, 30, 30);
+            default: return std::nullopt;
+            }
+        };
+        const auto spec = profile.styles;
+        for (std::size_t cursor = 0; cursor + 1 < spec.size();) {
+            const char role = spec[cursor];
+            const auto end = (std::min)(spec.find(';', cursor), spec.size());
+            const auto colour = role_colour(role);
+            int style = 0;
+            bool has_digit = false;
+            for (std::size_t index = cursor + 2; index <= end; ++index) {
+                const char value = index < end ? spec[index] : ',';
+                if (value >= '0' && value <= '9') {
+                    style = style * 10 + (value - '0');
+                    has_digit = true;
+                } else if (has_digit) {
+                    if (colour && style <= STYLE_MAX) {
+                        Fore(editor, style, *colour);
+                        if (role == 'k' || role == 'h') Bold(editor, style);
+                    }
+                    style = 0;
+                    has_digit = false;
+                }
+            }
+            cursor = end + 1;
+        }
+        return;
+    }
     switch (language) {
     case Language::cpp: case Language::csharp: case Language::java:
     case Language::javascript: case Language::typescript:
+    case Language::go: case Language::kotlin: case Language::swift:
+    case Language::scala: case Language::groovy: case Language::objective_c:
+    case Language::protobuf: case Language::glsl:
         Colour(editor, {1, 2, 3, 15, 17, 18, 24}, comment);
         Colour(editor, {6, 7, 12, 20, 27}, string);
         Fore(editor, 4, number); Fore(editor, 5, keyword); Bold(editor, 5);
@@ -99,7 +147,7 @@ void ConfigureCommonStyles(mwfl::ScintillaEditor& editor, Language language, boo
         Fore(editor, 1, comment); Fore(editor, 2, keyword); Bold(editor, 2);
         Fore(editor, 4, preprocessor); Fore(editor, 5, property); Fore(editor, 6, type);
         break;
-    case Language::ini:
+    case Language::ini: case Language::properties:
         Fore(editor, 1, comment); Fore(editor, 2, heading); Bold(editor, 2);
         Fore(editor, 3, type); Fore(editor, 4, property);
         break;
@@ -161,8 +209,9 @@ bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runt
     const auto& profile = GetLanguageProfile(language);
     void* lexer = runtime.CreateLexer(language);
     editor.Send(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(lexer));
-    SetKeywords(editor, 0, profile.primary_keywords);
-    SetKeywords(editor, 1, profile.secondary_keywords);
+    // The PHP script lexer shares the HTML lexer's keyword slots: PHP is the fifth.
+    SetKeywords(editor, profile.lexer == "phpscript" ? 4 : 0, profile.primary_keywords);
+    if (profile.lexer != "phpscript") SetKeywords(editor, 1, profile.secondary_keywords);
     const bool folding = lexer && profile.supports_folding && mode == SyntaxPerformanceMode::full;
     SetProperty(editor, "fold", folding ? "1" : "0");
     SetProperty(editor, "fold.compact", folding ? "1" : "0");

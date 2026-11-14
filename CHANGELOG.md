@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Add built-in syntax highlighting for more than 60 languages (was 19),
+  driven by one language table with extensions, file names and comment
+  prefixes. `CMakeLists.txt`, `Dockerfile` and `Makefile` are now recognised
+  by name.
+- Add a split view: a second view of the same document, side by side or
+  stacked.
+- Detect GB18030, Big5, Shift-JIS, EUC-JP and EUC-KR automatically, and add
+  Reopen as / Convert to commands for each. Fix saving documents as GB18030,
+  which always failed.
+- Add Replace in Files with a preview, per-file encoding preservation, atomic
+  writes and optional backups. Find in Files now decodes legacy and UTF-16
+  files the same way the editor does.
+- Add Filter Lines, Highlight Log Lines with editable rules, and Rainbow
+  Columns for CSV/TSV data.
+- Translate the whole interface into Simplified Chinese; previously only
+  about twenty commands were translated.
+- Add an optional, reversible Explorer context menu, and open folders passed
+  on the command line or dropped on the window as workspaces.
+- Add winget and Scoop manifest generation and an ARM64 build configuration.
+- Keep the WebAssembly engine out of the editor process entirely and verify in
+  the test suite that no shipped binary imports a networking library.
+- Fix editor focus and change notifications being mistaken for menu commands
+  once a session had opened about a hundred documents.
+- Split the 4,600-line main.cpp into per-area files under `src/app`.
+
 - Include target-size icons for default, dark, and light themes in MSIX packages
   and generate resources.pri so Windows can select icons without a system plate.
 - Bundle the MSVC runtime DLLs with portable ZIP and Store MSIX packages so

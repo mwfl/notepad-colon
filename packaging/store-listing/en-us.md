@@ -17,8 +17,8 @@ indexing. Safe atomic saves, external-change detection, optional backups, and
 session recovery help protect your work.
 
 Edit everyday text and code with tabs, bookmarks, folding, multiple selections,
-brace matching, line operations, wrapping, zoom, and highlighting for 19 common
-languages. Search open documents or folders with previews, regular expressions,
+brace matching, line operations, wrapping, zoom, and highlighting for more than
+60 languages. Search open documents or folders with previews, regular expressions,
 include/exclude globs, .gitignore support, and explicit safety limits. UTF-8
 files larger than 32 MiB and up to 4 GiB use a fixed-memory editable window so
 the app remains responsive.
@@ -26,7 +26,7 @@ the app remains responsive.
 ## Product features
 
 - Fast native Windows editing with multi-document tabs
-- Syntax highlighting for 19 common languages
+- Syntax highlighting for more than 60 languages
 - Powerful local search across files, folders, and open documents
 - Atomic saves, external-change detection, backups, and recovery
 - Fixed-memory editing for UTF-8 files up to 4 GiB

@@ -70,6 +70,60 @@ SearchResult SearchText(const std::filesystem::path& path, std::wstring_view tex
                         std::wstring_view query, const SearchOptions& options = {},
                         std::stop_token stop = {});
 FileState CaptureFileState(const std::filesystem::path& path) noexcept;
+// True when a workspace-relative path passes the include/exclude glob lists
+// (an empty include list includes everything).
+bool MatchesWorkspaceGlobs(const std::filesystem::path& relative,
+                           const std::vector<std::wstring>& include_globs,
+                           const std::vector<std::wstring>& exclude_globs);
+
+struct TextReplacement {
+    std::wstring text;
+    std::size_t count = 0;
+    std::wstring error;
+};
+
+struct ReplaceFileOutcome {
+    std::filesystem::path path;
+    std::size_t replacements = 0;
+    bool written = false;
+    std::wstring error;  // Empty unless the file had matches and could not be rewritten.
+};
+
+struct ReplaceOptions {
+    SearchOptions search;
+    bool create_backups = true;
+    // Preview mode counts matches per file without writing anything.
+    bool dry_run = false;
+    // Files the caller rewrites itself (documents open in the editor).
+    std::vector<std::filesystem::path> excluded_paths;
+    std::size_t maximum_files = 100000;
+};
+
+struct ReplaceResult {
+    std::vector<ReplaceFileOutcome> files;  // Only files that contained matches.
+    std::size_t replacements = 0;
+    std::size_t files_changed = 0;
+    std::size_t files_failed = 0;
+    std::size_t files_searched = 0;
+    std::size_t files_skipped = 0;
+    bool cancelled = false;
+    bool truncated = false;
+    std::wstring error;
+};
+
+// Replaces every non-overlapping match using the same matching rules as
+// SearchText. Regular-expression replacements accept $1-style references.
+TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query,
+                                 std::wstring_view replacement,
+                                 const SearchOptions& options = {});
+
+// Rewrites matching files under `root`. Each file keeps its encoding, byte
+// order mark and line endings, is replaced atomically, and is left untouched
+// if it changed on disk during the operation or the result cannot be encoded.
+ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring_view query,
+                                 std::wstring_view replacement,
+                                 const ReplaceOptions& options = {},
+                                 std::stop_token stop = {});
 
 }  // namespace notepad_colon
 

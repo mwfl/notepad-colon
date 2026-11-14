@@ -88,37 +88,18 @@ std::optional<std::filesystem::path> SafeRelativePath(
     return Within(path, root) ? std::optional<std::filesystem::path>{path} : std::nullopt;
 }
 
-std::string_view BuiltinId(Language language) noexcept {
-    constexpr std::array ids{"plain-text", "cpp", "csharp", "java", "javascript",
-        "typescript", "python", "json", "xml", "html", "css", "markdown", "cmake",
-        "powershell", "batch", "ini", "yaml", "sql", "rust"};
-    const auto index = static_cast<std::size_t>(language);
-    return index < ids.size() ? ids[index] : ids.front();
-}
-
-std::vector<std::wstring> BuiltinExtensions(Language language) {
-    switch (language) {
-    case Language::cpp: return {L".c", L".cc", L".cpp", L".cxx", L".h", L".hh", L".hpp", L".hxx"};
-    case Language::csharp: return {L".cs"};
-    case Language::java: return {L".java"};
-    case Language::javascript: return {L".js", L".jsx", L".mjs", L".cjs"};
-    case Language::typescript: return {L".ts", L".tsx", L".mts", L".cts"};
-    case Language::python: return {L".py", L".pyw"};
-    case Language::json: return {L".json", L".jsonc"};
-    case Language::xml: return {L".xml", L".xaml", L".svg"};
-    case Language::html: return {L".html", L".htm"};
-    case Language::css: return {L".css", L".scss", L".less"};
-    case Language::markdown: return {L".md", L".markdown"};
-    case Language::cmake: return {L".cmake"};
-    case Language::powershell: return {L".ps1", L".psm1", L".psd1"};
-    case Language::batch: return {L".bat", L".cmd"};
-    case Language::ini: return {L".ini", L".cfg", L".conf"};
-    case Language::yaml: return {L".yaml", L".yml"};
-    case Language::sql: return {L".sql"};
-    case Language::rust: return {L".rs"};
-    case Language::plain_text: return {L".txt"};
+std::vector<std::wstring> SplitList(std::wstring_view list) {
+    std::vector<std::wstring> items;
+    std::size_t start = 0;
+    while (start <= list.size()) {
+        const auto end = list.find(L';', start);
+        const auto item = list.substr(start,
+            (end == std::wstring_view::npos ? list.size() : end) - start);
+        if (!item.empty()) items.emplace_back(item);
+        if (end == std::wstring_view::npos) break;
+        start = end + 1;
     }
-    return {};
+    return items;
 }
 }
 
@@ -130,12 +111,12 @@ void LanguageRegistry::ResetBuiltins() {
     for (const auto language : AllLanguages()) {
         const auto& profile = GetLanguageProfile(language);
         RegisteredLanguage registered;
-        registered.id = std::string(BuiltinId(language));
+        registered.id = std::string(profile.id);
         registered.name = std::wstring(profile.name);
         registered.fallback_lexer = std::string(profile.lexer);
         registered.builtin = language;
-        registered.extensions = BuiltinExtensions(language);
-        if (language == Language::cmake) registered.filenames.push_back(L"cmakelists.txt");
+        registered.extensions = SplitList(profile.extensions);
+        registered.filenames = SplitList(profile.filenames);
         languages_.push_back(std::move(registered));
     }
 }
@@ -240,11 +221,16 @@ const RegisteredLanguage* LanguageRegistry::Find(std::string_view id) const noex
 const RegisteredLanguage* LanguageRegistry::Detect(const std::filesystem::path& path) const noexcept {
     const auto filename = Lower(path.filename().wstring());
     const auto extension = Lower(path.extension().wstring());
-    const auto found = std::ranges::find_if(languages_, [&](const RegisteredLanguage& language) {
-        return std::ranges::find(language.filenames, filename) != language.filenames.end() ||
-               std::ranges::find(language.extensions, extension) != language.extensions.end();
-    });
-    return found == languages_.end() ? Find("plain-text") : &*found;
+    // Exact file names (CMakeLists.txt, Dockerfile) outrank extensions.
+    for (const auto& language : languages_)
+        if (std::ranges::find(language.filenames, filename) != language.filenames.end())
+            return &language;
+    if (!extension.empty())
+        for (const auto& language : languages_)
+            if (std::ranges::find(language.extensions, extension) != language.extensions.end())
+                return &language;
+    // Prefix conventions such as Dockerfile.dev are known only to the built-in table.
+    return Find(GetLanguageProfile(DetectLanguage(path)).id);
 }
 
 }  // namespace notepad_colon

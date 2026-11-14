@@ -1,4 +1,5 @@
 #include <notepad_colon/workspace.h>
+#include <notepad_colon/encoding_analysis.h>
 
 #include <windows.h>
 
@@ -6,7 +7,9 @@
 #include <cwctype>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <regex>
+#include <span>
 
 namespace notepad_colon {
 namespace {
@@ -18,33 +21,41 @@ std::wstring Lower(std::wstring_view value) {
 
 bool IsWord(wchar_t value) noexcept { return std::iswalnum(value) != 0 || value == L'_'; }
 
+struct LoadedText {
+    std::wstring text;
+    EncodingKind encoding = EncodingKind::utf8;
+    unsigned int code_page = 65001;
+    FileState state;
+};
+
+// Reads and decodes a file the same way the editor does: Unicode by byte
+// order mark or validity, otherwise the detected legacy code page.
+std::optional<LoadedText> LoadText(const std::filesystem::path& path,
+                                   std::uintmax_t maximum_size) {
+    LoadedText loaded;
+    loaded.state = CaptureFileState(path);
+    if (!loaded.state.exists || loaded.state.size > maximum_size) return std::nullopt;
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return std::nullopt;
+    const std::string raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    const std::span<const std::uint8_t> bytes{
+        reinterpret_cast<const std::uint8_t*>(raw.data()), raw.size()};
+    const auto analysis = AnalyzeEncoding(bytes);
+    if (analysis.encoding == EncodingKind::binary) return std::nullopt;
+    auto decoded = DecodeBytes(bytes, analysis.encoding, analysis.code_page);
+    if (!decoded) return std::nullopt;
+    loaded.text = std::move(*decoded);
+    loaded.encoding = analysis.encoding;
+    loaded.code_page = analysis.code_page;
+    return loaded;
+}
+
 bool DecodeText(const std::filesystem::path& path, std::wstring& text,
                 std::uintmax_t maximum_size) {
-    std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
-    if (error || size > maximum_size) return false;
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return false;
-    std::string bytes{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-    if (bytes.find('\0') != std::string::npos) return false;
-    if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xef &&
-        static_cast<unsigned char>(bytes[1]) == 0xbb && static_cast<unsigned char>(bytes[2]) == 0xbf)
-        bytes.erase(0, 3);
-    if (bytes.empty()) { text.clear(); return true; }
-    int length = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
-                                       static_cast<int>(bytes.size()), nullptr, 0);
-    UINT page = CP_UTF8;
-    DWORD flags = MB_ERR_INVALID_CHARS;
-    if (length <= 0) {
-        page = CP_ACP;
-        flags = 0;
-        length = ::MultiByteToWideChar(page, flags, bytes.data(),
-                                       static_cast<int>(bytes.size()), nullptr, 0);
-    }
-    if (length <= 0) return false;
-    text.resize(static_cast<std::size_t>(length));
-    return ::MultiByteToWideChar(page, flags, bytes.data(), static_cast<int>(bytes.size()),
-                                 text.data(), length) == length;
+    auto loaded = LoadText(path, maximum_size);
+    if (!loaded) return false;
+    text = std::move(loaded->text);
+    return true;
 }
 
 bool MatchAt(std::wstring_view line, std::wstring_view query, std::size_t offset,
@@ -342,6 +353,130 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
         }
     }
     result.truncated |= scan.truncated;
+    return result;
+}
+
+bool MatchesWorkspaceGlobs(const std::filesystem::path& relative,
+                           const std::vector<std::wstring>& include_globs,
+                           const std::vector<std::wstring>& exclude_globs) {
+    const auto include_patterns = CompileGlobs(include_globs);
+    return (include_patterns.empty() || MatchesAny(relative, include_patterns)) &&
+           !MatchesAny(relative, CompileGlobs(exclude_globs));
+}
+
+TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query,
+                                 std::wstring_view replacement, const SearchOptions& options) {
+    TextReplacement result;
+    if (query.empty()) { result.text = std::wstring{text}; return result; }
+    if (options.regular_expression) {
+        try {
+            auto flags = std::regex_constants::ECMAScript;
+            if (!options.match_case) flags |= std::regex_constants::icase;
+            const std::wregex expression{std::wstring{query}, flags};
+            const std::wstring format{replacement};
+            using Iterator = std::regex_iterator<std::wstring_view::const_iterator>;
+            auto cursor = text.begin();
+            for (Iterator match{text.begin(), text.end(), expression}, end; match != end; ++match) {
+                // An empty match (for example "x*") would never advance the scan.
+                if (match->length() == 0) continue;
+                result.text.append(cursor, (*match)[0].first);
+                result.text += match->format(format);
+                cursor = (*match)[0].second;
+                ++result.count;
+            }
+            result.text.append(cursor, text.end());
+        } catch (const std::regex_error&) {
+            result.text = std::wstring{text};
+            result.count = 0;
+            result.error = L"Invalid regular expression";
+        }
+        return result;
+    }
+    result.text.reserve(text.size());
+    std::size_t copied = 0;
+    for (std::size_t offset = 0; offset + query.size() <= text.size();) {
+        if (MatchAt(text, query, offset, options)) {
+            result.text.append(text, copied, offset - copied);
+            result.text.append(replacement);
+            offset += query.size();
+            copied = offset;
+            ++result.count;
+        } else ++offset;
+    }
+    result.text.append(text, copied, text.size() - copied);
+    return result;
+}
+
+ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring_view query,
+                                 std::wstring_view replacement, const ReplaceOptions& options,
+                                 std::stop_token stop) {
+    ReplaceResult result;
+    if (query.empty()) return result;
+    if (options.search.regular_expression) {
+        // Validate once so an invalid pattern is one error, not one per file.
+        if (const auto probe = ReplaceAllInText(L"", query, replacement, options.search);
+            !probe.error.empty()) {
+            result.error = probe.error;
+            return result;
+        }
+    }
+    const auto scan = ScanWorkspace(root, options.maximum_files, stop, options.search.use_gitignore);
+    result.files_skipped += scan.skipped;
+    result.truncated = scan.truncated;
+    const auto include_patterns = CompileGlobs(options.search.include_globs);
+    const auto exclude_patterns = CompileGlobs(options.search.exclude_globs);
+    const auto excluded = [&](const std::filesystem::path& path) {
+        const auto normal = Lower(path.lexically_normal().wstring());
+        return std::ranges::any_of(options.excluded_paths, [&](const auto& candidate) {
+            return Lower(candidate.lexically_normal().wstring()) == normal;
+        });
+    };
+    for (const auto& entry : scan.entries) {
+        if (stop.stop_requested()) { result.cancelled = true; break; }
+        if (entry.directory) continue;
+        if ((!include_patterns.empty() && !MatchesAny(entry.relative_path, include_patterns)) ||
+            MatchesAny(entry.relative_path, exclude_patterns)) {
+            ++result.files_skipped; continue;
+        }
+        const auto path = root / entry.relative_path;
+        if (excluded(path)) { ++result.files_skipped; continue; }
+        const auto loaded = LoadText(path, options.search.maximum_file_size);
+        if (!loaded) { ++result.files_skipped; continue; }
+        ++result.files_searched;
+        auto replaced = ReplaceAllInText(loaded->text, query, replacement, options.search);
+        if (replaced.count == 0) continue;
+        ReplaceFileOutcome outcome{path, replaced.count};
+        if (options.dry_run) {
+            result.replacements += replaced.count;
+            result.files.push_back(std::move(outcome));
+            continue;
+        }
+        // A replacement that the file's own encoding cannot represent must not
+        // silently change that encoding or drop characters.
+        if (!EncodeText(replaced.text, loaded->encoding, loaded->code_page)) {
+            outcome.error = L"The replacement is not representable in the file's encoding";
+        } else {
+            if (options.create_backups) {
+                auto backup = path;
+                backup += L".bak";
+                if (!::CopyFileW(path.c_str(), backup.c_str(), FALSE))
+                    outcome.error = L"The backup could not be created";
+            }
+            if (outcome.error.empty()) {
+                const EncodedWriteExpectation expected{
+                    loaded->state.size, loaded->state.last_write, loaded->state.exists};
+                if (WriteEncodedFileAtomic(path, replaced.text, loaded->encoding,
+                                           loaded->code_page, expected))
+                    outcome.written = true;
+                else outcome.error = L"The file changed on disk or could not be written";
+            }
+        }
+        if (outcome.written) {
+            ++result.files_changed;
+            result.replacements += replaced.count;
+        } else ++result.files_failed;
+        result.files.push_back(std::move(outcome));
+    }
     return result;
 }
 

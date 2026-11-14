@@ -1,4 +1,5 @@
 #include <notepad_colon/encoding_analysis.h>
+#include <notepad_colon/encoding_detection.h>
 
 #include <windows.h>
 
@@ -110,18 +111,21 @@ std::optional<std::vector<std::uint8_t>> EncodeText(std::wstring_view text,
         return output;
     }
     const UINT code_page = encoding == EncodingKind::ansi ? EffectiveCodePage(ansi_code_page) : CP_UTF8;
-    const DWORD flags = encoding == EncodingKind::ansi ? WC_NO_BEST_FIT_CHARS : WC_ERR_INVALID_CHARS;
+    // GB18030 and UTF-8 cover all of Unicode: Windows rejects the best-fit flag
+    // and the substitution out-parameter for them, and neither can be lossy.
+    const bool total = code_page == CP_UTF8 || code_page == 54936;
+    const DWORD flags = total ? WC_ERR_INVALID_CHARS : WC_NO_BEST_FIT_CHARS;
     BOOL substituted = FALSE;
     const auto count = static_cast<int>(text.size());
     const int required = count ? ::WideCharToMultiByte(code_page, flags, text.data(), count, nullptr, 0,
-        nullptr, encoding == EncodingKind::ansi ? &substituted : nullptr) : 0;
+        nullptr, total ? nullptr : &substituted) : 0;
     if (count && (required <= 0 || substituted)) return std::nullopt;
     if (encoding == EncodingKind::utf8_bom) output = {0xef, 0xbb, 0xbf};
     const auto start = output.size(); output.resize(start + static_cast<std::size_t>(required));
     substituted = FALSE;
     if (required && !::WideCharToMultiByte(code_page, flags, text.data(), count,
         reinterpret_cast<char*>(output.data() + start), required, nullptr,
-        encoding == EncodingKind::ansi ? &substituted : nullptr)) return std::nullopt;
+        total ? nullptr : &substituted)) return std::nullopt;
     if (substituted) return std::nullopt;
     return output;
 }
@@ -144,7 +148,11 @@ EncodingAnalysis AnalyzeEncoding(std::span<const std::uint8_t> bytes, unsigned i
         result.invalid_byte_offsets = InvalidUtf8(bytes);
         if (!result.invalid_byte_offsets.empty()) {
             result.encoding = result.contains_nul ? EncodingKind::binary : EncodingKind::ansi;
-            result.code_page = EffectiveCodePage(ansi_code_page);
+            // An explicit code page is a user decision; otherwise infer the
+            // legacy encoding from the content before trusting the system one.
+            result.code_page = ansi_code_page != 0 || result.contains_nul
+                ? EffectiveCodePage(ansi_code_page)
+                : DetectLegacyCodePage(bytes).code_page;
         }
     }
     result.valid = result.invalid_byte_offsets.empty() || result.encoding == EncodingKind::ansi;
