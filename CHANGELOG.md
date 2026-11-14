@@ -26,6 +26,11 @@
 - Fix editor focus and change notifications being mistaken for menu commands
   once a session had opened about a hundred documents.
 - Split the 4,600-line main.cpp into per-area files under `src/app`.
+- Show each command's keyboard shortcut in the menus, and name keys such as
+  Space and the brackets instead of showing `Key32`.
+- Size dialog buttons to their captions so Chinese captions are no longer
+  cramped, and stop leaving an empty Untitled tab when files are opened from
+  the command line.
 
 - Include target-size icons for default, dark, and light themes in MSIX packages
   and generate resources.pri so Windows can select icons without a system plate.

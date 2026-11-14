@@ -69,6 +69,15 @@ namespace notepad_colon::app {
 
 using notepad_colon::Tr;
 
+// Width of a push button that fits `caption` with normal padding. Automatic
+// sizing leaves no padding at all, which crowds CJK captions in particular.
+inline mwfl::LayoutLength ButtonWidth(std::wstring_view caption) noexcept {
+    float width = 28.0f;
+    for (const wchar_t character : caption)
+        if (character != L'&') width += character >= 0x2E80 ? 15.0f : 7.5f;
+    return mwfl::Fixed(mwfl::Dip((std::max)(width, 76.0f)));
+}
+
 constexpr mwfl::ControlId kNew{100};
 constexpr mwfl::ControlId kOpen{101};
 constexpr mwfl::ControlId kSave{102};
@@ -561,6 +570,8 @@ private:
     void AddLanguageCommands();
 
     void ApplyUiLanguage();
+    void RefreshShortcutLabels();
+    static std::wstring CommandLabel(const mwfl::Command& command, bool keep_mnemonic);
     void RememberCommandTitles();
 
     void SetUiLanguage(bool chinese);

@@ -296,6 +296,17 @@ int main() {
     Check(shortcut && notepad_colon::FormatShortcut(*shortcut) == L"Ctrl+Shift+F5",
           "shortcut parses and formats");
     Check(!notepad_colon::ParseShortcut(7, L"Ctrl+NoSuchKey"), "invalid shortcut rejected");
+    // Every key the built-in bindings use must have a readable name that parses back.
+    for (const int value : {VK_SPACE, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_2, VK_OEM_PLUS,
+                                    VK_OEM_MINUS, VK_UP, VK_TAB, VK_DELETE, 0xE2}) {
+        const auto key = static_cast<std::uint16_t>(value);
+        const notepad_colon::ShortcutBinding binding{7, FVIRTKEY | FCONTROL, key};
+        const auto text = notepad_colon::FormatShortcut(binding);
+        Check(key == 0xE2 || text.find(L"Key") == std::wstring::npos, "shortcut key has a name");
+        Check(notepad_colon::ParseShortcut(7, text) == binding, "shortcut key name round-trips");
+    }
+    Check(notepad_colon::FormatShortcut({7, FVIRTKEY | FCONTROL, VK_SPACE}) == L"Ctrl+Space",
+          "space shortcut is named");
     Check(notepad_colon::FindShortcutConflicts({{1, FCONTROL, 'A'}, {2, FCONTROL, 'A'}}).size() == 1,
           "shortcut conflicts detected");
     notepad_colon::Configuration configuration;

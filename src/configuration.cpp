@@ -41,6 +41,20 @@ std::wstring Upper(std::wstring_view value) {
 }
 }  // namespace
 
+namespace {
+struct NamedKey { std::uint16_t key; std::wstring_view name; };
+// Keys that are neither letters, digits nor function keys. Names contain no
+// '+', which separates the parts of a shortcut.
+constexpr NamedKey kNamedKeys[] = {
+    {VK_UP, L"Up"}, {VK_DOWN, L"Down"}, {VK_LEFT, L"Left"}, {VK_RIGHT, L"Right"},
+    {VK_OEM_PLUS, L"Plus"}, {VK_OEM_MINUS, L"Minus"}, {VK_OEM_2, L"Slash"},
+    {VK_SPACE, L"Space"}, {VK_TAB, L"Tab"}, {VK_RETURN, L"Enter"}, {VK_BACK, L"Backspace"},
+    {VK_INSERT, L"Insert"}, {VK_DELETE, L"Delete"}, {VK_HOME, L"Home"}, {VK_END, L"End"},
+    {VK_PRIOR, L"PageUp"}, {VK_NEXT, L"PageDown"},
+    {VK_OEM_4, L"["}, {VK_OEM_6, L"]"}, {VK_OEM_5, L"\\"}, {VK_OEM_1, L";"},
+    {VK_OEM_7, L"'"}, {VK_OEM_COMMA, L","}, {VK_OEM_PERIOD, L"."}, {VK_OEM_3, L"`"}};
+}  // namespace
+
 std::wstring FormatShortcut(const ShortcutBinding& binding) {
     if (!binding.key) return L"";
     std::wstring result;
@@ -51,14 +65,9 @@ std::wstring FormatShortcut(const ShortcutBinding& binding) {
         result += L"F" + std::to_wstring(binding.key - VK_F1 + 1);
     else if ((binding.key >= 'A' && binding.key <= 'Z') ||
              (binding.key >= '0' && binding.key <= '9')) result += static_cast<wchar_t>(binding.key);
-    else if (binding.key == VK_UP) result += L"Up";
-    else if (binding.key == VK_DOWN) result += L"Down";
-    else if (binding.key == VK_LEFT) result += L"Left";
-    else if (binding.key == VK_RIGHT) result += L"Right";
-    else if (binding.key == VK_OEM_PLUS) result += L"Plus";
-    else if (binding.key == VK_OEM_MINUS) result += L"Minus";
-    else if (binding.key == VK_OEM_2) result += L"Slash";
-    else return L"Key" + std::to_wstring(binding.key);
+    else if (const auto named = std::ranges::find(kNamedKeys, binding.key, &NamedKey::key);
+             named != std::end(kNamedKeys)) result += named->name;
+    else result += L"Key" + std::to_wstring(binding.key);
     return result;
 }
 
@@ -75,14 +84,19 @@ std::optional<ShortcutBinding> ParseShortcut(std::uint16_t command_id, std::wstr
         else if (token == L"SHIFT") modifiers |= FSHIFT;
         else if (token.size() == 1 && ((token[0] >= L'A' && token[0] <= L'Z') ||
                                       (token[0] >= L'0' && token[0] <= L'9'))) key = static_cast<std::uint16_t>(token[0]);
+        else if (const auto named = std::ranges::find_if(kNamedKeys,
+                     [&](const NamedKey& entry) { return Upper(entry.name) == token; });
+                 named != std::end(kNamedKeys)) key = named->key;
         else if (token.size() >= 2 && token[0] == L'F') {
             wchar_t* parse_end{}; const auto number = std::wcstoul(token.c_str() + 1, &parse_end, 10);
             if (!parse_end || *parse_end || number < 1 || number > 24) return std::nullopt;
             key = static_cast<std::uint16_t>(VK_F1 + number - 1);
-        } else if (token == L"UP") key = VK_UP; else if (token == L"DOWN") key = VK_DOWN;
-        else if (token == L"LEFT") key = VK_LEFT; else if (token == L"RIGHT") key = VK_RIGHT;
-        else if (token == L"PLUS") key = VK_OEM_PLUS; else if (token == L"MINUS") key = VK_OEM_MINUS;
-        else if (token == L"SLASH") key = VK_OEM_2; else return std::nullopt;
+        } else if (token.size() > 3 && token.starts_with(L"KEY")) {
+            // Round-trips keys without a name, which FormatShortcut writes as KeyNNN.
+            wchar_t* parse_end{}; const auto number = std::wcstoul(token.c_str() + 3, &parse_end, 10);
+            if (!parse_end || *parse_end || number < 8 || number > 254) return std::nullopt;
+            key = static_cast<std::uint16_t>(number);
+        } else return std::nullopt;
         if (end == std::wstring_view::npos) break;
         start = end + 1;
     }

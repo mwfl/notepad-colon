@@ -103,7 +103,7 @@ void MainWindow::ShowPreferences() {
                     .Add(mwfl::Row().Gap(8.0_dip).Add(font_label, mwfl::Fixed(150.0_dip)).Add(font, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
                     .Add(mwfl::Row().Gap(8.0_dip).Add(size_label, mwfl::Fixed(150.0_dip)).Add(size, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
                     .Add(mwfl::Row().Gap(8.0_dip).Add(tab_label, mwfl::Fixed(150.0_dip)).Add(tab, mwfl::Stretch()), mwfl::Fixed(34.0_dip))
-                    .Add(mwfl::Row().Gap(8.0_dip).Add(theme_label, mwfl::Fixed(80.0_dip)).Add(theme_value, mwfl::Fixed(70.0_dip)).Add(system, mwfl::Auto()).Add(light, mwfl::Auto()).Add(dark, mwfl::Auto()), mwfl::Fixed(36.0_dip))
+                    .Add(mwfl::Row().Gap(8.0_dip).Add(theme_label, mwfl::Fixed(80.0_dip)).Add(theme_value, mwfl::Fixed(70.0_dip)).Add(system, ButtonWidth(Tr(L"System"))).Add(light, ButtonWidth(Tr(L"Light"))).Add(dark, ButtonWidth(Tr(L"Dark"))), mwfl::Fixed(36.0_dip))
                     .Add(auto_save, mwfl::Fixed(28.0_dip))
                     .Add(trim_trailing, mwfl::Fixed(28.0_dip))
                     .Add(create_backup, mwfl::Fixed(28.0_dip))
@@ -188,8 +188,8 @@ void MainWindow::ShowRecoveryManager() {
                 mwfl::SetAccessibleName(list.GetHwnd(), Tr(L"Recovery snapshots").c_str());
                 return pointer->SetLayout(mwfl::Column().Margin(10.0_dip).Gap(6.0_dip)
                     .Add(list, mwfl::Stretch()).Add(details, mwfl::Fixed(24.0_dip))
-                    .Add(mwfl::Row().Gap(6.0_dip).Add(restore, mwfl::Auto())
-                        .Add(remove, mwfl::Auto()).Add(mwfl::Column(), mwfl::Stretch())
+                    .Add(mwfl::Row().Gap(6.0_dip).Add(restore, ButtonWidth(Tr(L"Restore as new document")))
+                        .Add(remove, ButtonWidth(Tr(L"Delete snapshot"))).Add(mwfl::Column(), mwfl::Stretch())
                         .Add(close, mwfl::Fixed(86.0_dip)), mwfl::Fixed(30.0_dip)));
             },
             .command = [&](HWND, WORD id, WORD) {

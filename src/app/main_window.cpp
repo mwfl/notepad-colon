@@ -103,12 +103,27 @@ void MainWindow::BuildUI() {
     ApplyCompactLayout();
 
     ResolveSessionPath();
+    std::optional<mwfl::DocumentId> placeholder;
     if (!RestoreSession()) {
         NewDocument();
+        placeholder = workspace_.GetActiveId();
         if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
     }
     mwfl::Must(instance_.RegisterWindow(GetHwnd()), "register single-instance window");
     for (const auto& path : startup_paths_) static_cast<void>(OpenPathOrFolder(path));
+    // Files named on the command line replace the empty document a fresh start
+    // would otherwise leave as an extra tab.
+    if (placeholder && workspace_.GetCount() > 1) {
+        const auto* metadata = workspace_.Find(*placeholder);
+        const auto* document = FindDocument(*placeholder);
+        const auto opened = workspace_.GetActiveId();
+        if (metadata && document && opened && *opened != *placeholder && metadata->path.empty() &&
+            !metadata->dirty && document->editor->GetText().value_or(L"x").empty()) {
+            workspace_.Activate(*placeholder);
+            if (CloseActive(true)) workspace_.Activate(*opened);
+            SynchronizeTabs(true);
+        }
+    }
     mwfl::Must(monitor_timer_.Start(*this, kMonitorTimer, std::chrono::milliseconds{2000}),
                "start external-file monitor");
     if ((IsSelfTest() || large_file_self_test_) &&

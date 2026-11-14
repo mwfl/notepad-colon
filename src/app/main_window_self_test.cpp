@@ -66,7 +66,7 @@ void MainWindow::RunSelfTest() noexcept {
                 const auto* command = commands_.Find(mwfl::ControlId{id});
                 if (!command || !notepad_colon::HasTranslation(
                         notepad_colon::UiLanguage::chinese_simplified, english) ||
-                    command->GetText() != Tr(english)) { result = 81; break; }
+                    CommandLabel(*command, true) != Tr(english)) { result = 81; break; }
             }
             if (const auto* reopen = commands_.Find(kReopenCodePageBase);
                 !reopen || reopen->GetText() != L"重新打开为 简体中文 (GB18030)") result = 82;
@@ -76,7 +76,7 @@ void MainWindow::RunSelfTest() noexcept {
             if (menu_title(0) != english_file_menu || Tr(L"Saved") != L"Saved") result = 84;
             for (const auto& [id, english] : command_titles_) {
                 const auto* command = commands_.Find(mwfl::ControlId{id});
-                if (!command || command->GetText() != english) { result = 85; break; }
+                if (!command || CommandLabel(*command, true) != english) { result = 85; break; }
             }
         }
         const auto command_processor = CommandProcessorPath();

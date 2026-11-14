@@ -152,9 +152,9 @@ void MainWindow::ShowComparison(std::wstring right_title, std::wstring left_text
                         .Add(ignore_case, mwfl::Auto()).Add(ignore_whitespace, mwfl::Auto())
                         .Add(ignore_eol, mwfl::Auto()),
                         mwfl::Fixed(28.0_dip))
-                    .Add(mwfl::Row().Gap(6.0_dip).Add(previous, mwfl::Auto()).Add(next, mwfl::Auto())
-                        .Add(copy_left, mwfl::Auto()).Add(copy_right, mwfl::Auto())
-                        .Add(mwfl::Column(), mwfl::Stretch()).Add(apply, mwfl::Auto())
+                    .Add(mwfl::Row().Gap(6.0_dip).Add(previous, ButtonWidth(Tr(L"Previous"))).Add(next, ButtonWidth(Tr(L"Next")))
+                        .Add(copy_left, ButtonWidth(Tr(L"← Use right"))).Add(copy_right, ButtonWidth(Tr(L"Use left →")))
+                        .Add(mwfl::Column(), mwfl::Stretch()).Add(apply, ButtonWidth(Tr(L"Apply current side")))
                         .Add(close, mwfl::Fixed(80.0_dip)), mwfl::Fixed(30.0_dip)));
                 refresh(); go_to_current();
                 return layout;

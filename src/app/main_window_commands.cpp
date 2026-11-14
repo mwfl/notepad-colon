@@ -301,7 +301,7 @@ void MainWindow::RememberCommandTitles() {
             (id >= kRecentBase.value &&
              id < kRecentBase.value + static_cast<WORD>(recent_.GetMaximumEntries())) ||
             id >= kLanguageBase.value;  // languages and code pages are composed separately
-        if (!dynamic) command_titles_.try_emplace(id, std::wstring{command.GetText()});
+        if (!dynamic) command_titles_.try_emplace(id, CommandLabel(command, true));
     }
 }
 
@@ -321,6 +321,34 @@ void MainWindow::ApplyUiLanguage() {
     }
     if (auto* command = commands_.Find({static_cast<WORD>(kLanguageBase.value)}))
         command->SetText(Tr(L"Plain Text"));
+    RefreshShortcutLabels();
+}
+
+// Menus show a command's shortcut after a tab. The label is rebuilt whenever
+// the titles or the bindings change.
+void MainWindow::RefreshShortcutLabels() {
+    std::vector<mwfl::ControlId> ids;
+    for (const auto& command : commands_.GetCommands()) ids.push_back(command.GetId());
+    for (const auto id : ids) {
+        auto* command = commands_.Find(id);
+        if (!command) continue;
+        std::wstring text = CommandLabel(*command, true);
+        if (const auto& shortcut = command->GetShortcut(); shortcut && shortcut->key) {
+            text += L'\t';
+            text += notepad_colon::FormatShortcut({static_cast<std::uint16_t>(id.value),
+                static_cast<std::uint8_t>(shortcut->modifiers), static_cast<std::uint16_t>(shortcut->key)});
+        }
+        if (text != command->GetText()) command->SetText(std::move(text));
+    }
+}
+
+// A command's title without its shortcut suffix and, unless asked to keep
+// them, without menu mnemonic markers.
+std::wstring MainWindow::CommandLabel(const mwfl::Command& command, bool keep_mnemonic) {
+    std::wstring label{command.GetText()};
+    if (const auto tab = label.find(L'\t'); tab != std::wstring::npos) label.resize(tab);
+    if (!keep_mnemonic) std::erase(label, L'&');
+    return label;
 }
 
 void MainWindow::SetUiLanguage(bool chinese) {
@@ -467,7 +495,7 @@ void MainWindow::ShowCommandPalette() {
         const auto add = [&](mwfl::ControlId id) {
             const auto* command = commands_.Find(id);
             if (!command || !command->IsVisible() || !command->IsEnabled()) return;
-            auto label = std::wstring(command->GetText()); std::erase(label, L'&');
+            auto label = CommandLabel(*command, false);
             auto folded = label;
             std::ranges::transform(folded, folded.begin(),
                 [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
@@ -630,6 +658,7 @@ bool MainWindow::ApplyShortcuts(const std::vector<notepad_colon::ShortcutBinding
         if (auto* command = commands_.Find({binding.command_id}); binding.key && command)
             command->SetShortcut({binding.modifiers, binding.key});
     if (!accelerators_.Create(commands_)) return false;
+    RefreshShortcutLabels();
     SetAccelerators(accelerators_.GetHandle()); BuildMenu();
     if (persist) static_cast<void>(SaveConfigurationFile(configuration_path_));
     return true;
@@ -663,7 +692,7 @@ void MainWindow::ShowShortcutSettings() {
         list.ClearItems();
         for (const auto id : ids) {
             const auto* command = commands_.Find(id); if (!command) continue;
-            auto label = std::wstring(command->GetText()); std::erase(label, L'&');
+            auto label = CommandLabel(*command, false);
             const auto found = std::ranges::find(bindings, static_cast<std::uint16_t>(id.value),
                                                   &notepad_colon::ShortcutBinding::command_id);
             list.AddItem(label + L"    " + (found == bindings.end() ? L"" : notepad_colon::FormatShortcut(*found)));
@@ -700,7 +729,7 @@ void MainWindow::ShowShortcutSettings() {
                 const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)
                     .Add(list, mwfl::Stretch()).Add(shortcut, mwfl::Fixed(30.0_dip))
                     .Add(mwfl::Row().Gap(6.0_dip).Add(diagnostic, mwfl::Stretch())
-                        .Add(defaults, mwfl::Auto()).Add(apply, mwfl::Fixed(80.0_dip))
+                        .Add(defaults, ButtonWidth(Tr(L"Restore defaults"))).Add(apply, mwfl::Fixed(80.0_dip))
                         .Add(close, mwfl::Fixed(80.0_dip)), mwfl::Fixed(30.0_dip)));
                 refresh(); load_selected(); return layout;
             },

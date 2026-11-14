@@ -210,7 +210,7 @@ void MainWindow::ShowHighlightRules() {
             return pointer->SetLayout(mwfl::Column().Margin(10.0_dip).Gap(6.0_dip)
                 .Add(caption, mwfl::Fixed(20.0_dip)).Add(rules_box, mwfl::Fixed(30.0_dip))
                 .Add(help, mwfl::Fixed(40.0_dip))
-                .Add(mwfl::Row().Gap(6.0_dip).Add(defaults, mwfl::Auto())
+                .Add(mwfl::Row().Gap(6.0_dip).Add(defaults, ButtonWidth(Tr(L"Restore defaults")))
                     .Add(mwfl::Column(), mwfl::Stretch())
                     .Add(accept, mwfl::Fixed(90.0_dip)).Add(cancel, mwfl::Fixed(90.0_dip)),
                     mwfl::Fixed(30.0_dip)));
