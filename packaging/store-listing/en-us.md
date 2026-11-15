@@ -36,5 +36,5 @@ the app remains responsive.
 
 - Category: Productivity
 - Privacy: Does not access, collect, or transmit personal information
-- Copyright: © 2026 DUSTAXIOM
-- Developed by: DUSTAXIOM
+- Copyright: © 2026 AtomSprout
+- Developed by: AtomSprout

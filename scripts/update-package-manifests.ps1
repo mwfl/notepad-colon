@@ -89,7 +89,7 @@ $values.ScoopArm64 = $scoopArm64
 $values.X64HashLower = $x64.Hash.ToLowerInvariant()
 
 $utf8 = [Text.UTF8Encoding]::new($false)
-$wingetOut = Join-Path $OutputDirectory "winget/manifests/d/DUSTAXIOM/NotepadColon/$Version"
+$wingetOut = Join-Path $OutputDirectory "winget/manifests/a/AtomSprout/NotepadColon/$Version"
 New-Item -ItemType Directory -Force -Path $wingetOut | Out-Null
 foreach ($template in Get-ChildItem -LiteralPath (Join-Path $root 'packaging/winget') -Filter '*.yaml') {
     $text = (Expand-Template $template.FullName $values).TrimEnd() + "`n"

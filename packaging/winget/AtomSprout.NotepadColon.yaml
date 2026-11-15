@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
 # Template: scripts/update-package-manifests.ps1 fills in the placeholders.
-PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageIdentifier: AtomSprout.NotepadColon
 PackageVersion: {{Version}}
 DefaultLocale: en-US
 ManifestType: version

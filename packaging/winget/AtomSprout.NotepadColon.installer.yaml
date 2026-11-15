@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
 # Template: scripts/update-package-manifests.ps1 fills in the placeholders.
-PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageIdentifier: AtomSprout.NotepadColon
 PackageVersion: {{Version}}
 MinimumOSVersion: 10.0.17763.0
 InstallerType: zip

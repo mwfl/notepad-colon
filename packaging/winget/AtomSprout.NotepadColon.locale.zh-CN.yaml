@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.28.0.schema.json
 # Template: scripts/update-package-manifests.ps1 fills in the placeholders.
-PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageIdentifier: AtomSprout.NotepadColon
 PackageVersion: {{Version}}
 PackageLocale: zh-CN
-Publisher: DUSTAXIOM
+Publisher: AtomSprout
 PackageName: Notepad Colon
 License: MIT
 ShortDescription: 快速、专注、本地优先的 Windows 文本与代码编辑器。

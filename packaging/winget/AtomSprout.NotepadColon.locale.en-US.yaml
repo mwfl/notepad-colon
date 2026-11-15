@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.28.0.schema.json
 # Template: scripts/update-package-manifests.ps1 fills in the placeholders.
-PackageIdentifier: DUSTAXIOM.NotepadColon
+PackageIdentifier: AtomSprout.NotepadColon
 PackageVersion: {{Version}}
 PackageLocale: en-US
-Publisher: DUSTAXIOM
+Publisher: AtomSprout
 PublisherUrl: https://github.com/mwfl
 PublisherSupportUrl: https://github.com/{{Repository}}/issues
 PrivacyUrl: https://mwfl.github.io/notepad-colon/privacy.html
