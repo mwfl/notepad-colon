@@ -121,7 +121,7 @@ void MainWindow::BuildCommands() {
             [this] { CompareWithDisk(); }))
         .Add(mwfl::Command(kAbout, L"&About Notepad::",
             [this] { ::MessageBoxW(GetHwnd(),
-                Tr(L"Notepad:: 1.3.0\nNative everyday code editing with MWFL and Scintilla.").c_str(),
+                Tr(L"Notepad:: 1.3.1\nNative everyday code editing with MWFL and Scintilla.").c_str(),
                 Tr(L"About Notepad::").c_str(), MB_OK | MB_ICONINFORMATION); }));
     commands_
         .Add(mwfl::Command(kToggleFold, L"Toggle &Fold", [this] { if (auto* e = ActiveEditor()) notepad_colon::ToggleCurrentFold(*e); })

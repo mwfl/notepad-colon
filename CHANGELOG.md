@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.1 - 2026-11-14
+
 - Add Review External Changes (F8). When another program, such as a coding
   agent, rewrites an open file, the editor still reloads it but now keeps the
   previous text, marks the changed lines, and lets each change be kept or

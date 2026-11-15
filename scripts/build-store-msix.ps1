@@ -3,7 +3,7 @@ param(
     [ValidateSet("Release")]
     [string]$Configuration = "Release",
     [ValidatePattern('^[1-9][0-9]*\.[0-9]+\.[0-9]+\.0$')]
-    [string]$PackageVersion = "1.3.0.0",
+    [string]$PackageVersion = "1.3.1.0",
     [ValidateSet("x64", "arm64")]
     [string]$Architecture = "x64",
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\artifacts\store")
