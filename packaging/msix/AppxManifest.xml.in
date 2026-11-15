@@ -10,7 +10,7 @@
             ProcessorArchitecture="@ARCHITECTURE@" />
   <Properties>
     <DisplayName>Notepad Colon</DisplayName>
-    <PublisherDisplayName>DUSTAXIOM</PublisherDisplayName>
+    <PublisherDisplayName>AtomSprout</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Resources>
