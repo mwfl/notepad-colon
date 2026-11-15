@@ -148,16 +148,21 @@ void MainWindow::SaveRecoverySnapshotsIfDue() {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_recovery_snapshot_ < std::chrono::seconds{30}) return;
     last_recovery_snapshot_ = now;
+    bool saved = true;
     for (const auto& metadata : workspace_.GetDocuments()) {
         if (!metadata.dirty) continue;
         const auto* document = FindDocument(metadata.id);
+        // The session worker checkpoints the complete piece table. A text
+        // snapshot of this editor would contain only its visible window.
+        if (document && document->large_buffer) continue;
         const auto text = document ? document->editor->GetText() : std::nullopt;
-        if (!text) continue;
+        if (!text) { saved = false; continue; }
         const auto key = metadata.path.empty()
             ? L"untitled-" + std::to_wstring(metadata.id.value)
             : metadata.path.wstring();
-        static_cast<void>(recovery_store_->Save(key, metadata.title, metadata.path, *text));
+        if (!recovery_store_->Save(key, metadata.title, metadata.path, *text)) saved = false;
     }
+    if (!saved) status_.SetText(Tr(L"Recovery snapshot failed; save your documents and check disk space and permissions"));
 }
 
 void MainWindow::ShowRecoveryManager() {
@@ -273,19 +278,33 @@ std::optional<notepad_colon::Session> MainWindow::CaptureSession() {
         if (index) session.active_index = *index;
     }
     for (const auto& metadata : workspace_.GetDocuments()) {
-        const auto* document = FindDocument(metadata.id);
+        auto* document = FindDocument(metadata.id);
         if (!document) return std::nullopt;
-        const auto text = document->editor->GetText();
-        if (!text) return std::nullopt;
         notepad_colon::SessionEntry entry;
         entry.path = metadata.path;
-        entry.recovery_text = metadata.dirty || metadata.path.empty() ? *text : L"";
+        if (metadata.dirty && document->large_buffer) {
+            if (!document->recovery_snapshot || document->recovery_revision != document->revision ||
+                document->recovery_snapshot->SourcePath() != document->large_buffer->SourcePath()) {
+                document->recovery_snapshot = document->large_buffer->Snapshot();
+                document->recovery_revision = document->revision;
+            }
+            entry.large_snapshot = document->recovery_snapshot;
+            if (!entry.large_snapshot) return std::nullopt;
+        } else if (metadata.dirty || metadata.path.empty()) {
+            const auto text = document->editor->GetText();
+            if (!text) return std::nullopt;
+            entry.recovery_text = *text;
+        }
+        entry.window_offset = document->mapped_offset;
+        if (!metadata.path.empty()) entry.disk_state = document->file_state;
         entry.encoding = document->detected_encoding == notepad_colon::EncodingKind::ansi
             ? notepad_colon::Encoding::ansi : ToSessionEncoding(document->encoding);
         entry.line_ending = document->line_ending;
+        entry.ansi_code_page = document->ansi_code_page;
         const auto selection = document->editor->GetSelection();
         entry.view.anchor = selection.start;
         entry.view.caret = selection.end;
+        entry.view.first_visible_line = document->editor->Send(SCI_GETFIRSTVISIBLELINE);
         entry.dirty = metadata.dirty;
         session.documents.push_back(std::move(entry));
     }
@@ -302,9 +321,12 @@ bool MainWindow::SaveSessionSnapshot() {
 }
 
 void MainWindow::QueueSessionSnapshotIfDue() {
+    if (const auto result = session_writer_.TakeResult(); result && !*result)
+        status_.SetText(Tr(L"Session recovery write failed; save your documents and check disk space and permissions"));
     if (!session_snapshot_pending_ || restoring_session_ ||
         std::chrono::steady_clock::now() < session_snapshot_due_) return;
-    static_cast<void>(SaveSessionSnapshot());
+    if (!SaveSessionSnapshot())
+        status_.SetText(Tr(L"Session recovery write failed; save your documents and check disk space and permissions"));
 }
 
 void MainWindow::SaveNamedSession() {
@@ -313,8 +335,15 @@ void MainWindow::SaveNamedSession() {
         .default_extension = L"npcsession"});
     if (!selected.accepted) return;
     const auto session = CaptureSession();
-    status_.SetText(session && notepad_colon::SaveSessionAtomic(selected.path, *session)
-        ? Tr(L"Named session saved") : Tr(L"Named session could not be saved"));
+    if (!session || !notepad_colon::SaveSessionAtomic(selected.path, *session)) {
+        status_.SetText(Tr(L"Named session could not be saved"));
+    } else {
+        const bool has_copies = std::ranges::any_of(session->documents, [](const auto& entry) {
+            return entry.large_snapshot || !entry.recovery_file.empty();
+        });
+        status_.SetText(has_copies ? Tr(L"Named session saved; keep its .data folder with the session file")
+                                  : Tr(L"Named session saved"));
+    }
 }
 
 void MainWindow::OpenNamedSession() {
@@ -329,66 +358,105 @@ void MainWindow::OpenNamedSession() {
     for (const auto& root : session.workspace_paths)
         if (std::filesystem::is_directory(root)) static_cast<void>(workspace_catalog_.AddRoot(root));
     if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
-    for (const auto& entry : session.documents) {
-        if (!entry.path.empty() && OpenPath(entry.path)) {
-            if (entry.dirty && !entry.recovery_text.empty()) {
-                auto* document = ActiveDocument();
-                if (document && document->editor->SetText(entry.recovery_text)) {
-                    workspace_.SetDirty(document->id, true);
-                    document->editor->SetSelection({entry.view.anchor, entry.view.caret});
-                }
-            }
-        } else if (!entry.recovery_text.empty()) NewDocument(entry.recovery_text, Tr(L"Recovered session note"));
+    const bool was_restoring = std::exchange(restoring_session_, true);
+    bool restored = true;
+    for (const auto& entry : session.documents)
+        if (!RestoreSessionEntry(entry, true)) restored = false;
+    restoring_session_ = was_restoring;
+    if (!restored) {
+        status_.SetText(Tr(L"Some session documents could not be restored; the saved session was retained"));
+        return;
     }
     status_.SetText(Tr(L"Named session opened"));
+}
+
+bool MainWindow::RestoreSessionEntry(const notepad_colon::SessionEntry& entry, bool preserve_existing) {
+    if (preserve_existing && entry.dirty && !entry.path.empty()) {
+        for (const auto& metadata : workspace_.GetDocuments()) {
+            if (!metadata.path.empty() && SamePath(metadata.path, entry.path)) {
+                auto independent = entry;
+                independent.path.clear();
+                independent.disk_state.reset();
+                return RestoreSessionEntry(independent);
+            }
+        }
+    }
+    if (!entry.recovery_file.empty()) {
+        if (!OpenPath(entry.recovery_file)) return false;
+    } else if (!entry.path.empty() && OpenPath(entry.path,
+            entry.encoding == notepad_colon::Encoding::ansi ? entry.ansi_code_page : 0)) {
+        if (entry.dirty) {
+            auto* document = ActiveDocument();
+            // Pre-v5 large sessions contain only a window, so recover that
+            // text as a separate note instead of treating it as the full file.
+            if (document && document->large_buffer) {
+                NewDocument(entry.recovery_text, Tr(L"Recovered session note"));
+                return true;
+            }
+            if (!document || !document->editor->SetText(entry.recovery_text)) return false;
+        }
+    } else if (entry.path.empty() || entry.dirty || !entry.recovery_text.empty()) {
+        NewDocument(entry.recovery_text,
+                    entry.path.empty() ? std::wstring{} : entry.path.filename().wstring());
+    } else return false;
+    auto* document = ActiveDocument();
+    if (!document) return false;
+    if (entry.dirty || !entry.recovery_file.empty() || entry.path.empty()) {
+        document->encoding = FromSessionEncoding(entry.encoding);
+        document->detected_encoding = static_cast<notepad_colon::EncodingKind>(entry.encoding);
+        document->line_ending = entry.line_ending;
+        if (entry.ansi_code_page) document->ansi_code_page = entry.ansi_code_page;
+        if (entry.path.empty() && !entry.recovery_file.empty())
+            workspace_.Rename(document->id, Tr(L"Recovered session note"), {});
+        if (!entry.path.empty()) {
+            bool already_open = false;
+            for (const auto& metadata : workspace_.GetDocuments())
+                if (metadata.id != document->id && !metadata.path.empty() && SamePath(metadata.path, entry.path))
+                    already_open = true;
+            workspace_.Rename(document->id, entry.path.filename().wstring(), already_open ? std::filesystem::path{} : entry.path);
+            document->file_state = entry.disk_state.value_or(notepad_colon::CaptureFileState(entry.path));
+            document->stamp = QueryFileStamp(entry.path);
+            document->external_changed = notepad_colon::CaptureFileState(entry.path) != document->file_state;
+            if (const auto* language = language_registry_.Detect(entry.path)) {
+                document->language = language->builtin.value_or(notepad_colon::Language::plain_text);
+                document->language_id = language->id;
+                InitializeSyntaxTree(*document);
+            }
+        }
+        if (document->large_buffer && entry.dirty) document->large_buffer->MarkModified();
+        workspace_.SetDirty(document->id, entry.dirty);
+    }
+    if (document->large_buffer && document->large_buffer->Size() > 0) {
+        const auto offset = (std::min)(entry.window_offset, document->large_buffer->Size() - 1);
+        if (!LoadLargeFileWindow(*document, offset)) return false;
+    }
+    document->editor->SetSelection({entry.view.anchor, entry.view.caret});
+    document->editor->Send(SCI_SETFIRSTVISIBLELINE, entry.view.first_visible_line);
+    return true;
 }
 
 bool MainWindow::RestoreSession() {
     if (session_path_.empty()) return false;
     notepad_colon::Session session;
-    if (!notepad_colon::LoadSession(session_path_, session) || session.documents.empty()) return false;
+    bool previous = false;
+    if (!notepad_colon::LoadSession(session_path_, session, &previous) || session.documents.empty()) return false;
     const auto roots = !session.workspace_paths.empty()
         ? session.workspace_paths : std::vector<std::filesystem::path>{session.workspace_path};
     for (const auto& root : roots)
         if (!root.empty() && std::filesystem::is_directory(root)) static_cast<void>(workspace_catalog_.AddRoot(root));
     if (!workspace_catalog_.Roots().empty()) StartWorkspaceScan(workspace_catalog_.Roots().back());
     restoring_session_ = true;
-    for (const auto& entry : session.documents) {
-        if (!entry.path.empty() && OpenPath(entry.path)) {
-            auto* document = ActiveDocument();
-            if (document && entry.dirty && !entry.recovery_text.empty()) {
-                document->editor->SetText(entry.recovery_text);
-                document->encoding = FromSessionEncoding(entry.encoding);
-                document->detected_encoding = entry.encoding == notepad_colon::Encoding::ansi
-                    ? notepad_colon::EncodingKind::ansi
-                    : static_cast<notepad_colon::EncodingKind>(entry.encoding);
-                document->line_ending = entry.line_ending;
-                workspace_.SetDirty(document->id, true);
-                document->editor->SetSelection({entry.view.anchor, entry.view.caret});
-            }
-        } else if (entry.path.empty() || !entry.recovery_text.empty()) {
-            NewDocument(entry.recovery_text,
-                        entry.path.empty() ? std::wstring{} : entry.path.filename().wstring());
-            auto* document = ActiveDocument();
-            if (document) {
-                if (!entry.path.empty())
-                    workspace_.Rename(document->id, entry.path.filename().wstring(), entry.path);
-                document->encoding = FromSessionEncoding(entry.encoding);
-                document->detected_encoding = entry.encoding == notepad_colon::Encoding::ansi
-                    ? notepad_colon::EncodingKind::ansi
-                    : static_cast<notepad_colon::EncodingKind>(entry.encoding);
-                document->line_ending = entry.line_ending;
-                if (entry.dirty) workspace_.SetDirty(document->id, true);
-                document->editor->SetSelection({entry.view.anchor, entry.view.caret});
-            }
-        }
-    }
+    bool restored = true;
+    for (const auto& entry : session.documents)
+        if (!RestoreSessionEntry(entry)) restored = false;
     if (session.active_index < workspace_.GetDocuments().size())
         workspace_.Activate(workspace_.GetDocuments()[session.active_index].id);
     restoring_session_ = false;
     if (documents_.empty()) return false;
     SynchronizeTabs(true);
-    SyncPresentation(Tr(L"Session restored"));
+    if (!restored) status_.SetText(Tr(L"Some session documents could not be restored; the saved session was retained"));
+    else if (previous) status_.SetText(Tr(L"The latest session was damaged; restored the previous recovery checkpoint"));
+    else SyncPresentation(Tr(L"Session restored"));
     return true;
 }
 

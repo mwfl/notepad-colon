@@ -67,6 +67,10 @@ code indexing out of the process.
   zero-width characters.
 - Safe atomic replacement, optional backup-before-save, conflict detection, and
   crash/session recovery—including unsaved documents.
+- Recovery checkpoints preserve empty edits and full large-file contents, check
+  data integrity, and can fall back to the previous generation. Named sessions
+  containing large-file edits have a companion `.data` folder; keep it alongside
+  the session file when moving or copying the session.
 
 ### Working next to a coding agent
 

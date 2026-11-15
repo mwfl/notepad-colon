@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Preserve unsaved empty documents and explicit ANSI code pages across session
+  recovery. Restore the saved caret and scroll position for clean documents too.
+- Checkpoint the complete contents of edited large files in a background worker,
+  including edits outside the loaded window. Recovery copies are independent of
+  the original file, checked for corruption, and reused while the text is unchanged.
+- Add session integrity checks and a previous-generation fallback. Flush session
+  contents before committing the manifest, and preserve the disk baseline so a
+  restored document cannot silently overwrite a later external change.
+- Report recovery write failures, keep the editor open if its closing checkpoint
+  fails, and keep file monitoring active when closing is cancelled.
+
 ## 1.3.1 - 2026-11-14
 
 - Add Review External Changes (F8). When another program, such as a coding

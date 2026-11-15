@@ -1,5 +1,7 @@
 #include <notepad_colon/session_writer.h>
 
+#include <utility>
+
 namespace notepad_colon {
 
 SessionWriter::SessionWriter() : worker_([this](std::stop_token stop) { Run(stop); }) {}
@@ -26,6 +28,11 @@ bool SessionWriter::Flush() noexcept {
     } catch (...) { return false; }
 }
 
+std::optional<bool> SessionWriter::TakeResult() {
+    std::scoped_lock lock{mutex_};
+    return std::exchange(completed_result_, std::nullopt);
+}
+
 void SessionWriter::Run(std::stop_token stop) noexcept {
     for (;;) {
         std::optional<Request> request;
@@ -41,6 +48,7 @@ void SessionWriter::Run(std::stop_token stop) noexcept {
         {
             std::scoped_lock lock{mutex_};
             last_result_ = result;
+            completed_result_ = result;
             writing_ = false;
         }
         changed_.notify_all();

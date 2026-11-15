@@ -2,7 +2,7 @@
 
 namespace notepad_colon::app {
 
-bool MainWindow::OpenPath(const std::filesystem::path& path) {
+bool MainWindow::OpenPath(const std::filesystem::path& path, unsigned int ansi_code_page) {
     for (const auto& metadata : workspace_.GetDocuments()) {
         if (!metadata.path.empty() && SamePath(metadata.path, path)) {
             workspace_.Activate(metadata.id);
@@ -34,7 +34,11 @@ bool MainWindow::OpenPath(const std::filesystem::path& path) {
     } else bytes = ReadFileBytes(path);
     if (!bytes) return false;
     const auto editor_config = notepad_colon::ResolveEditorConfig(path);
-    auto analysis = notepad_colon::AnalyzeEncoding(*bytes);
+    auto analysis = notepad_colon::AnalyzeEncoding(*bytes, ansi_code_page);
+    if (ansi_code_page && !analysis.has_bom) {
+        analysis.encoding = notepad_colon::EncodingKind::ansi;
+        analysis.code_page = ansi_code_page;
+    }
     if (editor_config.encoding) analysis.encoding = *editor_config.encoding;
     if (analysis.encoding == notepad_colon::EncodingKind::binary) {
         status_.SetText(Tr(L"Binary content detected; use a hex editor")); return false;
@@ -150,6 +154,10 @@ bool MainWindow::SaveDocument(EditorDocument& document, bool choose_path) {
             if (!selected.accepted) return false;
             path = selected.path;
         }
+    }
+    if (path == metadata->path && document.external_changed) {
+        status_.SetText(Tr(L"The file changed on disk; review it or use Save As before overwriting"));
+        return false;
     }
     if (document.large_buffer) return SaveLargeDocument(document, path, *metadata);
     auto text = document.editor->GetText();
@@ -318,8 +326,10 @@ bool MainWindow::SaveLargeDocument(EditorDocument& document, const std::filesyst
     }
     if (document.mapped_file) document.mapped_file->Close();
     if (!document.large_buffer->SaveAs(path)) {
+        const auto error = ::GetLastError();
         if (document.mapped_file) static_cast<void>(document.mapped_file->Open(metadata.path));
-        status_.SetText(Tr(L"Large-file streaming save failed; the original file was retained"));
+        status_.SetText(Tr(L"Large-file streaming save failed; the original file was retained") +
+            L" (" + std::to_wstring(error) + L")");
         return false;
     }
     if (document.mapped_file && !document.mapped_file->Open(path)) {
@@ -457,6 +467,7 @@ bool MainWindow::LoadLargeFileWindow(EditorDocument& document, std::uint64_t off
     document.mapped_offset = offset;
     document.mapped_decoded_offset = window->decoded_offset;
     if (!document.large_buffer->IsModified()) document.editor->SetSavePoint();
+    workspace_.SetDirty(document.id, document.large_buffer->IsModified());
     if (selection && selection->first >= window->decoded_offset) {
         const auto relative = selection->first - window->decoded_offset;
         if (relative + selection->second <= static_cast<std::uint64_t>(document.editor->GetLength()))
@@ -492,6 +503,7 @@ void MainWindow::MoveLargeFileWindow(bool forward) {
     document->mapped_offset = offset;
     document->mapped_decoded_offset = window->decoded_offset;
     if (!document->large_buffer->IsModified()) document->editor->SetSavePoint();
+    workspace_.SetDirty(document->id, document->large_buffer->IsModified());
     status_.SetText(Tr(L"Large file | bytes ") + std::to_wstring(document->mapped_offset) + L"–" +
         std::to_wstring(window->byte_end) + Tr(L" of ") +
         std::to_wstring(size));

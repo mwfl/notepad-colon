@@ -66,7 +66,12 @@ try {
         $process.Kill()
         throw "large-file GUI self-test did not exit within 40 s; windows: $windows"
     }
-    if ($process.ExitCode -ne 0) { throw "large-file GUI self-test exited $($process.ExitCode)" }
+    if ($process.ExitCode -ne 0) {
+        $details = if (Test-Path -LiteralPath ($path + '.selftest-error')) {
+            [IO.File]::ReadAllText($path + '.selftest-error')
+        } else { 'No save diagnostic was written.' }
+        throw "large-file GUI self-test exited $($process.ExitCode): $details"
+    }
     $expectedMarker = [Text.Encoding]::UTF8.GetBytes("/*NPC-LARGE-EDIT*/")
     $input = [IO.File]::OpenRead($path)
     try {
@@ -92,4 +97,5 @@ try {
 } finally {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath ($path + '.bak') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($path + '.selftest-error') -Force -ErrorAction SilentlyContinue
 }

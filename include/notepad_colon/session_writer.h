@@ -20,6 +20,8 @@ public:
 
     void Queue(std::filesystem::path path, Session session);
     bool Flush() noexcept;
+    // Consume completed write results without waiting for disk I/O on the UI thread.
+    std::optional<bool> TakeResult();
 
 private:
     struct Request { std::filesystem::path path; Session session; };
@@ -30,6 +32,7 @@ private:
     std::optional<Request> pending_;
     bool writing_ = false;
     bool last_result_ = true;
+    std::optional<bool> completed_result_;
     std::jthread worker_;
 };
 

@@ -23,7 +23,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
     return *this;
 }
 
-bool MappedFile::Open(const std::filesystem::path& path) noexcept {
+bool MappedFile::Open(const std::filesystem::path& path, bool use_mapping) noexcept {
     Close();
     const auto file = ::CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
@@ -32,7 +32,7 @@ bool MappedFile::Open(const std::filesystem::path& path) noexcept {
     LARGE_INTEGER size{};
     if (!::GetFileSizeEx(file, &size) || size.QuadPart < 0) { ::CloseHandle(file); return false; }
     HANDLE mapping = nullptr;
-    if (size.QuadPart != 0) {
+    if (size.QuadPart != 0 && use_mapping) {
         mapping = ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
         if (!mapping) { ::CloseHandle(file); return false; }
     }
@@ -48,9 +48,25 @@ void MappedFile::Close() noexcept {
 bool MappedFile::IsOpen() const noexcept { return file_ != INVALID_HANDLE_VALUE; }
 
 std::vector<std::uint8_t> MappedFile::Read(std::uint64_t offset, std::size_t length) const {
-    if (!IsOpen() || offset >= size_ || !length || !mapping_) return {};
+    if (!IsOpen() || offset >= size_ || !length) return {};
     const auto available = size_ - offset;
     const auto wanted = static_cast<std::size_t>((std::min)(available, static_cast<std::uint64_t>(length)));
+    if (!mapping_) {
+        std::vector<std::uint8_t> output(wanted);
+        std::size_t consumed = 0;
+        while (consumed < wanted) {
+            const auto position = offset + consumed;
+            OVERLAPPED request{};
+            request.Offset = static_cast<DWORD>(position);
+            request.OffsetHigh = static_cast<DWORD>(position >> 32);
+            const auto count = static_cast<DWORD>((std::min<std::size_t>)(1024 * 1024, wanted - consumed));
+            DWORD read = 0;
+            if (!::ReadFile(static_cast<HANDLE>(file_), output.data() + consumed, count, &read, &request) || read != count)
+                return {};
+            consumed += read;
+        }
+        return output;
+    }
     SYSTEM_INFO information{}; ::GetSystemInfo(&information);
     const auto granularity = static_cast<std::uint64_t>(information.dwAllocationGranularity);
     const auto aligned = offset - offset % granularity;

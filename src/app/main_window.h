@@ -327,6 +327,8 @@ struct EditorDocument {
     std::shared_ptr<const FilterLink> filter_link;
     // Text before the first external change that has not been reviewed yet.
     std::optional<std::wstring> review_base;
+    std::shared_ptr<const notepad_colon::LargeFileBuffer> recovery_snapshot;
+    std::uint64_t recovery_revision = UINT64_MAX;
     // Second view onto the same Scintilla document (declared last so it is
     // destroyed before the primary editor that owns the document).
     std::unique_ptr<mwfl::ScintillaEditor> split_editor;
@@ -617,7 +619,7 @@ private:
 
     void NewDocument(std::wstring text = {}, std::wstring title = {});
 
-    bool OpenPath(const std::filesystem::path& path);
+    bool OpenPath(const std::filesystem::path& path, unsigned int ansi_code_page = 0);
 
     void OpenInteractive();
 
@@ -916,6 +918,7 @@ private:
     void OpenNamedSession();
 
     bool RestoreSession();
+    bool RestoreSessionEntry(const notepad_colon::SessionEntry& entry, bool preserve_existing = false);
 
     void SynchronizeTabs(bool focus);
 

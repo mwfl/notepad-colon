@@ -453,20 +453,36 @@ int main() {
                                   notepad_colon::LineEnding::lf, {4, 9, 2}, false});
     original.documents.push_back({{}, L"unsaved\ntext\tΩ", notepad_colon::Encoding::utf8,
                                   notepad_colon::LineEnding::crlf, {0, 7, 0}, true});
+    original.documents[0].encoding = notepad_colon::Encoding::ansi;
+    original.documents[0].ansi_code_page = 932;
     const auto encoded = notepad_colon::SerializeSession(original);
     notepad_colon::Session decoded;
     Check(notepad_colon::DeserializeSession(encoded, decoded), "serialized session must parse");
+    Check(!notepad_colon::DeserializeSession(encoded.substr(0, encoded.rfind("NPCEND")), decoded),
+          "a session missing its commit footer is never accepted as a complete checkpoint");
+    auto damaged_session = encoded;
+    if (const auto offset = damaged_session.find("unsaved"); offset != std::string::npos)
+        damaged_session[offset] = 'X';
+    Check(!notepad_colon::DeserializeSession(damaged_session, decoded),
+          "same-size corruption of an ordinary document is detected");
     Check(decoded.documents.size() == 2 && decoded.active_index == 1, "session shape must round trip");
     Check(decoded.workspace_path == original.workspace_path, "workspace path must round trip");
     Check(decoded.workspace_paths == original.workspace_paths, "multiple workspace roots must round trip");
     if (decoded.documents.size() == 2) {
         Check(decoded.documents[0].path == original.documents[0].path, "Unicode path must round trip");
+        Check(decoded.documents[0].ansi_code_page == 932, "explicit code page must survive session round trip");
     Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
               "recovery text must round trip");
     }
     Check(!notepad_colon::DeserializeSession("bad", decoded), "invalid sessions must be rejected");
     Check(notepad_colon::DeserializeSession("NPCSESSION\t1\t0\n", decoded),
           "version 1 sessions must remain readable");
+    Check(notepad_colon::DeserializeSession("NPCSESSION\t3\t0\n4\t0\t0\t0\t0\t1\tfile.txt\t\n", decoded) &&
+          decoded.documents.size() == 1 && decoded.documents[0].dirty &&
+          decoded.documents[0].recovery_text.empty() && decoded.documents[0].ansi_code_page == 0,
+          "old sessions retain a dirty empty document without inventing a code page");
+    Check(!notepad_colon::DeserializeSession("NPCSESSION\t4\t0\n4\t0\t0\t0\t0\t1\tf\t\t932junk\n", decoded),
+          "invalid code page tokens are rejected");
     Check(notepad_colon::DeserializeSession("NPCSESSION\t2\t0\tC:\\5c;old\n", decoded) &&
               decoded.workspace_paths.size() == 1,
           "version 2 workspace sessions must migrate to multiple roots");
@@ -484,16 +500,22 @@ int main() {
 
     const auto session_path = std::filesystem::temp_directory_path() /
         (L"notepad-colon-session-test-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
+    std::error_code session_cleanup;
+    std::filesystem::remove(session_path, session_cleanup);
+    std::filesystem::remove(session_path.wstring() + L".previous", session_cleanup);
     Check(notepad_colon::SaveSessionAtomic(session_path, original), "session file must save atomically");
     notepad_colon::Session file_session;
     Check(notepad_colon::LoadSession(session_path, file_session), "saved session file must load");
     Check(file_session.documents.size() == original.documents.size(), "session file shape must round trip");
+    Check(notepad_colon::SaveSessionAtomic(session_path, original), "second session generation saves");
     {
         std::ofstream corrupt(session_path, std::ios::binary | std::ios::trunc);
         corrupt << "NPCSESSION\t3\nD\tbroken";
     }
-    Check(!notepad_colon::LoadSession(session_path, file_session),
-          "truncated session file must fail closed");
+    bool previous_session = false;
+    Check(notepad_colon::LoadSession(session_path, file_session, &previous_session) && previous_session &&
+          file_session.documents.size() == original.documents.size(),
+          "a truncated session restores the previous valid generation and reports the fallback");
     {
         notepad_colon::SessionWriter writer;
         for (int revision = 0; revision < 20; ++revision) {
@@ -501,6 +523,8 @@ int main() {
             writer.Queue(session_path, original);
         }
         Check(writer.Flush(), "background session writer must flush the newest snapshot");
+        Check(writer.TakeResult() == std::optional<bool>{true} && !writer.TakeResult(),
+              "session write completion can be consumed without blocking");
     }
     Check(notepad_colon::LoadSession(session_path, file_session) &&
               file_session.documents.front().recovery_text == L"revision-19",
@@ -515,8 +539,100 @@ int main() {
           "session writer destruction must flush an in-flight close snapshot");
     Check(!notepad_colon::SaveSessionAtomic(std::filesystem::temp_directory_path(), original),
           "atomic session save must fail cleanly when destination is a directory");
+    {
+        notepad_colon::SessionWriter writer;
+        writer.Queue(std::filesystem::temp_directory_path(), original);
+        Check(!writer.Flush() && writer.TakeResult() == std::optional<bool>{false},
+              "failed recovery writes are reported to the UI");
+    }
     std::error_code ignored;
     std::filesystem::remove(session_path, ignored);
+    std::filesystem::remove(session_path.wstring() + L".previous", ignored);
+
+    {
+        const auto source = session_path.wstring() + L".source";
+        std::string initial(1024 * 1024, 'a');
+        { std::ofstream file(source, std::ios::binary); file << initial; }
+        notepad_colon::LargeFileBuffer buffer;
+        const std::array<std::uint8_t, 3> start{'S', 'T', 'A'}, middle{'M', 'I', 'D'}, end{'E', 'N', 'D'};
+        Check(buffer.Open(source) && buffer.Replace(0, 3, start) &&
+              buffer.Replace(initial.size() / 2, 3, middle) && buffer.Replace(initial.size() - 3, 3, end),
+              "prepare edits in distant regions of a streamed document");
+        notepad_colon::Session checkpoint;
+        checkpoint.documents.push_back({source, {}, notepad_colon::Encoding::utf8,
+            notepad_colon::LineEnding::lf, {1, 2, 3}, true});
+        checkpoint.documents[0].large_snapshot = buffer.Snapshot();
+        checkpoint.documents[0].window_offset = initial.size() / 2;
+        checkpoint.documents[0].disk_state = notepad_colon::CaptureFileState(source);
+        Check(checkpoint.documents[0].large_snapshot != nullptr, "freeze a complete piece-table snapshot");
+        // Changes made after capture must not alter the worker's frozen data.
+        Check(buffer.Replace(0, 3, end), "editing continues after snapshot capture");
+        Check(notepad_colon::SaveSessionAtomic(session_path, checkpoint), "stream a self-contained recovery copy");
+        notepad_colon::Session restored;
+        Check(notepad_colon::LoadSession(session_path, restored) && restored.documents.size() == 1,
+              "read a manifest and validate its recovery copy");
+        auto copy_path = restored.documents.empty() ? std::filesystem::path{} : restored.documents[0].recovery_file;
+        notepad_colon::LargeFileBuffer copy;
+        Check(!copy_path.empty() && copy.Open(copy_path) && copy.Size() == initial.size() &&
+              copy.Read(0, 3) == std::vector<std::uint8_t>(start.begin(), start.end()) &&
+              copy.Read(initial.size() / 2, 3) == std::vector<std::uint8_t>(middle.begin(), middle.end()) &&
+              copy.Read(initial.size() - 3, 3) == std::vector<std::uint8_t>(end.begin(), end.end()),
+              "recovery includes edits at the beginning, middle and end, independent of the visible window");
+        const auto relocated = std::filesystem::path{session_path.wstring() + L".relocated"};
+        std::filesystem::create_directories(relocated);
+        std::filesystem::copy_file(session_path, relocated / session_path.filename(),
+                                   std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy(session_path.wstring() + L".data", relocated / (session_path.filename().wstring() + L".data"),
+                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+        notepad_colon::Session transported;
+        Check(notepad_colon::LoadSession(relocated / session_path.filename(), transported) &&
+              transported.documents[0].recovery_file.parent_path().parent_path() == relocated,
+              "a named session and its companion directory remain usable when moved together");
+        std::filesystem::remove_all(relocated, ignored);
+        Check(notepad_colon::SaveSessionAtomic(session_path, checkpoint), "unchanged snapshots can be reused");
+        notepad_colon::Session reused;
+        Check(notepad_colon::LoadSession(session_path, reused) && reused.documents[0].recovery_file == copy_path,
+              "saving an unchanged large document does not create another full-size disk copy");
+        auto newer = checkpoint;
+        newer.documents[0].large_snapshot = buffer.Snapshot();
+        Check(notepad_colon::SaveSessionAtomic(session_path, newer) && notepad_colon::LoadSession(session_path, reused),
+              "a later edit creates a separate checkpoint generation");
+        const auto newest_copy = reused.documents.empty() ? std::filesystem::path{} : reused.documents[0].recovery_file;
+        { std::fstream corrupt(newest_copy, std::ios::binary | std::ios::in | std::ios::out); corrupt.put('!'); }
+        bool fallback = false;
+        Check(notepad_colon::LoadSession(session_path, reused, &fallback) && fallback &&
+              reused.documents[0].recovery_file == copy_path,
+              "damaged large-file recovery data falls back to the earlier complete edit generation");
+        Check(notepad_colon::SaveSessionAtomic(session_path, checkpoint), "a valid checkpoint repairs a damaged newest manifest");
+        Check(!restored.documents.empty() && restored.documents[0].window_offset == initial.size() / 2 &&
+              restored.documents[0].disk_state == checkpoint.documents[0].disk_state,
+              "the large-file window and original disk baseline survive recovery");
+        buffer.Close();
+        checkpoint.documents[0].large_snapshot.reset();
+        std::filesystem::remove(source, ignored);
+        Check(notepad_colon::LoadSession(session_path, restored), "recovery remains usable after the original file is deleted");
+        copy.Close();
+        { std::fstream corrupt(copy_path, std::ios::binary | std::ios::in | std::ios::out); corrupt.put('!'); }
+        Check(!notepad_colon::LoadSession(session_path, restored), "same-size corruption of recovery data is rejected");
+        std::filesystem::remove(session_path, ignored);
+        std::filesystem::remove(session_path.wstring() + L".previous", ignored);
+        std::filesystem::remove_all(session_path.wstring() + L".data", ignored);
+    }
+    {
+        const auto source = session_path.wstring() + L".save-with-snapshot";
+        { std::ofstream file(source, std::ios::binary); file << "original"; }
+        notepad_colon::LargeFileBuffer foreground;
+        Check(foreground.Open(source), "open a foreground document for concurrent recovery");
+        const std::array<std::uint8_t, 1> edit{'!'};
+        Check(foreground.Insert(0, edit), "edit before recovery capture");
+        const auto frozen = foreground.Snapshot();
+        Check(frozen != nullptr, "capture a snapshot while the foreground remains editable");
+        const bool saved_with_snapshot = foreground.SaveAs(source);
+        if (!saved_with_snapshot) std::cerr << "snapshot save error " << ::GetLastError() << '\n';
+        Check(saved_with_snapshot, "holding a recovery snapshot must not prevent saving the original file");
+        foreground.Close();
+        std::filesystem::remove(source, ignored);
+    }
 
     using notepad_colon::Language;
     Check(notepad_colon::DetectLanguage(L"sample.CPP") == Language::cpp, "C++ extension detection");

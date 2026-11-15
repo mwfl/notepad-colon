@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <string>
 
@@ -21,9 +22,9 @@ bool WriteAll(HANDLE file, std::span<const std::uint8_t> bytes) noexcept {
 }
 }
 
-bool LargeFileBuffer::Open(const std::filesystem::path& path) noexcept {
+bool LargeFileBuffer::Open(const std::filesystem::path& path, bool use_mapping) noexcept {
     Close();
-    if (!source_.Open(path)) return false;
+    if (!source_.Open(path, use_mapping)) return false;
     try {
         source_path_ = path;
         size_ = source_.Size();
@@ -46,6 +47,7 @@ void LargeFileBuffer::Close() noexcept {
     modified_ = false;
     source_disk_size_ = 0;
     source_last_write_ = {};
+    checkpoint_copies_.clear();
 }
 
 std::vector<std::uint8_t> LargeFileBuffer::Read(std::uint64_t offset, std::size_t length) const {
@@ -188,6 +190,7 @@ bool LargeFileBuffer::Insert(std::uint64_t offset, std::span<const std::uint8_t>
                        {Storage::added, added_offset, bytes.size()});
         size_ += bytes.size();
         modified_ = true;
+        checkpoint_copies_.clear();
         Normalize();
         return true;
     } catch (...) { return false; }
@@ -203,6 +206,7 @@ bool LargeFileBuffer::Erase(std::uint64_t offset, std::uint64_t length) {
                       pieces_.begin() + static_cast<std::ptrdiff_t>(end));
         size_ -= length;
         modified_ = true;
+        checkpoint_copies_.clear();
         Normalize();
         return true;
     } catch (...) { return false; }
@@ -225,6 +229,89 @@ void LargeFileBuffer::Normalize() noexcept {
             pieces_.erase(pieces_.begin() + static_cast<std::ptrdiff_t>(index));
         } else ++index;
     }
+}
+
+std::shared_ptr<const LargeFileBuffer> LargeFileBuffer::Snapshot() const noexcept {
+    try {
+        auto snapshot = std::make_shared<LargeFileBuffer>();
+        if (!snapshot->Open(source_path_, false) || snapshot->source_disk_size_ != source_disk_size_ ||
+            snapshot->source_last_write_ != source_last_write_) return {};
+        snapshot->pieces_ = pieces_;
+        snapshot->added_ = added_;
+        snapshot->size_ = size_;
+        snapshot->modified_ = modified_;
+        return snapshot;
+    } catch (...) { return {}; }
+}
+
+bool LargeFileBuffer::WriteCopyAtomic(const std::filesystem::path& path, std::uint64_t& checksum) const noexcept {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    std::filesystem::path temporary;
+    try {
+        if (!IsOpen() || path.empty() || path == source_path_) return false;
+        static std::atomic_uint64_t sequence{0};
+        temporary = path.wstring() + L".tmp-" + std::to_wstring(::GetCurrentProcessId()) +
+            L"-" + std::to_wstring(++sequence);
+        file = ::CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        std::uint64_t hash = 14695981039346656037ull;
+        bool succeeded = true;
+        for (const auto& piece : pieces_) {
+            for (std::uint64_t offset = 0; offset < piece.length && succeeded;) {
+                const auto count = static_cast<std::size_t>((std::min<std::uint64_t>)(
+                    kIoChunk, piece.length - offset));
+                std::vector<std::uint8_t> original;
+                std::span<const std::uint8_t> bytes;
+                if (piece.storage == Storage::original) {
+                    original = source_.Read(piece.offset + offset, count);
+                    bytes = original;
+                } else bytes = std::span<const std::uint8_t>{added_}.subspan(
+                    static_cast<std::size_t>(piece.offset + offset), count);
+                succeeded = bytes.size() == count && WriteAll(file, bytes);
+                for (const auto byte : bytes) { hash ^= byte; hash *= 1099511628211ull; }
+                offset += count;
+            }
+            if (!succeeded) break;
+        }
+        if (succeeded) succeeded = ::FlushFileBuffers(file) != FALSE;
+        ::CloseHandle(file); file = INVALID_HANDLE_VALUE;
+        std::error_code error;
+        const auto size = std::filesystem::file_size(source_path_, error);
+        const auto write = error ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(source_path_, error);
+        if (error || size != source_disk_size_ || write != source_last_write_) succeeded = false;
+        if (succeeded) succeeded = ::MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        if (!succeeded) { ::DeleteFileW(temporary.c_str()); return false; }
+        checksum = hash;
+        return true;
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
+        if (!temporary.empty()) ::DeleteFileW(temporary.c_str());
+        return false;
+    }
+}
+
+std::optional<CheckpointCopy> LargeFileBuffer::Checkpoint(const std::filesystem::path& directory) const noexcept {
+    try {
+        std::scoped_lock lock{checkpoint_mutex_};
+        const auto found = checkpoint_copies_.find(directory);
+        if (found != checkpoint_copies_.end()) {
+            std::error_code error;
+            const auto size = std::filesystem::file_size(found->second.path, error);
+            const auto write = error ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(found->second.path, error);
+            if (!error && size == found->second.size && write == found->second.last_write) return found->second;
+        }
+        std::filesystem::create_directories(directory);
+        static std::atomic_uint64_t sequence{0};
+        CheckpointCopy copy;
+        copy.path = directory / (std::to_wstring(::GetCurrentProcessId()) + L"-" +
+            std::to_wstring(::GetTickCount64()) + L"-" + std::to_wstring(++sequence) + L".npcrecovery");
+        if (!WriteCopyAtomic(copy.path, copy.checksum)) return std::nullopt;
+        copy.size = Size();
+        copy.last_write = std::filesystem::last_write_time(copy.path);
+        checkpoint_copies_[directory] = copy;
+        return copy;
+    } catch (...) { return std::nullopt; }
 }
 
 bool LargeFileBuffer::SaveAs(const std::filesystem::path& path) noexcept {
@@ -260,13 +347,21 @@ bool LargeFileBuffer::SaveAs(const std::filesystem::path& path) noexcept {
                                            : std::filesystem::last_write_time(source_path_, state_error);
     if (state_error || current_size != source_disk_size_ || current_write != source_last_write_) {
         ::DeleteFileW(temporary.c_str());
+        ::SetLastError(ERROR_FILE_INVALID);
         return false;
     }
     source_.Close();
-    if (!::MoveFileExW(temporary.c_str(), path.c_str(),
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    // ReplaceFile permits shared-delete recovery readers and preserves the
+    // destination's metadata. MoveFileEx cannot replace an open destination.
+    const bool target_exists = std::filesystem::exists(path, state_error);
+    const bool replaced = !state_error && (target_exists
+        ? ::ReplaceFileW(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr) != FALSE
+        : ::MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE);
+    if (!replaced) {
+        const auto error = ::GetLastError();
         static_cast<void>(source_.Open(source_path_));
         ::DeleteFileW(temporary.c_str());
+        ::SetLastError(error);
         return false;
     }
     source_path_ = path;

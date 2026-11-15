@@ -613,6 +613,38 @@ void MainWindow::RunSelfTest() noexcept {
             }
             if (open_document && !CloseActive(true)) result = 79;
         }
+        if (result == 0) {
+            // Empty text is an edit, not a missing recovery payload. Exercise
+            // the real capture/write/restore path with a non-default code page.
+            const auto empty_file = test_workspace / L"empty-recovery.txt";
+            if (!notepad_colon::WriteEncodedFileAtomic(empty_file, L"original text",
+                    notepad_colon::EncodingKind::ansi, 932) || !OpenPath(empty_file)) result = 120;
+            auto* emptied = result == 0 ? ActiveDocument() : nullptr;
+            if (emptied) {
+                emptied->detected_encoding = notepad_colon::EncodingKind::ansi;
+                emptied->ansi_code_page = 932;
+                emptied->editor->SetText(L"");
+                workspace_.SetDirty(emptied->id, true);
+                const auto captured = CaptureSession();
+                notepad_colon::Session recovery;
+                if (captured) {
+                    for (const auto& entry : captured->documents)
+                        if (entry.path == empty_file) recovery.documents.push_back(entry);
+                }
+                if (!session_writer_.Flush() || recovery.documents.size() != 1 ||
+                    !notepad_colon::SaveSessionAtomic(session_path_, recovery)) result = 121;
+                emptied->editor->SetText(L"stale disk content");
+                emptied->ansi_code_page = 1252;
+                if (!RestoreSession() || emptied->editor->GetText() != L"" ||
+                    emptied->ansi_code_page != 932 || !workspace_.Find(emptied->id)->dirty)
+                    result = 122;
+                if (!notepad_colon::WriteEncodedFileAtomic(empty_file, L"later external edit",
+                        notepad_colon::EncodingKind::ansi, 932) || !RestoreSession() ||
+                    !emptied->external_changed || SaveDocument(*emptied, false)) result = 128;
+                workspace_.Activate(emptied->id);
+                if (!CloseActive(true)) result = 123;
+            }
+        }
         std::error_code workspace_ignored;
         std::filesystem::remove_all(test_workspace, workspace_ignored);
         if (result == 0 && !CloseActive(true)) result = 5;
@@ -649,7 +681,49 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
             document->large_buffer->Size() != document->file_state.size + marker.size())
             result = 41;
     }
-    if (result == 0 && !SaveDocument(*document, false)) result = 42;
+    if (result == 0) {
+        const auto original_id = document->id;
+        const auto middle = document->large_buffer->Size() / 2;
+        const auto tail = document->large_buffer->Size() - marker.size();
+        const auto middle_bytes = document->large_buffer->Read(middle, marker.size());
+        const auto tail_bytes = document->large_buffer->Read(tail, marker.size());
+        const auto marker_bytes = std::span<const std::uint8_t>{
+            reinterpret_cast<const std::uint8_t*>(marker.data()), marker.size()};
+        if (!document->large_buffer->Replace(middle, marker.size(), marker_bytes) ||
+            !document->large_buffer->Replace(tail, marker.size(), marker_bytes)) result = 124;
+        const auto captured = CaptureSession();
+        const auto checkpoint_path = session_path_.wstring() + L".large-checkpoint";
+        notepad_colon::Session recovered;
+        if (!captured || !notepad_colon::SaveSessionAtomic(checkpoint_path, *captured) ||
+            !notepad_colon::LoadSession(checkpoint_path, recovered) || recovered.documents.size() != 1 ||
+            !RestoreSessionEntry(recovered.documents[0])) result = 125;
+        auto* restored = ActiveDocument();
+        if (result == 0 && (!restored || restored->id == original_id || !restored->large_buffer ||
+            restored->large_buffer->Read(0, marker.size()) != std::vector<std::uint8_t>(marker_bytes.begin(), marker_bytes.end()) ||
+            restored->large_buffer->Read(middle, marker.size()) != std::vector<std::uint8_t>(marker_bytes.begin(), marker_bytes.end()) ||
+            restored->large_buffer->Read(tail, marker.size()) != std::vector<std::uint8_t>(marker_bytes.begin(), marker_bytes.end()) ||
+            !workspace_.Find(restored->id)->dirty || !workspace_.Find(restored->id)->path.empty())) result = 126;
+        if (restored && restored->id != original_id) static_cast<void>(CloseActive(true));
+        workspace_.Activate(original_id);
+        document = FindDocument(original_id);
+        if (!document || !document->large_buffer->Replace(middle, marker.size(), middle_bytes) ||
+            !document->large_buffer->Replace(tail, marker.size(), tail_bytes)) result = 127;
+    }
+    if (result == 0 && !SaveDocument(*document, false)) {
+        result = 42;
+        const auto* failed = workspace_.Find(document->id);
+        if (failed) {
+            const auto length = static_cast<std::size_t>(::SendMessageW(status_.GetHwnd(), SB_GETTEXTLENGTHW, 0, 0) & 0xffff);
+            std::wstring message(length + 1, L'\0');
+            ::SendMessageW(status_.GetHwnd(), SB_GETTEXTW, 0, reinterpret_cast<LPARAM>(message.data()));
+            std::ofstream details(failed->path.wstring() + L".selftest-error", std::ios::binary);
+            details << mwfl::ToUtf8(message).value_or("unreadable status") << "\nread_only=" << document->read_only
+                << " external_changed=" << document->external_changed
+                << " disk_state_equal=" << (document->file_state == notepad_colon::CaptureFileState(failed->path))
+                << " encoding=" << static_cast<int>(document->detected_encoding)
+                << " win32_error=" << ::GetLastError() << '\n';
+        }
+    }
     if (result == 0) {
         const auto prefix = document->large_buffer->Read(0, marker.size());
         if (std::string(prefix.begin(), prefix.end()) != marker ||
@@ -669,7 +743,15 @@ void MainWindow::RemoveTestState() noexcept {
     std::error_code ignored;
     for (const auto* path : {&session_path_, &macros_path_, &configuration_path_,
                              &workspace_catalog_path_})
-        if (!path->empty()) std::filesystem::remove(*path, ignored);
+        if (!path->empty()) {
+            std::filesystem::remove(*path, ignored);
+            std::filesystem::remove(path->wstring() + L".previous", ignored);
+        }
+    // All paths below are generated by this test under its process-specific prefix.
+    std::filesystem::remove_all(session_path_.wstring() + L".data", ignored);
+    std::filesystem::remove(session_path_.wstring() + L".large-checkpoint", ignored);
+    std::filesystem::remove(session_path_.wstring() + L".large-checkpoint.previous", ignored);
+    std::filesystem::remove_all(session_path_.wstring() + L".large-checkpoint.data", ignored);
     std::filesystem::remove_all(std::filesystem::temp_directory_path() /
         (L"notepad-colon-gui-recovery-" + std::to_wstring(::GetCurrentProcessId())), ignored);
 }

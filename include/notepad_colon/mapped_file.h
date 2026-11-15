@@ -29,7 +29,9 @@ public:
     MappedFile(MappedFile&& other) noexcept;
     MappedFile& operator=(MappedFile&& other) noexcept;
 
-    bool Open(const std::filesystem::path& path) noexcept;
+    // Worker snapshots use buffered reads to avoid retaining a mapping section
+    // that could prevent the foreground editor from replacing its source.
+    bool Open(const std::filesystem::path& path, bool use_mapping = true) noexcept;
     void Close() noexcept;
     bool IsOpen() const noexcept;
     std::uint64_t Size() const noexcept { return size_; }

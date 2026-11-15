@@ -1,6 +1,8 @@
 #pragma once
 
 #include <notepad_colon/document.h>
+#include <notepad_colon/large_file_buffer.h>
+#include <notepad_colon/workspace.h>
 
 #include <filesystem>
 #include <string>
@@ -15,6 +17,15 @@ struct SessionEntry {
     LineEnding line_ending = LineEnding::crlf;
     ViewState view;
     bool dirty = false;
+    // Zero is retained for old sessions, whose code page was not recorded.
+    unsigned int ansi_code_page = 0;
+    std::uint64_t window_offset = 0;
+    std::filesystem::path recovery_file;
+    std::uint64_t recovery_size = 0;
+    std::uint64_t recovery_checksum = 0;
+    // Transient worker input; durable sessions refer to an independent copy.
+    std::shared_ptr<const LargeFileBuffer> large_snapshot;
+    std::optional<FileState> disk_state;
 };
 
 struct Session {
@@ -28,6 +39,7 @@ struct Session {
 std::string SerializeSession(const Session& session);
 bool DeserializeSession(std::string_view input, Session& session) noexcept;
 bool SaveSessionAtomic(const std::filesystem::path& path, const Session& session) noexcept;
-bool LoadSession(const std::filesystem::path& path, Session& session) noexcept;
+bool LoadSession(const std::filesystem::path& path, Session& session,
+                 bool* used_previous = nullptr) noexcept;
 
 }  // namespace notepad_colon

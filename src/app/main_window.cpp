@@ -235,6 +235,7 @@ mwfl::EventResult MainWindow::OnNotify(const mwfl::NotifyEvent& event) {
         DecorateVisibleLines(*document, *document->editor, 0);
     }
     if (notification->kind == mwfl::ScintillaNotificationKind::modified &&
+        !document->loading_large_window &&
         (reinterpret_cast<const SCNotification*>(&event.header)->modificationType &
          (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) != 0)
         ++document->revision;
@@ -244,7 +245,7 @@ mwfl::EventResult MainWindow::OnNotify(const mwfl::NotifyEvent& event) {
         UpdateSyntaxTree(*document, *reinterpret_cast<const SCNotification*>(&event.header));
     workspace_.SetUndoState(document->id, document->editor->CanUndo(), document->editor->CanRedo());
     SyncPresentation(Tr(L"Editing"));
-    if (notification->kind == mwfl::ScintillaNotificationKind::modified) {
+    if (notification->kind == mwfl::ScintillaNotificationKind::modified && !document->loading_large_window) {
         session_snapshot_due_ = std::chrono::steady_clock::now() + kSessionDebounce;
         session_snapshot_pending_ = true;
     }
@@ -343,7 +344,6 @@ mwfl::EventResult MainWindow::OnTimer(mwfl::TimerId id) {
 }
 
 mwfl::EventResult MainWindow::OnClose() {
-    monitor_timer_.Stop();
     if (!IsTestMode()) {
         for (const auto& document : workspace_.GetDocuments()) {
             if (!document.dirty) continue;
@@ -353,13 +353,18 @@ mwfl::EventResult MainWindow::OnClose() {
                 return mwfl::EventResult::Handled();
             break;
         }
-        if (!SaveSessionSnapshot() || !session_writer_.Flush())
+        if (!SaveSessionSnapshot() || !session_writer_.Flush()) {
+            ::MessageBoxW(GetHwnd(),
+                Tr(L"Your session could not be saved. The editor will stay open; save your documents or free disk space and try again.").c_str(),
+                Tr(L"Session recovery unavailable").c_str(), MB_OK | MB_ICONERROR);
             return mwfl::EventResult::Handled();
+        }
         static_cast<void>(mwfl::SaveRecentFilesToRegistry(
             HKEY_CURRENT_USER, kSettingsKey, recent_));
         SaveWorkspaceCatalog();
         static_cast<void>(SaveConfigurationFile(configuration_path_));
     }
+    monitor_timer_.Stop();
     StopWorkers();
     adapter_.Detach();
     instance_.UnregisterWindow();
