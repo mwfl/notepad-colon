@@ -42,6 +42,9 @@ struct Session {
 std::string SerializeSession(const Session& session);
 bool DeserializeSession(std::string_view input, Session& session) noexcept;
 bool SaveSessionAtomic(const std::filesystem::path& path, const Session& session) noexcept;
+// Move all generations and their data folder together under UnrestoredSessions.
+// nullopt means preservation failed; the caller must not overwrite the originals.
+std::optional<std::filesystem::path> PreserveUnrestoredSession(const std::filesystem::path& path) noexcept;
 bool LoadSession(const std::filesystem::path& path, Session& session,
                  bool* used_previous = nullptr) noexcept;
 

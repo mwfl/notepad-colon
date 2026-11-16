@@ -45,7 +45,7 @@ std::optional<EncodedWriteExpectation> HandleState(HANDLE file) noexcept {
     return EncodedWriteExpectation{size.QuadPart, time, true, identity.QuadPart, info.dwVolumeSerialNumber};
 }
 
-std::vector<std::size_t> InvalidUtf8(std::span<const std::uint8_t> bytes) {
+std::vector<std::size_t> InvalidUtf8(std::span<const std::uint8_t> bytes, std::size_t& total) {
     std::vector<std::size_t> invalid;
     for (std::size_t index = 0; index < bytes.size();) {
         const auto lead = bytes[index];
@@ -55,7 +55,7 @@ std::vector<std::size_t> InvalidUtf8(std::span<const std::uint8_t> bytes) {
         else if (lead >= 0xe0 && lead <= 0xef) length = 3;
         else if (lead >= 0xf0 && lead <= 0xf4) length = 4;
         if (!length || index + length > bytes.size()) {
-            invalid.push_back(index++); continue;
+            ++total; if (invalid.size() < 4096) invalid.push_back(index); ++index; continue;
         }
         bool valid = true;
         for (std::size_t offset = 1; offset < length; ++offset)
@@ -66,7 +66,7 @@ std::vector<std::size_t> InvalidUtf8(std::span<const std::uint8_t> bytes) {
         if (valid && length == 4)
             valid = !(lead == 0xf0 && bytes[index + 1] < 0x90) &&
                     !(lead == 0xf4 && bytes[index + 1] >= 0x90);
-        if (!valid) { invalid.push_back(index++); continue; }
+        if (!valid) { ++total; if (invalid.size() < 4096) invalid.push_back(index); ++index; continue; }
         index += length;
     }
     return invalid;
@@ -83,7 +83,10 @@ void AnalyzeText(std::wstring_view text, EncodingAnalysis& result) {
         const auto code = static_cast<unsigned int>(value);
         if ((code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) ||
             code == 0x200b || code == 0x200c || code == 0x200d || code == 0x2060 || code == 0xfeff)
-            result.unicode_risks.push_back({index, value});
+        {
+            ++result.unicode_risk_count;
+            if (result.unicode_risks.size() < 4096) result.unicode_risks.push_back({index, value});
+        }
     }
 }
 }  // namespace
@@ -178,16 +181,16 @@ EncodingAnalysis AnalyzeEncoding(std::span<const std::uint8_t> bytes, unsigned i
     result.contains_nul = std::ranges::find(bytes, std::uint8_t{0}) != bytes.end();
     if (bytes.size() >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) {
         result.encoding = EncodingKind::utf8_bom; result.has_bom = true;
-        result.invalid_byte_offsets = InvalidUtf8(bytes.subspan(3));
+        result.invalid_byte_offsets = InvalidUtf8(bytes.subspan(3), result.invalid_byte_count);
         for (auto& offset : result.invalid_byte_offsets) offset += 3;
     } else if (bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe) {
         result.encoding = EncodingKind::utf16_le; result.has_bom = true;
-        if ((bytes.size() - 2) % 2) result.invalid_byte_offsets.push_back(bytes.size() - 1);
+        if ((bytes.size() - 2) % 2) { result.invalid_byte_offsets.push_back(bytes.size() - 1); ++result.invalid_byte_count; }
     } else if (bytes.size() >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff) {
         result.encoding = EncodingKind::utf16_be; result.has_bom = true;
-        if ((bytes.size() - 2) % 2) result.invalid_byte_offsets.push_back(bytes.size() - 1);
+        if ((bytes.size() - 2) % 2) { result.invalid_byte_offsets.push_back(bytes.size() - 1); ++result.invalid_byte_count; }
     } else {
-        result.invalid_byte_offsets = InvalidUtf8(bytes);
+        result.invalid_byte_offsets = InvalidUtf8(bytes, result.invalid_byte_count);
         if (!result.invalid_byte_offsets.empty()) {
             result.encoding = result.contains_nul ? EncodingKind::binary : EncodingKind::ansi;
             // An explicit code page is a user decision; otherwise infer the
@@ -233,34 +236,56 @@ bool MatchesEncodedFileState(const EncodedWriteExpectation& expected,
          (!expected.file_index || (expected.file_index == current.file_index && expected.volume_serial == current.volume_serial))));
 }
 
+bool IsSameFileOrAppend(const EncodedWriteExpectation& before,
+                        const EncodedWriteExpectation& after) noexcept {
+    return before == after || (before.exists && after.exists && before.file_index != 0 &&
+        before.file_index == after.file_index && before.volume_serial == after.volume_serial &&
+        after.size > before.size);
+}
+
+EncodingAnalysis AnalyzeDecodedText(std::wstring_view text, EncodingKind encoding,
+                                    unsigned int code_page, bool has_bom) {
+    EncodingAnalysis analysis;
+    analysis.encoding = encoding;
+    analysis.code_page = code_page ? code_page : encoding == EncodingKind::utf16_le ? 1200u :
+        encoding == EncodingKind::utf16_be ? 1201u : encoding == EncodingKind::ansi ? EffectiveCodePage(0) : CP_UTF8;
+    analysis.has_bom = has_bom;
+    analysis.ascii_only = !has_bom && (encoding == EncodingKind::utf8 || encoding == EncodingKind::ansi) &&
+        std::ranges::all_of(text, [](wchar_t value) { return value < 0x80; });
+    analysis.contains_nul = text.find(L'\0') != std::wstring_view::npos;
+    AnalyzeText(text, analysis);
+    return analysis;
+}
+
 std::optional<DecodedFileText> DecodeFileText(std::span<const std::uint8_t> bytes,
     unsigned int legacy_code_page, std::optional<EncodingKind> force_encoding,
     std::optional<EncodingKind> fallback_encoding) {
-    auto analysis = AnalyzeEncoding(bytes, legacy_code_page);
-    if (!force_encoding && analysis.encoding == EncodingKind::binary && fallback_encoding &&
-        (*fallback_encoding == EncodingKind::utf16_le || *fallback_encoding == EncodingKind::utf16_be))
-        force_encoding = fallback_encoding;
-    if (!force_encoding && legacy_code_page && analysis.ascii_only && !analysis.contains_nul)
-        force_encoding = EncodingKind::ansi;
-    if (force_encoding) {
-        analysis.encoding = *force_encoding;
-        analysis.code_page = *force_encoding == EncodingKind::ansi ? EffectiveCodePage(legacy_code_page) :
-            *force_encoding == EncodingKind::utf16_le ? 1200u : *force_encoding == EncodingKind::utf16_be ? 1201u : CP_UTF8;
-        analysis.has_bom = (*force_encoding == EncodingKind::utf8_bom && bytes.size() >= 3 &&
-            bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) ||
-            (*force_encoding == EncodingKind::utf16_le && bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe) ||
-            (*force_encoding == EncodingKind::utf16_be && bytes.size() >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff);
+    const bool utf8_bom = bytes.size() >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf;
+    const bool le_bom = bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe;
+    const bool be_bom = bytes.size() >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff;
+    auto encoding = force_encoding.value_or(utf8_bom ? EncodingKind::utf8_bom :
+        le_bom ? EncodingKind::utf16_le : be_bom ? EncodingKind::utf16_be : EncodingKind::utf8);
+    const bool nul = std::ranges::find(bytes, std::uint8_t{0}) != bytes.end();
+    if (!force_encoding && !le_bom && !be_bom && !utf8_bom && nul) {
+        if (fallback_encoding == EncodingKind::utf16_le || fallback_encoding == EncodingKind::utf16_be)
+            encoding = *fallback_encoding;
+        else return std::nullopt; // Reject binary data before allocating a decoded copy.
     }
-    if (analysis.encoding == EncodingKind::binary) return std::nullopt;
-    auto text = DecodeBytes(bytes, analysis.encoding, analysis.code_page);
-    // The editor is text-only, and its control's SetText accepts a terminated
-    // string. Never silently truncate a file at an embedded NUL.
+    unsigned int page = legacy_code_page;
+    if (!force_encoding && !nul && !utf8_bom && !le_bom && !be_bom && legacy_code_page &&
+        std::ranges::all_of(bytes, [](auto value) { return value < 0x80; })) encoding = EncodingKind::ansi;
+    auto text = DecodeBytes(bytes, encoding, page);
+    if (!text && !force_encoding && !utf8_bom && !le_bom && !be_bom && !nul && encoding == EncodingKind::utf8) {
+        encoding = EncodingKind::ansi;
+        page = legacy_code_page ? legacy_code_page : DetectLegacyCodePage(bytes).code_page;
+        text = DecodeBytes(bytes, encoding, page);
+    }
+    // Scintilla SetText accepts a terminated string; an embedded NUL must
+    // never truncate a file silently. Decode just once on the Unicode path.
     if (!text || text->find(L'\0') != std::wstring::npos) return std::nullopt;
-    analysis.valid = true;
-    analysis.invalid_byte_offsets.clear();
-    analysis.eol = {};
-    analysis.unicode_risks.clear();
-    AnalyzeText(*text, analysis);
+    const bool bom = (encoding == EncodingKind::utf8_bom && utf8_bom) ||
+        (encoding == EncodingKind::utf16_le && le_bom) || (encoding == EncodingKind::utf16_be && be_bom);
+    auto analysis = AnalyzeDecodedText(*text, encoding, encoding == EncodingKind::ansi ? EffectiveCodePage(page) : 0, bom);
     return DecodedFileText{std::move(*text), std::move(analysis)};
 }
 
@@ -288,11 +313,15 @@ std::optional<EncodedFileText> ReadEncodedFileText(const std::filesystem::path& 
             }
             offset += read;
         }
-        if (before != HandleState(file)) { ::CloseHandle(file); return std::nullopt; }
+        const auto after = HandleState(file);
+        const auto matches = [&](const auto& current) {
+            return current && (allow_live_writes ? IsSameFileOrAppend(*before, *current) : *current == *before);
+        };
+        if (!matches(after)) { ::CloseHandle(file); return std::nullopt; }
         auto decoded = DecodeFileText(bytes, legacy_code_page, force_encoding, fallback_encoding);
         const auto current = ReadEncodedFileState(path);
         ::CloseHandle(file); file = INVALID_HANDLE_VALUE;
-        if (!decoded || current != before) return std::nullopt;
+        if (!decoded || !matches(current)) return std::nullopt;
         EncodedFileText result;
         result.text = std::move(decoded->text);
         result.analysis = std::move(decoded->analysis);

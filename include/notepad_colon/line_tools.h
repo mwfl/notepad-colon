@@ -59,7 +59,7 @@ struct LineFilterResult {
     std::uint64_t bytes_scanned = 0;
     bool truncated = false;   // A limit stopped the scan early.
     bool cancelled = false;
-    std::string error;        // Invalid regular expression.
+    std::string error;        // Invalid expression or matching time/complexity limit.
 };
 
 // Reads up to `length` bytes at `offset`; a short or empty result ends the scan.

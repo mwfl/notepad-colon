@@ -165,7 +165,8 @@ bool MainWindow::ReviewReplacement(notepad_colon::ReplacePlan& plan, bool histor
             snapshots_valid = left && right;
             left_text = left.value_or(L""); right_text = right.value_or(L"");
             before.SetReadOnly(false); after.SetReadOnly(false);
-            before.SetText(left_text); after.SetText(right_text);
+            notepad_colon::SetEditorTextBaseline(before, left_text);
+            notepad_colon::SetEditorTextBaseline(after, right_text);
             before.SetReadOnly(true); after.SetReadOnly(true);
             detail.SetText(snapshots_valid ? plan.files[row].path.wstring() : Tr(L"Snapshot integrity check failed; this file cannot be recovered"));
             if (snapshots_valid) {

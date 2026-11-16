@@ -161,6 +161,7 @@ add_library(notepad_colon_model
     src/output.cpp
     src/preferences.cpp
     src/recovery.cpp
+    src/recovery_writer.cpp
     src/replace_plan.cpp
     src/session.cpp
     src/shell_menu.cpp
@@ -184,6 +185,7 @@ add_executable(notepad-colon WIN32
     src/app/main_window_review.cpp
     src/app/main_window_search.cpp
     src/app/main_window_self_test.cpp
+    src/app/main_window_soak_test.cpp
     src/app/main_window_session.cpp
     src/app/main_window_tools.cpp
     src/app/main_window_views.cpp
@@ -293,6 +295,12 @@ if(BUILD_TESTING)
     target_compile_features(notepad_colon_replace_plan_tests PRIVATE cxx_std_20)
     target_compile_options(notepad_colon_replace_plan_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
     add_test(NAME notepad-colon.replace-plans COMMAND notepad_colon_replace_plan_tests)
+    add_executable(notepad_colon_reliability_tests tests/reliability_tests.cpp)
+    target_link_libraries(notepad_colon_reliability_tests PRIVATE notepad_colon_model)
+    target_compile_features(notepad_colon_reliability_tests PRIVATE cxx_std_20)
+    target_compile_options(notepad_colon_reliability_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
+    add_test(NAME notepad-colon.reliability COMMAND notepad_colon_reliability_tests)
+    set_tests_properties(notepad-colon.reliability PROPERTIES TIMEOUT 90)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_FOUND)
         # Every interface string in the sources must be in the translation catalog.
@@ -324,6 +332,11 @@ if(BUILD_TESTING)
                 "$<TARGET_FILE:notepad-colon>")
     set_tests_properties(notepad-colon.large-file-edit PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
                          LABELS performance)
+    add_test(NAME notepad-colon.sustained-run
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/large_file_test.ps1"
+                "$<TARGET_FILE:notepad-colon>" -SoakSeconds 45)
+    set_tests_properties(notepad-colon.sustained-run PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS "performance;soak")
     add_executable(notepad_colon_performance_tests tests/performance_tests.cpp)
     target_link_libraries(notepad_colon_performance_tests PRIVATE notepad_colon_model)
     target_compile_features(notepad_colon_performance_tests PRIVATE cxx_std_20)
@@ -366,6 +379,8 @@ if(NOTEPAD_COLON_SCINTILLA_DLL)
         DESTINATION . COMPONENT product)
 endif()
 install(FILES README.md CHANGELOG.md LICENSE THIRD-PARTY-NOTICES.md DESTINATION . COMPONENT product)
+install(DIRECTORY docs DESTINATION . COMPONENT product
+        FILES_MATCHING PATTERN "*.md" PATTERN "*.png")
 install(FILES "${notepad_colon_wasmtime_SOURCE_DIR}/LICENSE"
         DESTINATION . RENAME WASMTIME-LICENSE COMPONENT product)
 install(FILES "${notepad_colon_tree_sitter_SOURCE_DIR}/LICENSE"

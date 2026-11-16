@@ -129,6 +129,7 @@ void MainWindow::BuildUI() {
     if ((IsSelfTest() || large_file_self_test_) &&
         !::PostMessageW(GetHwnd(), kSelfTestMessage, 0, 0))
         throw std::runtime_error("could not schedule GUI self-test");
+    if (session_restore_warning_) status_.SetText(*session_restore_warning_);
 }
 
 mwfl::EventResult MainWindow::OnCommand(const mwfl::CommandEvent& event) {
@@ -218,10 +219,12 @@ mwfl::EventResult MainWindow::OnNotify(const mwfl::NotifyEvent& event) {
     }
     const auto notification = document->editor->DecodeNotification(event.header);
     if (!notification) return mwfl::EventResult::Propagate();
-    if (notification->kind == mwfl::ScintillaNotificationKind::save_point_left) {
+    if (notification->kind == mwfl::ScintillaNotificationKind::save_point_left && !document->loading_large_window) {
         workspace_.SetDirty(document->id, true);
-    } else if (notification->kind == mwfl::ScintillaNotificationKind::save_point_reached) {
-        workspace_.SetDirty(document->id, false);
+    } else if (notification->kind == mwfl::ScintillaNotificationKind::save_point_reached && !document->loading_large_window) {
+        const auto* metadata = workspace_.Find(document->id);
+        workspace_.SetDirty(document->id, (document->large_buffer && document->large_buffer->IsModified()) ||
+            (metadata && metadata->path.empty() && document->editor->GetLength() != 0));
     } else if (notification->kind == mwfl::ScintillaNotificationKind::modified &&
                notification->lines_added != 0) {
         static_cast<void>(document->editor->UpdateLineNumberMargin());
@@ -353,7 +356,20 @@ mwfl::EventResult MainWindow::OnClose() {
                 return mwfl::EventResult::Handled();
             break;
         }
-        if (!SaveSessionSnapshot() || !session_writer_.Flush()) {
+        if (session_checkpoint_blocked_) {
+            // A startup archive may have failed only because another process
+            // temporarily held a manifest. Retry before giving up on closing.
+            if (const auto preserved = notepad_colon::PreserveUnrestoredSession(session_path_))
+                session_checkpoint_blocked_ = false;
+        }
+        const bool checkpoint_saved = SaveSessionSnapshot() && session_writer_.Flush();
+        const bool all_text_saved = session_checkpoint_blocked_ && std::ranges::all_of(documents_, [&](const auto& document) {
+            const auto* metadata = workspace_.Find(document.id);
+            if (!metadata || metadata->dirty || document.external_changed) return false;
+            if (metadata->path.empty()) return document.editor->GetLength() == 0;
+            return document.file_state.exists && document.file_state == notepad_colon::CaptureFileState(metadata->path);
+        });
+        if (!checkpoint_saved && !all_text_saved) {
             ::MessageBoxW(GetHwnd(),
                 Tr(L"Your session could not be saved. The editor will stay open; save your documents or free disk space and try again.").c_str(),
                 Tr(L"Session recovery unavailable").c_str(), MB_OK | MB_ICONERROR);
@@ -442,13 +458,14 @@ void MainWindow::NewDocument(std::wstring text, std::wstring title) {
     notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
     mwfl::Must(notepad_colon::ConfigureLanguage(
         *editor, lexilla_, notepad_colon::Language::plain_text, IsDark()), "configure plain-text lexer");
-    mwfl::Must(editor->SetText(text), "set document text");
+    mwfl::Must(notepad_colon::SetEditorTextBaseline(*editor, text), "set document text");
     editor->SetSavePoint();
     mwfl::Must(static_cast<bool>(workspace_.Add({id, title, {}})), "add document metadata");
     mwfl::Must(adapter_.BindPage(id, editor->GetHwnd()) == mwfl::DocumentTabStatus::success,
                "bind document page");
     mwfl::Must(mwfl::SetAccessibleName(editor->GetHwnd(), title.c_str()), "name document editor");
     documents_.push_back({id, std::move(editor)});
+    workspace_.SetDirty(id, !text.empty());
     InitializeSyntaxTree(documents_.back());
     workspace_.Activate(id);
     SynchronizeTabs(true);

@@ -174,9 +174,14 @@ Read the detailed [product scope](docs/product-scope.md), the
 CTest covers the model layer, real native-window GUI behavior, single-instance
 forwarding, isolated Shell registration, a 34 MiB edit/save integration path,
 Tree-sitter and Wasm syntax handling, an exact-4-GiB piece-table/search
-performance guard, translation-catalog completeness, and a check that no
+performance guard, recovery corruption/quota and edit-churn checks, a 45-second
+native sustained run, translation-catalog completeness, and a check that no
 shipped binary imports a networking library. GitHub Actions builds, tests, packages, and uploads the x64
 portable artifact.
+
+See [large-file testing](docs/large-file-testing.md) for the ten-minute sustained
+run and complete 4 GiB streaming-save acceptance commands, and the measured
+[reliability validation results](docs/reliability-validation.md).
 
 ## License
 

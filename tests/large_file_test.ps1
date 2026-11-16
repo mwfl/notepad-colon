@@ -1,4 +1,5 @@
-param([Parameter(Mandatory = $true)][string]$Executable)
+param([Parameter(Mandatory = $true)][string]$Executable,
+      [ValidateRange(0, 3600)][int]$SoakSeconds = 0)
 
 # Windows PowerShell 5.1 treats a missing method as a non-terminating error and
 # would report success; make every failure fatal.
@@ -57,20 +58,29 @@ try {
 }
 
 try {
-    $process = Start-Process -FilePath $Executable `
-        -ArgumentList @("--large-file-self-test", ('"{0}"' -f $path)) `
-        -PassThru -WindowStyle Hidden
-    if (-not $process.WaitForExit(40000)) {
+    $previousSoak = $env:NOTEPAD_COLON_SOAK_SECONDS
+    try {
+        if ($SoakSeconds -gt 0) { $env:NOTEPAD_COLON_SOAK_SECONDS = [string]$SoakSeconds }
+        else { $env:NOTEPAD_COLON_SOAK_SECONDS = $null }
+        $process = Start-Process -FilePath $Executable `
+            -ArgumentList @("--large-file-self-test", ('"{0}"' -f $path)) `
+            -PassThru -WindowStyle Hidden
+    } finally { $env:NOTEPAD_COLON_SOAK_SECONDS = $previousSoak }
+    $waitMilliseconds = [Math]::Max(40000, ($SoakSeconds + 30) * 1000)
+    if (-not $process.WaitForExit($waitMilliseconds)) {
         # Report what the process is showing before killing it, so a hang is diagnosable.
         $windows = (Get-ProcessWindows ([uint32]$process.Id)) -join '; '
         $process.Kill()
-        throw "large-file GUI self-test did not exit within 40 s; windows: $windows"
+        throw "large-file GUI self-test did not exit within $waitMilliseconds ms; windows: $windows"
     }
     if ($process.ExitCode -ne 0) {
         $details = if (Test-Path -LiteralPath ($path + '.selftest-error')) {
             [IO.File]::ReadAllText($path + '.selftest-error')
         } else { 'No save diagnostic was written.' }
         throw "large-file GUI self-test exited $($process.ExitCode): $details"
+    }
+    if (Test-Path -LiteralPath ($path + '.soak.json')) {
+        Write-Host ([IO.File]::ReadAllText($path + '.soak.json'))
     }
     $expectedMarker = [Text.Encoding]::UTF8.GetBytes("/*NPC-LARGE-EDIT*/")
     $input = [IO.File]::OpenRead($path)
@@ -100,4 +110,5 @@ try {
     Remove-Item -LiteralPath ($path + '.selftest-error') -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath ($path + '.rotation') -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath ($path + '.regrow') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($path + '.soak.json') -Force -ErrorAction SilentlyContinue
 }

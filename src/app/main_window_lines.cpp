@@ -524,7 +524,9 @@ void MainWindow::CompleteLineFilter() {
         menu_.UpdateCommand(*command);
     }
     if (!result->error.empty()) {
-        status_.SetText(Tr(L"Invalid regular expression"));
+        status_.SetText(result->error == "Regular expression limit exceeded"
+            ? Tr(L"Regular expression exceeded its time or complexity limit; use a simpler pattern or smaller scope")
+            : Tr(L"Invalid regular expression"));
         return;
     }
     if (result->cancelled) { status_.SetText(Tr(L"Line filter cancelled")); return; }

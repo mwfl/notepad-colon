@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Keep sustained log following bounded: install refreshed text without retaining
+  old windows in undo history, decode only the captured UTF-8 tail, and use
+  lightweight coloring while following. Preserve exact-state checks for saving
+  and recovery even when live display tolerates a concurrent append.
+- Compact deleted large-file insertion storage, release saved/closed buffers,
+  and construct replacement piece tables before committing an edit.
+- Write recovery history on a bounded, coalescing background queue. Check new
+  snapshots for corruption, retain two loadable generations per document, and
+  report a full history without deleting another document's only fallback.
+- Archive failed or partial startup sessions with their recovery sidecars before
+  new checkpoints can overwrite them. Retry temporary archive failures on close;
+  keep unsaved text open if a safe checkpoint remains unavailable.
+- Mark recovered and generated nonempty new tabs as unsaved, including after
+  undoing an edit back to their initial text, so closing prompts to save them.
+- Interrupt backtracking folder-search, replacement and line-filter regexes on
+  cancellation or a two-second matching limit. Report engine failures explicitly;
+  calculate dense search result positions in one forward pass.
+- Add native sustained-run tests for log rotation, document/menu churn, search
+  cancellation, memory and Windows resource growth, plus opt-in full 4 GiB
+  streaming-save verification.
+
 - Add complete Traditional Chinese, Spanish, French and Hindi interfaces alongside
   English (the default) and Simplified Chinese. Switch immediately from Tools >
   Interface Language; keep native language names visible, show the current choice,

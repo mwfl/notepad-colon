@@ -31,9 +31,11 @@ struct EncodingAnalysis {
     bool has_bom = false;
     bool ascii_only = false;
     bool contains_nul = false;
-    std::vector<std::size_t> invalid_byte_offsets;
+    std::vector<std::size_t> invalid_byte_offsets; // First 4,096 offsets; count includes all failures.
+    std::size_t invalid_byte_count = 0;
     EolDistribution eol;
-    std::vector<UnicodeRisk> unicode_risks;
+    std::vector<UnicodeRisk> unicode_risks; // First 4,096 controls.
+    std::size_t unicode_risk_count = 0;
 };
 
 struct EncodedWriteExpectation {
@@ -60,6 +62,12 @@ std::optional<EncodedWriteExpectation> ReadEncodedFileState(const std::filesyste
 std::optional<EncodedWriteExpectation> ReadEncodedFileHandleState(void* handle) noexcept;
 bool MatchesEncodedFileState(const EncodedWriteExpectation& expected,
                              const EncodedWriteExpectation& current) noexcept;
+// A live append frame keeps its captured extent, even if more data arrives.
+// This is for viewing only; all save and recovery guards still require exact state.
+bool IsSameFileOrAppend(const EncodedWriteExpectation& before,
+                        const EncodedWriteExpectation& after) noexcept;
+EncodingAnalysis AnalyzeDecodedText(std::wstring_view text, EncodingKind encoding,
+                                    unsigned int code_page = 0, bool has_bom = false);
 std::optional<DecodedFileText> DecodeFileText(std::span<const std::uint8_t> bytes,
     unsigned int legacy_code_page = 0, std::optional<EncodingKind> force_encoding = {},
     std::optional<EncodingKind> fallback_encoding = {});

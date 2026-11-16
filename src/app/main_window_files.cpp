@@ -31,13 +31,32 @@ std::optional<LoadedEditorFile> LoadEditorFile(const std::filesystem::path& path
     if (mode == FileOpenMode::editable) {
         auto contents = ReadEncodedFileText(path, LargeFilePolicy{}.editable_limit,
                                             legacy_code_page, forced, fallback, follow_tail);
-        if (!contents || contents->state != *before) return std::nullopt;
-        if (follow_tail && contents->analysis.encoding == EncodingKind::ansi) return std::nullopt;
+        if (!contents || (follow_tail ? !IsSameFileOrAppend(*before, contents->state) : contents->state != *before))
+            return std::nullopt;
+        if (follow_tail && contents->analysis.encoding != EncodingKind::utf8 &&
+            contents->analysis.encoding != EncodingKind::utf8_bom) return std::nullopt;
         loaded.contents = std::move(*contents);
         return loaded;
     }
     loaded.buffer = std::make_unique<LargeFileBuffer>();
-    if (!loaded.buffer->Open(path, false)) return std::nullopt;
+    if (!loaded.buffer->Open(path, false, follow_tail)) return std::nullopt;
+    if (follow_tail) {
+        const auto captured = loaded.buffer->SourceState();
+        const auto header = loaded.buffer->Read(0, 3);
+        const bool bom = header.size() == 3 && header[0] == 0xef && header[1] == 0xbb && header[2] == 0xbf;
+        const auto encoding = bom ? EncodingKind::utf8_bom : EncodingKind::utf8;
+        const auto tail = captured.size > kEditorWindowSize ? captured.size - kEditorWindowSize : 0;
+        const auto window = loaded.buffer->ReadTextWindow(tail, kEditorWindowSize, encoding);
+        const auto current = ReadEncodedFileState(path);
+        if (!window || window->text.find(L'\0') != std::wstring::npos || !current ||
+            !IsSameFileOrAppend(captured, *current)) return std::nullopt;
+        loaded.contents.text = window->text;
+        loaded.contents.analysis = AnalyzeDecodedText(window->text, encoding, CP_UTF8, bom);
+        loaded.contents.state = captured;
+        loaded.window_offset = window->requested_offset;
+        loaded.decoded_offset = window->decoded_offset;
+        return loaded;
+    }
     const auto sample = loaded.buffer->Read(0, kEditorWindowSize + 4);
     if (sample.empty()) return std::nullopt;
     const bool partial = before->size > sample.size();
@@ -122,7 +141,7 @@ bool MainWindow::OpenPath(const std::filesystem::path& path, unsigned int ansi_c
     auto editor = std::make_unique<mwfl::ScintillaEditor>();
     if (!editor->Create(GetHwnd(), mwfl::ControlId{static_cast<WORD>(200 + id.value)},
                         mwfl::RectDip{}, runtime_) ||
-        !editor->ConfigureCodeEditing() || !editor->SetText(loaded_text)) return false;
+        !editor->ConfigureCodeEditing() || !notepad_colon::SetEditorTextBaseline(*editor, loaded_text)) return false;
     notepad_colon::ConfigureAdvancedEditing(*editor);
     notepad_colon::ApplyPreferences(*editor, preferences_, IsDark());
     if (editor_config.indent_size) {
@@ -390,6 +409,8 @@ bool MainWindow::SaveLargeDocument(EditorDocument& document, const std::filesyst
     }
     document.stamp = EditorStamp(document.file_state);
     document.external_changed = false;
+    document.recovery_snapshot.reset();
+    document.recovery_revision = UINT64_MAX;
     document.editor->SetSavePoint();
     workspace_.Rename(document.id, path.filename().wstring(), path);
     workspace_.SetDirty(document.id, false);
@@ -511,7 +532,7 @@ bool MainWindow::LoadLargeFileWindow(EditorDocument& document, std::uint64_t off
     if (!window || window->text.find(L'\0') != std::wstring::npos) return false;
     document.loading_large_window = true;
     document.editor->SetReadOnly(false);
-    const bool replaced = document.editor->SetText(window->text);
+    const bool replaced = notepad_colon::SetEditorTextBaseline(*document.editor, window->text);
     document.editor->SetReadOnly(document.read_only);
     document.loading_large_window = false;
     if (!replaced) return false;
@@ -519,6 +540,7 @@ bool MainWindow::LoadLargeFileWindow(EditorDocument& document, std::uint64_t off
     document.mapped_decoded_offset = window->decoded_offset;
     if (!document.large_buffer->IsModified()) document.editor->SetSavePoint();
     workspace_.SetDirty(document.id, document.large_buffer->IsModified());
+    workspace_.SetUndoState(document.id, document.editor->CanUndo(), document.editor->CanRedo());
     if (selection && selection->first >= window->decoded_offset) {
         const auto relative = selection->first - window->decoded_offset;
         if (relative + selection->second <= static_cast<std::uint64_t>(document.editor->GetLength()))
@@ -549,7 +571,7 @@ void MainWindow::MoveLargeFileWindow(bool forward) {
     }
     document->loading_large_window = true;
     document->editor->SetReadOnly(false);
-    const bool replaced = document->editor->SetText(window->text);
+    const bool replaced = notepad_colon::SetEditorTextBaseline(*document->editor, window->text);
     document->editor->SetReadOnly(document->read_only);
     document->loading_large_window = false;
     if (!replaced) return;
@@ -557,6 +579,7 @@ void MainWindow::MoveLargeFileWindow(bool forward) {
     document->mapped_decoded_offset = window->decoded_offset;
     if (!document->large_buffer->IsModified()) document->editor->SetSavePoint();
     workspace_.SetDirty(document->id, document->large_buffer->IsModified());
+    workspace_.SetUndoState(document->id, document->editor->CanUndo(), document->editor->CanRedo());
     status_.SetText(Tr(L"Large file | bytes ") + std::to_wstring(document->mapped_offset) + L"–" +
         std::to_wstring(window->byte_end) + Tr(L" of ") +
         std::to_wstring(size));
@@ -579,11 +602,11 @@ void MainWindow::ShowEncodingInformation() {
     }
     const auto& analysis = document->encoding_analysis;
     const auto message = Tr(L"Encoding: ") + name +
-        Tr(L"\nInvalid byte sequences: ") + std::to_wstring(analysis.invalid_byte_offsets.size()) +
+        Tr(L"\nInvalid byte sequences: ") + std::to_wstring(analysis.invalid_byte_count) +
         Tr(L"\nLine endings: ") + std::to_wstring(analysis.eol.crlf) + Tr(L" CRLF, ") +
         std::to_wstring(analysis.eol.lf) + Tr(L" LF, ") + std::to_wstring(analysis.eol.cr) + Tr(L" CR") +
         Tr(L"\nMixed line endings: ") + (analysis.eol.Mixed() ? std::wstring(Tr(L"Yes")) : std::wstring(Tr(L"No"))) +
-        Tr(L"\nBidi / zero-width controls: ") + std::to_wstring(analysis.unicode_risks.size());
+        Tr(L"\nBidi / zero-width controls: ") + std::to_wstring(analysis.unicode_risk_count);
     ::MessageBoxW(GetHwnd(), message.c_str(), Tr(L"Document Encoding Information").c_str(), MB_OK |
         ((!analysis.invalid_byte_offsets.empty() || analysis.eol.Mixed() || !analysis.unicode_risks.empty())
             ? MB_ICONWARNING : MB_ICONINFORMATION));
@@ -604,13 +627,13 @@ bool MainWindow::ReloadDocumentFromDisk(EditorDocument& document, bool follow_ta
         return false;
     }
     std::optional<std::wstring> before;
-    if (!force_code_page && !document.large_buffer && document.editor->GetLength() <= 8 * 1024 * 1024)
+    if (!follow_tail && !force_code_page && !document.large_buffer && document.editor->GetLength() <= 8 * 1024 * 1024)
         before = document.editor->GetText();
     const auto selection = document.editor->GetSelection();
     const auto first_line = document.editor->Send(SCI_GETFIRSTVISIBLELINE);
     document.loading_large_window = true;
     document.editor->SetReadOnly(false);
-    const bool replaced = document.editor->SetText(loaded->contents.text);
+    const bool replaced = notepad_colon::SetEditorTextBaseline(*document.editor, loaded->contents.text);
     if (!replaced) {
         document.editor->SetReadOnly(document.read_only);
         document.loading_large_window = false;
@@ -644,6 +667,7 @@ bool MainWindow::ReloadDocumentFromDisk(EditorDocument& document, bool follow_ta
         document.line_ending == notepad_colon::LineEnding::cr ? SC_EOL_CR : SC_EOL_CRLF);
     document.editor->SetSavePoint();
     workspace_.SetDirty(document.id, false);
+    workspace_.SetUndoState(document.id, document.editor->CanUndo(), document.editor->CanRedo());
     if (document.follow_tail) document.editor->Send(SCI_GOTOPOS, document.editor->GetLength());
     else {
         document.editor->SetSelection(selection);
@@ -652,7 +676,7 @@ bool MainWindow::ReloadDocumentFromDisk(EditorDocument& document, bool follow_ta
     if (const auto* language = language_registry_.Find(document.language_id); language && !language->builtin)
         static_cast<void>(notepad_colon::ConfigureRegisteredLanguage(*document.editor, lexilla_, *language, IsDark()));
     else static_cast<void>(notepad_colon::ConfigureLanguage(*document.editor, lexilla_, document.language, IsDark(),
-        document.large_buffer ? notepad_colon::SyntaxPerformanceMode::lightweight : notepad_colon::SyntaxPerformanceMode::full));
+        (document.large_buffer || document.follow_tail) ? notepad_colon::SyntaxPerformanceMode::lightweight : notepad_colon::SyntaxPerformanceMode::full));
     InitializeSyntaxTree(document);
     if (force_code_page || document.large_buffer || !before) ClearReview(document);
     const auto changes = before ? NoteExternalReload(document, std::move(*before)) : 0;

@@ -685,3 +685,7 @@
 {L"Settings Transfer", L"導入/導出設定"},
 {L"Windows Integration", L"Windows 集成"},
 {L"&Document", L"文件(&D)"},
+{L"Recovery history is full; review and delete old snapshots in Recovery Manager", L"復原歷史已滿，請在復原管理員中檢視並刪除舊快照"},
+{L"Unrestored session preserved in: ", L"未完整復原的工作階段已保留於："},
+{L"This recovery snapshot is damaged or unreadable; no text was restored", L"此復原快照已損毀或無法讀取，未還原任何文字"},
+{L"Regular expression exceeded its time or complexity limit; use a simpler pattern or smaller scope", L"正規表示式超出時間或複雜度限制，請簡化表示式或縮小範圍"},

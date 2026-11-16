@@ -209,6 +209,18 @@ void MainWindow::RunSelfTest() noexcept {
             HKEY_CURRENT_USER, isolated, association, false);
         ::RegDeleteTreeW(HKEY_CURRENT_USER, isolated.c_str());
         if (!registered || !removed) result = 19;
+        if (result == 0) {
+            NewDocument(L"generated recovery note");
+            auto* generated = ActiveDocument();
+            if (!generated || !workspace_.Find(generated->id)->dirty || generated->editor->CanUndo()) result = 244;
+            if (generated) {
+                generated->editor->Send(SCI_APPENDTEXT, 1, reinterpret_cast<LPARAM>("!"));
+                generated->editor->Undo();
+                if (generated->editor->GetText() != L"generated recovery note" ||
+                    !workspace_.Find(generated->id)->dirty) result = 245;
+            }
+            static_cast<void>(CloseActive(true));
+        }
         auto* first = ActiveDocument();
         if (!first || !first->editor->SetText(L"first 世界\n")) result = 1;
         if (result == 0 && !notepad_colon::ConfigureLanguage(
@@ -437,7 +449,7 @@ void MainWindow::RunSelfTest() noexcept {
             const auto indicator_at = [&](int indicator, LRESULT position) {
                 return view.Send(SCI_INDICATORVALUEAT, indicator, position) != 0;
             };
-            const bool clean_before = !workspace_.Find(table->id)->dirty;
+            const bool dirty_before = workspace_.Find(table->id)->dirty;
             ToggleRainbowColumns();
             const auto third_line = view.Send(SCI_POSITIONFROMLINE, 2);
             if (table->delimiter != ',' || !indicator_at(24, 0) || indicator_at(25, 0) ||
@@ -445,8 +457,8 @@ void MainWindow::RunSelfTest() noexcept {
                 // "b,c" is one field: both letters and the comma inside the quotes.
                 !indicator_at(25, third_line + 3) || !indicator_at(25, third_line + 4) ||
                 !indicator_at(25, third_line + 5) || !indicator_at(26, third_line + 8)) result = 90;
-            // Decorating is not an edit: the document must still be clean.
-            if (result == 0 && (!clean_before || workspace_.Find(table->id)->dirty ||
+            // Decorating must preserve the unsaved generated note's state.
+            if (result == 0 && (workspace_.Find(table->id)->dirty != dirty_before ||
                 view.IsModified())) result = 91;
             view.Send(SCI_GOTOPOS, third_line + 4);
             if (result == 0 && DelimitedFieldStatus(*table) != L"Field 2 | ") result = 92;
@@ -869,6 +881,53 @@ void MainWindow::RunSelfTest() noexcept {
                 if (!CloseActive(true)) result = 123;
             }
         }
+        if (result == 0) {
+            // A failed or partial startup must archive its original manifest
+            // and sidecars before later checkpoints can prune or overwrite them.
+            static_cast<void>(session_writer_.Flush());
+            const auto original_path = session_path_;
+            const auto original_warning = session_restore_warning_;
+            const auto original_blocked = session_checkpoint_blocked_;
+            session_path_ = test_workspace / L"corrupt-session.state";
+            std::ofstream(session_path_, std::ios::binary) << "damaged current";
+            std::ofstream(session_path_.wstring() + L".previous", std::ios::binary) << "damaged previous";
+            std::filesystem::create_directory(session_path_.wstring() + L".data");
+            std::ofstream(std::filesystem::path{session_path_.wstring() + L".data"} / L"orphan") << "retained";
+            if (RestoreSession() || std::filesystem::exists(session_path_) || !session_restore_warning_ ||
+                session_checkpoint_blocked_) result = 240;
+            const auto find_archive = [&](const std::filesystem::path& name) {
+                for (const auto& entry : std::filesystem::directory_iterator(test_workspace / L"UnrestoredSessions"))
+                    if (std::filesystem::exists(entry.path() / name)) return entry.path();
+                return std::filesystem::path{};
+            };
+            const auto corrupt_archive = find_archive(session_path_.filename());
+            if (corrupt_archive.empty() || !SaveSessionSnapshot() || !session_writer_.Flush() ||
+                !std::filesystem::exists(corrupt_archive / L"corrupt-session.state.data" / L"orphan")) result = 241;
+            session_path_ = test_workspace / L"partial-session.state";
+            notepad_colon::Session partial;
+            partial.documents.push_back({{}, L"archived recovery text", {}, {}, {}, true});
+            notepad_colon::SessionEntry missing;
+            missing.path = test_workspace / L"missing-clean-document.txt";
+            partial.documents.push_back(std::move(missing));
+            if (!notepad_colon::SaveSessionAtomic(session_path_, partial) || !RestoreSession() ||
+                std::filesystem::exists(session_path_)) result = 242;
+            const auto recovered = std::ranges::find_if(documents_, [](const auto& document) {
+                return document.editor->GetText() == L"archived recovery text";
+            });
+            if (recovered == documents_.end()) result = 242;
+            else { workspace_.Activate(recovered->id); SynchronizeTabs(false); }
+            const auto partial_archive = find_archive(session_path_.filename());
+            notepad_colon::Session archived;
+            if (partial_archive.empty() || !notepad_colon::LoadSession(partial_archive / session_path_.filename(), archived) ||
+                archived.documents.size() != 2 || !SaveSessionSnapshot() || !session_writer_.Flush() ||
+                !notepad_colon::LoadSession(partial_archive / session_path_.filename(), archived) ||
+                archived.documents.size() != 2) result = 243;
+            static_cast<void>(CloseActive(true));
+            static_cast<void>(session_writer_.Flush());
+            session_path_ = original_path;
+            session_restore_warning_ = original_warning;
+            session_checkpoint_blocked_ = original_blocked;
+        }
         std::error_code workspace_ignored;
         std::filesystem::remove_all(test_workspace, workspace_ignored);
         if (result == 0 && !CloseActive(true)) result = 5;
@@ -904,6 +963,19 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
         if (!document->large_buffer->IsModified() ||
             document->large_buffer->Size() != document->file_state.size + marker.size())
             result = 41;
+    }
+    if (result == 0) {
+        // A view baseline must not turn into an undoable whole-file edit.
+        // Local edits remain undoable, while switching windows retains the
+        // complete piece table and its dirty state without stale-position undo.
+        if (!document->editor->CanUndo()) result = 250;
+        document->editor->Undo();
+        if (document->large_buffer->Size() != document->file_state.size) result = 251;
+        document->editor->Redo();
+        if (document->large_buffer->Size() != document->file_state.size + marker.size() ||
+            !LoadLargeFileWindow(*document, 8u * 1024 * 1024) || document->editor->CanUndo() ||
+            !workspace_.Find(document->id)->dirty || !LoadLargeFileWindow(*document, 0) ||
+            document->editor->CanUndo() || !workspace_.Find(document->id)->dirty) result = 252;
     }
     if (result == 0) {
         const auto original_id = document->id;
@@ -980,7 +1052,7 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
         if (document->detected_encoding != notepad_colon::EncodingKind::utf8 || document->read_only) result = 186;
         MoveLargeFileWindow(true);
         if (!document->editor->GetText().value_or(L"").starts_with(L"😀😀") ||
-            workspace_.Find(document->id)->dirty) result = 187;
+            workspace_.Find(document->id)->dirty || document->editor->CanUndo()) result = 187;
         {
             std::fstream patch(path, std::ios::binary | std::ios::in | std::ios::out);
             patch.seekp(static_cast<std::streamoff>(boundary - 2));
@@ -1013,7 +1085,11 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
         if (!::ReplaceFileW(path.c_str(), regrow.c_str(), nullptr, 0, nullptr, nullptr)) result = 183;
         CheckExternalChanges(true);
         if (!document->large_buffer || document->large_buffer->Size() != size || !document->follow_tail ||
-            workspace_.Find(document->id)->dirty) result = 184;
+            workspace_.Find(document->id)->dirty || document->editor->CanUndo()) result = 184;
+    }
+    if (result == 0) {
+        try { RunSustainedFileSelfTest(document, result); }
+        catch (...) { result = 249; }
     }
     StopWorkers();
     RemoveTestState();
@@ -1025,6 +1101,7 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
 void MainWindow::RemoveTestState() noexcept {
     if (!IsTestMode()) return;
     static_cast<void>(session_writer_.Flush());
+    static_cast<void>(recovery_writer_.Flush());
     std::error_code ignored;
     for (const auto* path : {&session_path_, &macros_path_, &configuration_path_,
                              &workspace_catalog_path_})

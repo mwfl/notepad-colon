@@ -685,3 +685,7 @@
 {L"Settings Transfer", L"सेटिंग आयात / निर्यात"},
 {L"Windows Integration", L"Windows एकीकरण"},
 {L"&Document", L"दस्तावेज़(&D)"},
+{L"Recovery history is full; review and delete old snapshots in Recovery Manager", L"पुनर्प्राप्ति इतिहास भर गया है; पुनर्प्राप्ति प्रबंधक में पुराने स्नैपशॉट देखें और हटाएँ"},
+{L"Unrestored session preserved in: ", L"अधूरा बहाल हुआ सत्र यहाँ सुरक्षित रखा गया: "},
+{L"This recovery snapshot is damaged or unreadable; no text was restored", L"यह पुनर्प्राप्ति स्नैपशॉट क्षतिग्रस्त या अपठनीय है; कोई पाठ बहाल नहीं किया गया"},
+{L"Regular expression exceeded its time or complexity limit; use a simpler pattern or smaller scope", L"रेगुलर एक्सप्रेशन ने समय या जटिलता सीमा पार कर दी; सरल पैटर्न या छोटा दायरा इस्तेमाल करें"},

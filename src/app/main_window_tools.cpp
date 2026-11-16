@@ -140,7 +140,8 @@ void MainWindow::ShowComparison(std::wstring right_title, std::wstring left_text
                 left.ConfigureCodeEditing(); right.ConfigureCodeEditing();
                 notepad_colon::ApplyPreferences(left, preferences_, IsDark());
                 notepad_colon::ApplyPreferences(right, preferences_, IsDark());
-                left.SetText(left_text); right.SetText(right_text);
+                notepad_colon::SetEditorTextBaseline(left, left_text);
+                notepad_colon::SetEditorTextBaseline(right, right_text);
                 left.SetReadOnly(true); right.SetReadOnly(true);
                 for (auto* editor : {&left, &right}) {
                     editor->Send(SCI_MARKERDEFINE, 10, SC_MARK_BACKGROUND);
@@ -400,7 +401,7 @@ void MainWindow::ShowPrintPreview() {
     }
     mwfl::ScintillaEditor preview; mwfl::Label page_label;
     mwfl::Button previous, next, print, close; std::size_t current = 0; mwfl::Dialog* pointer = nullptr;
-    const auto refresh = [&] { preview.SetReadOnly(false); preview.SetText(pages[current]); preview.SetReadOnly(true);
+    const auto refresh = [&] { preview.SetReadOnly(false); notepad_colon::SetEditorTextBaseline(preview, pages[current]); preview.SetReadOnly(true);
         page_label.SetText(metadata->title + Tr(L"  •  Page ") + std::to_wstring(current + 1) + Tr(L" of ") + std::to_wstring(pages.size())); };
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Print Preview"),
         .initial_client_size = {760.0_dip, 700.0_dip}, .resizable = true,

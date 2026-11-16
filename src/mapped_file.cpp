@@ -11,14 +11,14 @@ namespace notepad_colon {
 MappedFile::~MappedFile() noexcept { Close(); }
 
 MappedFile::MappedFile(MappedFile&& other) noexcept
-    : file_(other.file_), mapping_(other.mapping_), size_(other.size_) {
-    other.file_ = INVALID_HANDLE_VALUE; other.mapping_ = nullptr; other.size_ = 0;
+    : file_(other.file_), mapping_(other.mapping_), size_(other.size_), captured_state_(other.captured_state_) {
+    other.file_ = INVALID_HANDLE_VALUE; other.mapping_ = nullptr; other.size_ = 0; other.captured_state_ = {};
 }
 
 MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
     if (this != &other) {
-        Close(); file_ = other.file_; mapping_ = other.mapping_; size_ = other.size_;
-        other.file_ = INVALID_HANDLE_VALUE; other.mapping_ = nullptr; other.size_ = 0;
+        Close(); file_ = other.file_; mapping_ = other.mapping_; size_ = other.size_; captured_state_ = other.captured_state_;
+        other.file_ = INVALID_HANDLE_VALUE; other.mapping_ = nullptr; other.size_ = 0; other.captured_state_ = {};
     }
     return *this;
 }
@@ -29,20 +29,20 @@ bool MappedFile::Open(const std::filesystem::path& path, bool use_mapping) noexc
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size{};
-    if (!::GetFileSizeEx(file, &size) || size.QuadPart < 0) { ::CloseHandle(file); return false; }
+    const auto state = ReadEncodedFileHandleState(file);
+    if (!state) { ::CloseHandle(file); return false; }
     HANDLE mapping = nullptr;
-    if (size.QuadPart != 0 && use_mapping) {
+    if (state->size != 0 && use_mapping) {
         mapping = ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
         if (!mapping) { ::CloseHandle(file); return false; }
     }
-    file_ = file; mapping_ = mapping; size_ = static_cast<std::uint64_t>(size.QuadPart); return true;
+    file_ = file; mapping_ = mapping; size_ = state->size; captured_state_ = *state; return true;
 }
 
 void MappedFile::Close() noexcept {
     if (mapping_) ::CloseHandle(static_cast<HANDLE>(mapping_));
     if (file_ != INVALID_HANDLE_VALUE) ::CloseHandle(static_cast<HANDLE>(file_));
-    file_ = INVALID_HANDLE_VALUE; mapping_ = nullptr; size_ = 0;
+    file_ = INVALID_HANDLE_VALUE; mapping_ = nullptr; size_ = 0; captured_state_ = {};
 }
 
 bool MappedFile::IsOpen() const noexcept { return file_ != INVALID_HANDLE_VALUE; }
@@ -62,6 +62,7 @@ std::optional<MappedFile> MappedFile::CloneBuffered(bool stable) const noexcept 
         ::GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) return std::nullopt;
     copy.file_ = duplicate;
     copy.size_ = size_;
+    copy.captured_state_ = captured_state_;
     return copy;
 }
 

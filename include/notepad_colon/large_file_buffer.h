@@ -21,9 +21,14 @@ struct CheckpointCopy {
     EncodedWriteExpectation state;
 };
 
+struct LargeFileMemory {
+    std::size_t added_bytes = 0, added_capacity = 0;
+    std::size_t pieces = 0, piece_capacity = 0;
+};
+
 class LargeFileBuffer final {
 public:
-    bool Open(const std::filesystem::path& path, bool use_mapping = true) noexcept;
+    bool Open(const std::filesystem::path& path, bool use_mapping = true, bool allow_append = false) noexcept;
     void Close() noexcept;
     bool IsOpen() const noexcept { return source_.IsOpen(); }
     bool IsModified() const noexcept { return modified_; }
@@ -45,6 +50,9 @@ public:
     bool Replace(std::uint64_t offset, std::uint64_t length,
                  std::span<const std::uint8_t> bytes);
     bool SaveAs(const std::filesystem::path& path) noexcept;
+    LargeFileMemory MemoryUsage() const noexcept {
+        return {added_.size(), added_.capacity(), pieces_.size(), pieces_.capacity()};
+    }
     // Freeze the piece table and added bytes for a worker, without copying the
     // original file into RAM or sharing mutable editor state with that worker.
     std::shared_ptr<const LargeFileBuffer> Snapshot() const noexcept;
@@ -59,7 +67,7 @@ private:
         std::uint64_t length = 0;
     };
 
-    bool SplitAt(std::uint64_t offset, std::size_t& index);
+    void CompactAddedStorage() noexcept;
     void Normalize() noexcept;
 
     std::filesystem::path source_path_;

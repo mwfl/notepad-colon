@@ -23,6 +23,7 @@
 #include <notepad_colon/encoding_detection.h>
 #include <notepad_colon/preferences.h>
 #include <notepad_colon/recovery.h>
+#include <notepad_colon/recovery_writer.h>
 #include <notepad_colon/text.h>
 #include <notepad_colon/session.h>
 #include <notepad_colon/session_writer.h>
@@ -333,6 +334,7 @@ struct EditorDocument {
     std::optional<std::wstring> review_base;
     std::shared_ptr<const notepad_colon::LargeFileBuffer> recovery_snapshot;
     std::uint64_t recovery_revision = UINT64_MAX;
+    std::uint64_t history_revision = UINT64_MAX;
     bool legacy_encoding_override = false;
     bool unicode_bom = true;
     std::optional<notepad_colon::LineEnding> line_ending_override;
@@ -948,6 +950,7 @@ private:
     void RunSelfTest() noexcept;
 
     void RunLargeFileSelfTest() noexcept;
+    void RunSustainedFileSelfTest(EditorDocument*& document, int& result);
 
     mwfl::ScintillaRuntime runtime_;
     notepad_colon::LexillaRuntime lexilla_;
@@ -970,9 +973,12 @@ private:
     std::filesystem::path session_path_;
     std::wstring presentation_title_;
     notepad_colon::SessionWriter session_writer_;
+    notepad_colon::RecoveryWriter recovery_writer_;
     bool session_snapshot_pending_ = false;
     std::chrono::steady_clock::time_point session_snapshot_due_{};
     bool restoring_session_ = false;
+    bool session_checkpoint_blocked_ = false;
+    std::optional<std::wstring> session_restore_warning_;
     bool find_bar_visible_ = false;
     bool search_match_case_ = false;
     bool search_whole_word_ = false;
@@ -1016,7 +1022,7 @@ private:
     std::chrono::steady_clock::time_point last_auto_save_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point last_recovery_snapshot_ =
         std::chrono::steady_clock::now() - std::chrono::seconds{30};
-    std::unique_ptr<notepad_colon::RecoveryStore> recovery_store_;
+    std::shared_ptr<notepad_colon::RecoveryStore> recovery_store_;
     notepad_colon::MacroRecorder macro_recorder_;
     std::vector<notepad_colon::MacroAction> last_macro_;
     std::vector<notepad_colon::SavedMacro> saved_macros_;

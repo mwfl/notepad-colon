@@ -37,6 +37,7 @@ public:
     std::optional<EncodedWriteExpectation> State() const noexcept;
     std::optional<MappedFile> CloneBuffered(bool stable = false) const noexcept;
     std::uint64_t Size() const noexcept { return size_; }
+    const EncodedWriteExpectation& CapturedState() const noexcept { return captured_state_; }
     std::vector<std::uint8_t> Read(std::uint64_t offset, std::size_t length) const;
     std::optional<std::uint64_t> Find(std::span<const std::uint8_t> needle,
                                       std::uint64_t start = 0,
@@ -49,6 +50,7 @@ private:
     void* file_ = reinterpret_cast<void*>(static_cast<std::intptr_t>(-1));
     void* mapping_ = nullptr;
     std::uint64_t size_ = 0;
+    EncodedWriteExpectation captured_state_;
 };
 
 }  // namespace notepad_colon

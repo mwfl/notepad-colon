@@ -222,7 +222,16 @@ bool ConfigureLanguage(mwfl::ScintillaEditor& editor, const LexillaRuntime& runt
     editor.Send(SCI_SETMARGINWIDTHN, 1, folding ? 14 : 0);
     editor.Send(SCI_SETFOLDFLAGS, SC_FOLDFLAG_LINEAFTER_CONTRACTED);
     ConfigureCommonStyles(editor, language, dark);
-    editor.Send(SCI_COLOURISE, 0, -1);
+    if (mode == SyntaxPerformanceMode::full) editor.Send(SCI_COLOURISE, 0, -1);
+    else {
+        const auto line = editor.Send(SCI_GETFIRSTVISIBLELINE);
+        const auto start = editor.Send(SCI_POSITIONFROMLINE, line);
+        const auto end_line = line + (std::max<LRESULT>)(32, editor.Send(SCI_LINESONSCREEN)) + 1;
+        const auto line_end = editor.Send(SCI_POSITIONFROMLINE, end_line);
+        const auto end = (std::min<LRESULT>)(start + 64 * 1024,
+            line_end < 0 ? editor.GetLength() : line_end);
+        editor.Send(SCI_COLOURISE, start, end);
+    }
     return language == Language::plain_text || lexer != nullptr;
 }
 
@@ -383,6 +392,18 @@ void ApplySyntaxSpans(mwfl::ScintillaEditor& editor,
         cursor = end;
     }
     if (cursor < end_byte) editor.Send(SCI_SETSTYLING, end_byte - cursor, STYLE_DEFAULT);
+}
+
+bool SetEditorTextBaseline(mwfl::ScintillaEditor& editor, std::wstring_view text) noexcept {
+    if (!editor.GetHwnd() || text.find(L'\0') != std::wstring_view::npos) return false;
+    const auto utf8 = mwfl::ToUtf8(text);
+    if (!utf8) return false;
+    const auto collecting = editor.Send(SCI_GETUNDOCOLLECTION);
+    editor.Send(SCI_SETUNDOCOLLECTION, false);
+    editor.Send(SCI_SETTEXT, 0, reinterpret_cast<LPARAM>(utf8->c_str()));
+    editor.Send(SCI_EMPTYUNDOBUFFER);
+    editor.Send(SCI_SETUNDOCOLLECTION, collecting);
+    return true;
 }
 
 bool ReplaceDocumentText(mwfl::ScintillaEditor& editor, std::wstring_view text,

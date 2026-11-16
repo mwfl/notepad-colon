@@ -22,7 +22,7 @@ bool WriteAll(HANDLE file, std::span<const std::uint8_t> bytes) noexcept {
 }
 }
 
-bool LargeFileBuffer::Open(const std::filesystem::path& path, bool use_mapping) noexcept {
+bool LargeFileBuffer::Open(const std::filesystem::path& path, bool use_mapping, bool allow_append) noexcept {
     Close();
     if (!source_.Open(path, use_mapping)) return false;
     try {
@@ -30,8 +30,13 @@ bool LargeFileBuffer::Open(const std::filesystem::path& path, bool use_mapping) 
         use_mapping_ = use_mapping;
         size_ = source_.Size();
         const auto state = source_.State();
-        if (!state || ReadEncodedFileState(path) != state || state->size != size_) { Close(); return false; }
-        source_state_ = *state;
+        const auto path_state = ReadEncodedFileState(path);
+        const auto captured = source_.CapturedState();
+        const auto matches = [&](const auto& current) {
+            return current && (allow_append ? IsSameFileOrAppend(captured, *current) : captured == *current);
+        };
+        if (!matches(state) || !matches(path_state)) { Close(); return false; }
+        source_state_ = captured;
         if (size_ != 0) pieces_.push_back({Storage::original, 0, size_});
         return true;
     } catch (...) { Close(); return false; }
@@ -40,8 +45,8 @@ bool LargeFileBuffer::Open(const std::filesystem::path& path, bool use_mapping) 
 void LargeFileBuffer::Close() noexcept {
     source_.Close();
     source_path_.clear();
-    added_.clear();
-    pieces_.clear();
+    std::vector<std::uint8_t>{}.swap(added_);
+    std::vector<Piece>{}.swap(pieces_);
     size_ = 0;
     modified_ = false;
     source_state_ = {};
@@ -156,78 +161,94 @@ std::optional<MappedTextWindow> LargeFileBuffer::ReadTextWindow(
     return std::nullopt;
 }
 
-bool LargeFileBuffer::SplitAt(std::uint64_t offset, std::size_t& index) {
-    if (offset > size_) return false;
-    if (offset == size_) { index = pieces_.size(); return true; }
-    std::uint64_t logical = 0;
-    for (index = 0; index < pieces_.size(); ++index) {
-        const auto& piece = pieces_[index];
-        if (offset == logical) return true;
-        if (offset < logical + piece.length) {
-            const auto left_length = offset - logical;
-            const Piece right{piece.storage, piece.offset + left_length, piece.length - left_length};
-            pieces_[index].length = left_length;
-            pieces_.insert(pieces_.begin() + static_cast<std::ptrdiff_t>(index + 1), right);
-            ++index;
-            return true;
-        }
-        logical += piece.length;
-    }
-    return false;
-}
-
 bool LargeFileBuffer::Insert(std::uint64_t offset, std::span<const std::uint8_t> bytes) {
-    if (bytes.empty()) return offset <= size_;
-    if (bytes.size() > (std::numeric_limits<std::uint64_t>::max)() - size_ ||
-        added_.size() > (std::numeric_limits<std::size_t>::max)() - bytes.size()) return false;
-    try {
-        std::size_t index = 0;
-        if (!SplitAt(offset, index)) return false;
-        const auto added_offset = static_cast<std::uint64_t>(added_.size());
-        added_.insert(added_.end(), bytes.begin(), bytes.end());
-        pieces_.insert(pieces_.begin() + static_cast<std::ptrdiff_t>(index),
-                       {Storage::added, added_offset, bytes.size()});
-        size_ += bytes.size();
-        modified_ = true;
-        checkpoint_copies_.clear();
-        Normalize();
-        return true;
-    } catch (...) { return false; }
+    return Replace(offset, 0, bytes);
 }
 
 bool LargeFileBuffer::Erase(std::uint64_t offset, std::uint64_t length) {
-    if (offset > size_ || length > size_ - offset) return false;
-    if (length == 0) return true;
-    try {
-        std::size_t begin = 0, end = 0;
-        if (!SplitAt(offset, begin) || !SplitAt(offset + length, end)) return false;
-        pieces_.erase(pieces_.begin() + static_cast<std::ptrdiff_t>(begin),
-                      pieces_.begin() + static_cast<std::ptrdiff_t>(end));
-        size_ -= length;
-        modified_ = true;
-        checkpoint_copies_.clear();
-        Normalize();
-        return true;
-    } catch (...) { return false; }
+    return Replace(offset, length, {});
 }
 
 bool LargeFileBuffer::Replace(std::uint64_t offset, std::uint64_t length,
                               std::span<const std::uint8_t> bytes) {
-    if (offset > size_ || length > size_ - offset) return false;
-    if (!Erase(offset, length)) return false;
-    return Insert(offset, bytes);
+    if (offset > size_ || length > size_ - offset ||
+        bytes.size() > (std::numeric_limits<std::uint64_t>::max)() - (size_ - length) ||
+        bytes.size() > added_.max_size() - added_.size()) return false;
+    if (length == 0 && bytes.empty()) return true;
+    try {
+        // Build the complete next piece table before changing the document.
+        // Allocation failure must never leave a replacement half deleted.
+        std::vector<Piece> next;
+        next.reserve(pieces_.size() + 3);
+        const auto finish = offset + length;
+        const auto added_offset = static_cast<std::uint64_t>(added_.size());
+        std::uint64_t logical = 0;
+        bool inserted = false;
+        for (const auto& piece : pieces_) {
+            const auto end = logical + piece.length;
+            if (logical < offset) {
+                const auto count = (std::min)(piece.length, offset - logical);
+                if (count) next.push_back({piece.storage, piece.offset, count});
+            }
+            if (!inserted && end >= offset) {
+                if (!bytes.empty()) next.push_back({Storage::added, added_offset, bytes.size()});
+                inserted = true;
+            }
+            if (end > finish) {
+                const auto within = finish > logical ? finish - logical : 0;
+                next.push_back({piece.storage, piece.offset + within, piece.length - within});
+            }
+            logical = end;
+        }
+        if (!inserted && !bytes.empty()) next.push_back({Storage::added, added_offset, bytes.size()});
+        added_.insert(added_.end(), bytes.begin(), bytes.end());
+        pieces_.swap(next);
+        size_ = size_ - length + bytes.size();
+        modified_ = true;
+        checkpoint_copies_.clear();
+        Normalize();
+        CompactAddedStorage();
+        return true;
+    } catch (...) { return false; }
 }
 
 void LargeFileBuffer::Normalize() noexcept {
-    std::erase_if(pieces_, [](const Piece& piece) { return piece.length == 0; });
-    for (std::size_t index = 1; index < pieces_.size();) {
-        auto& left = pieces_[index - 1];
-        const auto& right = pieces_[index];
-        if (left.storage == right.storage && left.offset + left.length == right.offset) {
-            left.length += right.length;
-            pieces_.erase(pieces_.begin() + static_cast<std::ptrdiff_t>(index));
-        } else ++index;
+    std::size_t output = 0;
+    for (const auto piece : pieces_) {
+        if (!piece.length) continue;
+        if (output && pieces_[output - 1].storage == piece.storage &&
+            pieces_[output - 1].offset + pieces_[output - 1].length == piece.offset)
+            pieces_[output - 1].length += piece.length;
+        else pieces_[output++] = piece;
     }
+    pieces_.resize(output);
+}
+
+void LargeFileBuffer::CompactAddedStorage() noexcept {
+    try {
+        if (pieces_.capacity() > (std::max<std::size_t>)(128, pieces_.size() * 4))
+            std::vector<Piece>{pieces_}.swap(pieces_);
+        std::size_t live = 0;
+        for (const auto& piece : pieces_)
+            if (piece.storage == Storage::added) live += static_cast<std::size_t>(piece.length);
+        if (live == 0) { std::vector<std::uint8_t>{}.swap(added_); return; }
+        const auto dead = added_.size() - live;
+        // Amortize compaction: retain at most one MiB of small deleted edits,
+        // or a dead region smaller than the live inserted text.
+        if (dead < kIoChunk || dead < live) return;
+        std::vector<std::uint8_t> compact;
+        compact.reserve(live);
+        auto pieces = pieces_;
+        for (auto& piece : pieces) {
+            if (piece.storage != Storage::added) continue;
+            const auto begin = added_.begin() + static_cast<std::ptrdiff_t>(piece.offset);
+            const auto offset = compact.size();
+            compact.insert(compact.end(), begin, begin + static_cast<std::ptrdiff_t>(piece.length));
+            piece.offset = offset;
+        }
+        added_.swap(compact);
+        pieces_.swap(pieces);
+    } catch (...) { /* The edit already committed; an allocation failure leaves its old arena intact. */ }
 }
 
 std::shared_ptr<const LargeFileBuffer> LargeFileBuffer::Snapshot() const noexcept {
@@ -311,6 +332,7 @@ std::optional<CheckpointCopy> LargeFileBuffer::Checkpoint(const std::filesystem:
         const auto state = ReadEncodedFileState(copy.path);
         if (!state || !state->exists) return std::nullopt;
         copy.state = *state;
+        if (checkpoint_copies_.size() >= 8) checkpoint_copies_.erase(checkpoint_copies_.begin());
         checkpoint_copies_[directory] = copy;
         return copy;
     } catch (...) { return std::nullopt; }
@@ -378,7 +400,8 @@ bool LargeFileBuffer::SaveAs(const std::filesystem::path& path) noexcept {
     source_state_ = *replacement_state;
     pieces_.clear();
     if (size_ != 0) pieces_.push_back({Storage::original, 0, size_});
-    added_.clear();
+    std::vector<std::uint8_t>{}.swap(added_);
+    checkpoint_copies_.clear();
     modified_ = false;
     return true;
 }

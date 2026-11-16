@@ -685,3 +685,7 @@
 {L"Settings Transfer", L"Importar / exportar ajustes"},
 {L"Windows Integration", L"Integración con Windows"},
 {L"&Document", L"&Documento"},
+{L"Recovery history is full; review and delete old snapshots in Recovery Manager", L"El historial de recuperación está lleno; revisa y elimina instantáneas antiguas en el gestor de recuperación"},
+{L"Unrestored session preserved in: ", L"Sesión sin restaurar conservada en: "},
+{L"This recovery snapshot is damaged or unreadable; no text was restored", L"Esta instantánea de recuperación está dañada o no se puede leer; no se restauró ningún texto"},
+{L"Regular expression exceeded its time or complexity limit; use a simpler pattern or smaller scope", L"La expresión regular superó el límite de tiempo o complejidad; simplifique el patrón o reduzca el ámbito"},

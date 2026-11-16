@@ -63,6 +63,11 @@ void MainWindow::BuildCommands() {
             auto* document = ActiveDocument();
             if (document && document->follow_tail) {
                 document->follow_tail = false;
+                if (const auto* language = language_registry_.Find(document->language_id); language && !language->builtin)
+                    static_cast<void>(notepad_colon::ConfigureRegisteredLanguage(*document->editor, lexilla_, *language, IsDark()));
+                else static_cast<void>(notepad_colon::ConfigureLanguage(*document->editor, lexilla_, document->language, IsDark(),
+                    document->large_buffer ? notepad_colon::SyntaxPerformanceMode::lightweight : notepad_colon::SyntaxPerformanceMode::full));
+                InitializeSyntaxTree(*document);
                 status_.SetText(Tr(L"Follow mode stopped")); return;
             }
             const auto* metadata = document ? workspace_.Find(document->id) : nullptr;

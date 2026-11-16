@@ -4,14 +4,18 @@
 #include <notepad_colon/session_writer.h>
 
 #include <windows.h>
+#include <psapi.h>
 
 #include <chrono>
+#include <atomic>
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <vector>
+#include <thread>
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -112,6 +116,54 @@ int main() {
     if (!four_gib_buffer.Erase(four_gib_buffer.Size() - 4, 3) ||
         four_gib_buffer.Size() != 4ull * 1024 * 1024 * 1024) return 18;
     const auto piece_finished = Clock::now();
+    long long full_save_ms = -1, full_verify_ms = -1;
+    std::uint64_t full_save_memory_growth = 0;
+    wchar_t full_save[8]{};
+    if (::GetEnvironmentVariableW(L"NOTEPAD_COLON_FULL_SAVE_TEST", full_save, 8) && full_save[0] == L'1') {
+        // Opt-in acceptance writes and reads the complete 4 GiB file. Compare
+        // every byte with an independent zero/marker fixture after reopening.
+        const auto output_path = four_gib_path.wstring() + L".saved";
+        constexpr std::array<std::uint64_t, 3> positions{0, 2ull * 1024 * 1024 * 1024 - 1,
+                                                       4ull * 1024 * 1024 * 1024 - 3};
+        for (const auto offset : positions) if (!four_gib_buffer.Replace(offset, 3, marker)) return 20;
+        const auto private_bytes = [] {
+            PROCESS_MEMORY_COUNTERS_EX counters{}; counters.cb = sizeof(counters);
+            return ::GetProcessMemoryInfo(::GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                                         sizeof(counters)) ? static_cast<std::uint64_t>(counters.PrivateUsage) : 0ull;
+        };
+        const auto baseline_memory = private_bytes();
+        std::atomic<std::uint64_t> peak_memory{baseline_memory};
+        std::jthread sampler([&](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                peak_memory.store((std::max)(peak_memory.load(), private_bytes()));
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+        });
+        const auto save_start = Clock::now();
+        if (!four_gib_buffer.SaveAs(output_path)) return 21;
+        const auto save_end = Clock::now();
+        four_gib_buffer.Close();
+        if (!four_gib_buffer.Open(output_path, false) || four_gib_buffer.Size() != 4ull * 1024 * 1024 * 1024) return 22;
+        std::ifstream saved(output_path, std::ios::binary);
+        std::vector<std::uint8_t> actual(4 * 1024 * 1024), expected(actual.size());
+        for (std::uint64_t offset = 0; offset < four_gib_buffer.Size(); offset += actual.size()) {
+            saved.read(reinterpret_cast<char*>(actual.data()), static_cast<std::streamsize>(actual.size()));
+            if (saved.gcount() != static_cast<std::streamsize>(actual.size())) return 23;
+            std::fill(expected.begin(), expected.end(), std::uint8_t{0});
+            for (const auto position : positions)
+                for (std::size_t index = 0; index < marker.size(); ++index)
+                    if (position + index >= offset && position + index < offset + expected.size())
+                        expected[static_cast<std::size_t>(position + index - offset)] = marker[index];
+            if (actual != expected) return 24;
+        }
+        sampler.request_stop(); sampler.join();
+        full_save_ms = Milliseconds(save_end - save_start);
+        full_verify_ms = Milliseconds(Clock::now() - save_end);
+        full_save_memory_growth = peak_memory.load() - baseline_memory;
+        if (!baseline_memory || full_save_memory_growth > 64ull * 1024 * 1024) return 25;
+        saved.close(); four_gib_buffer.Close();
+        std::filesystem::remove(output_path, ignored);
+    }
     four_gib_buffer.Close();
     std::filesystem::remove(four_gib_path, ignored);
 
@@ -144,6 +196,9 @@ int main() {
               << "  \"workspace_search_ms\": " << Milliseconds(searched - scanned) << ",\n"
               << "  \"mapped_1gib_search_ms\": " << Milliseconds(mapped_finished - mapped_started) << ",\n"
               << "  \"piece_table_4gib_edit_ms\": " << Milliseconds(piece_finished - piece_started) << ",\n"
+              << "  \"full_4gib_save_ms\": " << full_save_ms << ",\n"
+              << "  \"full_4gib_verify_ms\": " << full_verify_ms << ",\n"
+              << "  \"full_4gib_private_growth_bytes\": " << full_save_memory_growth << ",\n"
               << "  \"session_coalesce_50x_1mib_ms\": " << Milliseconds(session_finished - session_started) << ",\n"
               << "  \"filter_20000_ms\": " << Milliseconds(filter_finished - filter_started) << ",\n"
               << "  \"handle_delta\": " << static_cast<long long>(handles_after) - handles_before << "\n"

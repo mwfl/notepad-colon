@@ -151,22 +151,29 @@ void MainWindow::ShowPreferences() {
 
 void MainWindow::SaveRecoverySnapshotsIfDue() {
     if (!recovery_store_ || restoring_session_) return;
+    if (const auto result = recovery_writer_.TakeResult(); result && !result->success) {
+        for (auto& document : documents_) document.history_revision = UINT64_MAX;
+        status_.SetText(result->history_full ?
+            Tr(L"Recovery history is full; review and delete old snapshots in Recovery Manager") :
+            Tr(L"Recovery snapshot failed; save your documents and check disk space and permissions"));
+    }
     const auto now = std::chrono::steady_clock::now();
     if (now - last_recovery_snapshot_ < std::chrono::seconds{30}) return;
     last_recovery_snapshot_ = now;
     bool saved = true;
     for (const auto& metadata : workspace_.GetDocuments()) {
         if (!metadata.dirty) continue;
-        const auto* document = FindDocument(metadata.id);
+        auto* document = FindDocument(metadata.id);
         // The session worker checkpoints the complete piece table. A text
         // snapshot of this editor would contain only its visible window.
-        if (document && document->large_buffer) continue;
-        const auto text = document ? document->editor->GetText() : std::nullopt;
+        if (document && (document->large_buffer || document->history_revision == document->revision)) continue;
+        auto text = document ? document->editor->GetText() : std::nullopt;
         if (!text) { saved = false; continue; }
         const auto key = metadata.path.empty()
-            ? L"untitled-" + std::to_wstring(metadata.id.value)
+            ? L"untitled-" + std::to_wstring(::GetCurrentProcessId()) + L"-" + std::to_wstring(metadata.id.value)
             : metadata.path.wstring();
-        if (!recovery_store_->Save(key, metadata.title, metadata.path, *text)) saved = false;
+        if (!recovery_writer_.Queue(recovery_store_, key, metadata.title, metadata.path, std::move(*text))) saved = false;
+        else document->history_revision = document->revision;
     }
     if (!saved) status_.SetText(Tr(L"Recovery snapshot failed; save your documents and check disk space and permissions"));
 }
@@ -228,6 +235,7 @@ void MainWindow::ShowRecoveryManager() {
     if (!dialog.ShowModal() || !chosen || *chosen >= snapshots.size()) return;
     const auto text = recovery_store_->Load(snapshots[*chosen]);
     if (text) NewDocument(*text, Tr(L"Recovered — ") + snapshots[*chosen].title);
+    else status_.SetText(Tr(L"This recovery snapshot is damaged or unreadable; no text was restored"));
 }
 
 void MainWindow::ResolveSessionPath() {
@@ -236,7 +244,7 @@ void MainWindow::ResolveSessionPath() {
             (L"notepad-colon-gui-" + std::to_wstring(::GetCurrentProcessId()) + L".state");
         std::error_code ignored;
         std::filesystem::remove(session_path_, ignored);
-        recovery_store_ = std::make_unique<notepad_colon::RecoveryStore>(
+        recovery_store_ = std::make_shared<notepad_colon::RecoveryStore>(
             std::filesystem::temp_directory_path() /
             (L"notepad-colon-gui-recovery-" + std::to_wstring(::GetCurrentProcessId())), 10);
         macros_path_ = std::filesystem::temp_directory_path() /
@@ -254,7 +262,7 @@ void MainWindow::ResolveSessionPath() {
         session_path_ = std::filesystem::path{local_app_data} / L"mwfl" /
             L"Notepad Colon" / L"session.state";
     if (!session_path_.empty())
-        recovery_store_ = std::make_unique<notepad_colon::RecoveryStore>(
+        recovery_store_ = std::make_shared<notepad_colon::RecoveryStore>(
             session_path_.parent_path() / L"Recovery", 50);
     if (!session_path_.empty()) {
         workspace_catalog_path_ = session_path_.parent_path() / L"workspaces.state";
@@ -321,6 +329,7 @@ std::optional<notepad_colon::Session> MainWindow::CaptureSession() {
 }
 
 bool MainWindow::SaveSessionSnapshot() {
+    if (session_checkpoint_blocked_) return false;
     if (session_path_.empty() || restoring_session_) return true;
     const auto session = CaptureSession();
     if (!session) return false;
@@ -457,7 +466,21 @@ bool MainWindow::RestoreSession() {
     if (session_path_.empty()) return false;
     notepad_colon::Session session;
     bool previous = false;
-    if (!notepad_colon::LoadSession(session_path_, session, &previous) || session.documents.empty()) return false;
+    const auto preserve = [&] {
+        const auto saved = notepad_colon::PreserveUnrestoredSession(session_path_);
+        if (!saved) {
+            session_checkpoint_blocked_ = true;
+            session_restore_warning_ = Tr(L"Session recovery unavailable");
+            status_.SetText(*session_restore_warning_);
+        } else if (!saved->empty()) {
+            session_restore_warning_ = Tr(L"Unrestored session preserved in: ") + saved->wstring();
+            status_.SetText(*session_restore_warning_);
+        }
+    };
+    if (!notepad_colon::LoadSession(session_path_, session, &previous)) {
+        preserve(); return false;
+    }
+    if (session.documents.empty()) return false;
     const auto roots = !session.workspace_paths.empty()
         ? session.workspace_paths : std::vector<std::filesystem::path>{session.workspace_path};
     for (const auto& root : roots)
@@ -470,6 +493,7 @@ bool MainWindow::RestoreSession() {
     if (session.active_index < workspace_.GetDocuments().size())
         workspace_.Activate(workspace_.GetDocuments()[session.active_index].id);
     restoring_session_ = false;
+    if (!restored) preserve();
     if (documents_.empty()) return false;
     SynchronizeTabs(true);
     if (!restored) status_.SetText(Tr(L"Some session documents could not be restored; the saved session was retained"));

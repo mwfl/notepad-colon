@@ -193,7 +193,8 @@ void MainWindow::ShowChangeReview(EditorDocument& document) {
                 // Removed text reads red on the old side, added text green on the new side.
                 left.Send(SCI_MARKERSETBACK, kChanged, dark ? RGB(92, 44, 44) : RGB(255, 222, 222));
                 right.Send(SCI_MARKERSETBACK, kChanged, dark ? RGB(36, 80, 48) : RGB(214, 245, 220));
-                left.SetText(before_text); right.SetText(*after_text);
+                notepad_colon::SetEditorTextBaseline(left, before_text);
+                notepad_colon::SetEditorTextBaseline(right, *after_text);
                 left.SetReadOnly(true); right.SetReadOnly(true);
                 mwfl::SetAccessibleName(left.GetHwnd(), Tr(L"Text before the external change").c_str());
                 mwfl::SetAccessibleName(right.GetHwnd(), Tr(L"Text after the external change").c_str());

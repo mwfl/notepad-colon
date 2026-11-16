@@ -79,7 +79,7 @@ std::optional<std::string> MainWindow::EditorUtf8(const mwfl::ScintillaEditor& e
 void MainWindow::InitializeSyntaxTree(EditorDocument& document) noexcept {
     document.syntax_tree.reset();
     document.wasm_syntax.reset();
-    if (document.large_buffer) return;
+    if (document.large_buffer || document.follow_tail) return;
     const auto text = EditorUtf8(*document.editor);
     if (!text || text->size() > 8u * 1024 * 1024) return;
     try {

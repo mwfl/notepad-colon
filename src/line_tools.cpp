@@ -1,4 +1,5 @@
 #include <notepad_colon/line_tools.h>
+#include <notepad_colon/regex_budget.h>
 
 #include <algorithm>
 #include <array>
@@ -335,10 +336,21 @@ LineFilterResult FilterLines(const ChunkReader& read, std::uint64_t size, std::s
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         bool matches = false;
         try {
-            matches = expression ? std::regex_search(line.begin(), line.end(), *expression)
-                                 : Contains(line, needle, fold);
+            if (expression) {
+                RegexBudget budget{stop};
+                using Input = RegexInputIterator<char>;
+                matches = std::regex_search(Input{line, 0, budget}, Input{line, line.size(), budget}, *expression);
+                budget.CheckNow();
+            } else matches = Contains(line, needle, fold);
+        } catch (const RegexInterrupted& interrupted) {
+            result.lines.clear();
+            result.cancelled = interrupted.cancelled;
+            if (!interrupted.cancelled) result.error = "Regular expression limit exceeded";
+            return false;
         } catch (const std::regex_error&) {
-            matches = false;  // Pathological backtracking on one line: treat as no match.
+            result.lines.clear();
+            result.error = "Regular expression limit exceeded";
+            return false;
         }
         if (matches == options.invert) return true;
         const auto kept = line.substr(0, (std::min)(line.size(), options.maximum_line_bytes));

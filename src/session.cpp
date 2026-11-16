@@ -353,4 +353,51 @@ bool LoadSession(const std::filesystem::path& path, Session& session, bool* used
     }
 }
 
+std::optional<std::filesystem::path> PreserveUnrestoredSession(const std::filesystem::path& path) noexcept {
+    std::filesystem::path archive;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moved;
+    try {
+        const auto source = std::filesystem::absolute(path).lexically_normal();
+        if (source.filename().empty() || source == source.root_path()) return {};
+        const auto root = source.parent_path() / L"UnrestoredSessions";
+        std::vector<std::filesystem::path> files;
+        for (const auto suffix : {L"", L".previous", L".data", L".tmp", L".previous.tmp"}) {
+            const std::filesystem::path candidate{source.wstring() + suffix};
+            std::error_code error;
+            const bool present = std::filesystem::exists(candidate, error);
+            if (error) return {};
+            if (present) {
+                const auto status = std::filesystem::symlink_status(candidate, error);
+                if (error || std::filesystem::is_symlink(status) ||
+                    (std::wstring_view{suffix} == L".data" ? !std::filesystem::is_directory(status)
+                                                          : !std::filesystem::is_regular_file(status))) return {};
+                files.push_back(candidate);
+            }
+        }
+        if (files.empty()) return std::filesystem::path{};
+        std::filesystem::create_directories(root);
+        for (unsigned int sequence = 0; sequence < 100; ++sequence) {
+            archive = root / (source.filename().wstring() + L"-" + std::to_wstring(::GetTickCount64()) +
+                L"-" + std::to_wstring(::GetCurrentProcessId()) + L"-" + std::to_wstring(sequence));
+            if (std::filesystem::create_directory(archive)) break;
+            archive.clear();
+        }
+        if (archive.empty()) return {};
+        for (const auto& file : files) {
+            const auto target = (archive / file.filename()).lexically_normal();
+            if (file.parent_path() != source.parent_path() || target.parent_path() != archive ||
+                archive.parent_path() != root || !::MoveFileExW(file.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
+                throw std::runtime_error("session preservation failed");
+            moved.emplace_back(file, target);
+        }
+        return archive;
+    } catch (...) {
+        // Roll back a partially moved group. Never remove preserved copies,
+        // even if permissions also prevent the rollback.
+        for (auto it = moved.rbegin(); it != moved.rend(); ++it)
+            static_cast<void>(::MoveFileExW(it->second.c_str(), it->first.c_str(), MOVEFILE_WRITE_THROUGH));
+        return {};
+    }
+}
+
 }  // namespace notepad_colon

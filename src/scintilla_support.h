@@ -15,6 +15,10 @@ namespace notepad_colon {
 
 enum class SyntaxPerformanceMode { full, lightweight };
 
+// Install a disk/view baseline without retaining previous views in undo history.
+// User edits and reviewed replacements should use the undoable editing helpers.
+bool SetEditorTextBaseline(mwfl::ScintillaEditor& editor, std::wstring_view text) noexcept;
+
 class LexillaRuntime final {
 public:
     LexillaRuntime() noexcept = default;

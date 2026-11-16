@@ -2,6 +2,7 @@
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/editor_config.h>
 #include <notepad_colon/localization.h>
+#include <notepad_colon/regex_budget.h>
 
 #include <windows.h>
 
@@ -155,23 +156,55 @@ bool MatchesAny(const std::filesystem::path& relative,
     });
 }
 
-std::pair<std::size_t, std::size_t> LineColumn(std::wstring_view text, std::size_t offset) {
-    std::size_t line = 1, column = 1;
-    for (std::size_t index = 0; index < offset && index < text.size(); ++index) {
-        if (text[index] == L'\n') { ++line; column = 1; }
-        else if (text[index] != L'\r') ++column;
+// Matches arrive in order; counting from the start for each one is quadratic
+// for dense results. Retain the current line start for bounded previews too.
+struct TextLocationCursor {
+    std::wstring_view text;
+    std::size_t offset = 0, line = 1, column = 1, line_start = 0;
+    void Advance(std::size_t next) {
+        for (; offset < next; ++offset) {
+            if (text[offset] == L'\n') { ++line; column = 1; line_start = offset + 1; }
+            else if (text[offset] != L'\r') ++column;
+        }
     }
-    return {line, column};
+    std::wstring Preview() const {
+        auto value = text.substr(line_start, 300);
+        value = value.substr(0, value.find(L'\n'));
+        if (!value.empty() && value.back() == L'\r') value.remove_suffix(1);
+        return std::wstring{value};
+    }
+};
+
+std::wstring RegexLimitMessage() {
+    return Tr(L"Regular expression exceeded its time or complexity limit; use a simpler pattern or smaller scope");
 }
 
-std::wstring Preview(std::wstring_view text, std::size_t offset) {
-    const auto begin = text.rfind(L'\n', offset);
-    const auto start = begin == std::wstring_view::npos ? 0 : begin + 1;
-    const auto end = text.find(L'\n', offset);
-    auto value = std::wstring{text.substr(start,
-        (std::min)(std::size_t{300}, (end == std::wstring_view::npos ? text.size() : end) - start))};
-    if (!value.empty() && value.back() == L'\r') value.pop_back();
-    return value;
+// False means the result limit, cancellation, or a matching failure ended the
+// operation. An engine failure is explicit; it must never become 'no matches'.
+bool AppendRegexMatches(SearchResult& result, const std::filesystem::path& path,
+                        std::wstring_view text, const std::wregex& expression,
+                        std::size_t maximum_results, std::stop_token stop) {
+    try {
+        RegexBudget budget{stop};
+        using Input = RegexInputIterator<wchar_t>;
+        using Matches = std::regex_iterator<Input>;
+        TextLocationCursor location{text};
+        for (Matches match{Input{text, 0, budget}, Input{text, text.size(), budget}, expression}, end;
+             match != end; ++match) {
+            budget.CheckNow();
+            location.Advance(static_cast<std::size_t>(match->position()));
+            result.matches.push_back({path, location.line, location.column, location.Preview()});
+            if (result.matches.size() >= maximum_results) { result.truncated = true; return false; }
+        }
+        budget.CheckNow();
+        return true;
+    } catch (const RegexInterrupted& interrupted) {
+        result.cancelled = interrupted.cancelled;
+        if (!interrupted.cancelled) result.error = RegexLimitMessage();
+    } catch (const std::regex_error&) {
+        result.error = RegexLimitMessage();
+    }
+    return false;
 }
 }  // namespace
 
@@ -242,24 +275,15 @@ SearchResult SearchText(const std::filesystem::path& path, std::wstring_view tex
         } catch (const std::regex_error&) {
             result.error = L"Invalid regular expression"; return result;
         }
-        using ViewRegexIterator = std::regex_iterator<std::wstring_view::const_iterator>;
-        for (ViewRegexIterator match{text.begin(), text.end(), *expression}, end;
-             match != end; ++match) {
-            if (stop.stop_requested()) { result.cancelled = true; return result; }
-            const auto offset = static_cast<std::size_t>(match->position());
-            const auto [line, column] = LineColumn(text, offset);
-            result.matches.push_back({path, line, column, Preview(text, offset)});
-            if (result.matches.size() == options.maximum_results) {
-                result.truncated = true; return result;
-            }
-        }
+        AppendRegexMatches(result, path, text, *expression, options.maximum_results, stop);
         return result;
     }
+    TextLocationCursor location{text};
     for (std::size_t offset = 0; offset < text.size();) {
         if (stop.stop_requested()) { result.cancelled = true; return result; }
         if (MatchAt(text, query, offset, options)) {
-            const auto [line, column] = LineColumn(text, offset);
-            result.matches.push_back({path, line, column, Preview(text, offset)});
+            location.Advance(offset);
+            result.matches.push_back({path, location.line, location.column, location.Preview()});
             if (result.matches.size() == options.maximum_results) {
                 result.truncated = true; return result;
             }
@@ -307,10 +331,12 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
         }
         ++result.files_searched;
         if (options.multiline && !options.regular_expression) {
+            TextLocationCursor location{text};
             for (std::size_t offset = 0; offset < text.size();) {
+                if (stop.stop_requested()) { result.cancelled = true; return result; }
                 if (MatchAt(text, query, offset, options)) {
-                    const auto [line, column] = LineColumn(text, offset);
-                    result.matches.push_back({path, line, column, Preview(text, offset)});
+                    location.Advance(offset);
+                    result.matches.push_back({path, location.line, location.column, location.Preview()});
                     if (result.matches.size() >= options.maximum_results) {
                         result.truncated = true; return result;
                     }
@@ -320,16 +346,7 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
             continue;
         }
         if (options.regular_expression) {
-            for (std::wsregex_iterator match{text.begin(), text.end(), *regular_expression}, end;
-                 match != end; ++match) {
-                if (stop.stop_requested()) { result.cancelled = true; return result; }
-                const auto offset = static_cast<std::size_t>(match->position());
-                const auto [line, column] = LineColumn(text, offset);
-                result.matches.push_back({path, line, column, Preview(text, offset)});
-                if (result.matches.size() >= options.maximum_results) {
-                    result.truncated = true; return result;
-                }
-            }
+            if (!AppendRegexMatches(result, path, text, *regular_expression, options.maximum_results, stop)) return result;
             continue;
         }
         std::size_t line_number = 1;
@@ -339,6 +356,7 @@ SearchResult SearchWorkspace(const std::filesystem::path& root, std::wstring_vie
             const auto line = std::wstring_view{text}.substr(
                 start, (end == std::wstring::npos ? text.size() : end) - start);
             for (std::size_t offset = 0; offset < line.size(); ++offset) {
+                if ((offset & 4095) == 0 && stop.stop_requested()) { result.cancelled = true; return result; }
                 if (!MatchAt(line, query, offset, options)) continue;
                 result.matches.push_back({path, line_number, offset + 1,
                     std::wstring{line.substr(0, (std::min)(line.size(), std::size_t{300}))}});
@@ -375,10 +393,12 @@ struct ReplacementOutputIterator {
     using pointer = void;
     using reference = void;
     std::wstring* output;
+    RegexBudget* budget = nullptr;
     ReplacementOutputIterator& operator*() { return *this; }
     ReplacementOutputIterator& operator++() { return *this; }
     ReplacementOutputIterator operator++(int) { return *this; }
     ReplacementOutputIterator& operator=(wchar_t value) {
+        if (budget) budget->Poll();
         if (output->size() >= kMaximumReplacementText) throw std::length_error("replacement limit");
         output->push_back(value); return *this;
     }
@@ -399,34 +419,42 @@ TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query
     if (query.empty()) { result.text = std::wstring{text}; return result; }
     if (options.regular_expression) {
         try {
+            RegexBudget budget{stop};
             auto flags = std::regex_constants::ECMAScript;
             if (!options.match_case) flags |= std::regex_constants::icase;
             const std::wregex expression{std::wstring{query}, flags};
             const std::wstring format{replacement};
-            using Iterator = std::regex_iterator<std::wstring_view::const_iterator>;
-            auto cursor = text.begin();
-            for (Iterator match{text.begin(), text.end(), expression}, end; match != end; ++match) {
-                if (stop.stop_requested()) { cancel(); return result; }
+            using Input = RegexInputIterator<wchar_t>;
+            using Iterator = std::regex_iterator<Input>;
+            const Input first{text, 0, budget}, last{text, text.size(), budget};
+            auto cursor = first;
+            for (Iterator match{first, last, expression}, end; match != end; ++match) {
+                budget.CheckNow();
                 const auto prefix_size = static_cast<std::size_t>((*match)[0].first - cursor);
                 if (prefix_size > kMaximumReplacementText - result.text.size()) throw std::length_error("replacement limit");
                 result.text.append(cursor, (*match)[0].first);
                 const auto start = result.text.size();
-                match->format(ReplacementOutputIterator{&result.text}, format);
+                match->format(ReplacementOutputIterator{&result.text, &budget}, format);
                 if (result.spans.size() < 256)
-                    result.spans.push_back({static_cast<std::size_t>((*match)[0].first - text.begin()),
+                    result.spans.push_back({static_cast<std::size_t>((*match)[0].first - first),
                         static_cast<std::size_t>(match->length()), start, result.text.size() - start});
                 cursor = (*match)[0].second;
                 ++result.count;
             }
-            if (static_cast<std::size_t>(text.end() - cursor) > kMaximumReplacementText - result.text.size())
+            if (static_cast<std::size_t>(last - cursor) > kMaximumReplacementText - result.text.size())
                 throw std::length_error("replacement limit");
-            result.text.append(cursor, text.end());
+            result.text.append(cursor, last);
+            budget.CheckNow();
+        } catch (const RegexInterrupted& interrupted) {
+            cancel();
+            if (!interrupted.cancelled) { result.cancelled = false; result.error = RegexLimitMessage(); }
         } catch (const std::length_error&) { too_large();
-        } catch (const std::regex_error&) {
+        } catch (const std::regex_error& error) {
             result.text = std::wstring{text};
             result.count = 0;
             result.spans.clear();
-            result.error = L"Invalid regular expression";
+            result.error = error.code() == std::regex_constants::error_complexity ||
+                error.code() == std::regex_constants::error_stack ? RegexLimitMessage() : L"Invalid regular expression";
         }
         return result;
     }
