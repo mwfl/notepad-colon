@@ -400,9 +400,9 @@ void MainWindow::CompleteReplace() {
         }
         const bool visual_test = self_test_ &&
             ::GetEnvironmentVariableW(L"NOTEPAD_COLON_REPLACE_PREVIEW_TEST", nullptr, 0) != 0;
-        if (visual_test) { ::ShowWindow(GetHwnd(), SW_SHOW); SetUiLanguage(true); }
+        if (visual_test) { ::ShowWindow(GetHwnd(), SW_SHOW); SetUiLanguage(notepad_colon::UiLanguage::chinese_simplified); }
         const bool accepted = (IsTestMode() && !visual_test) || ReviewReplacement(plan);
-        if (visual_test) { SetUiLanguage(false); ::SetEnvironmentVariableW(L"NOTEPAD_COLON_REPLACE_PREVIEW_TEST", nullptr); }
+        if (visual_test) { SetUiLanguage(notepad_colon::UiLanguage::english); ::SetEnvironmentVariableW(L"NOTEPAD_COLON_REPLACE_PREVIEW_TEST", nullptr); }
         if (!accepted) {
             static_cast<void>(notepad_colon::SaveReplacePlan(plan));
             status_.SetText(Tr(L"Replace in Files cancelled; nothing was changed")); return;

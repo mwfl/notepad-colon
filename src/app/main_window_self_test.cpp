@@ -30,7 +30,7 @@ void MainWindow::RunSelfTest() noexcept {
             }
             return true;
         };
-        if (::GetMenuItemCount(menu_.GetHandle()) != 10 ||
+        if (::GetMenuItemCount(menu_.GetHandle()) != 7 ||
             !validate_menu(menu_.GetHandle()))
             result = 43;
         const auto toolbar_count = static_cast<int>(
@@ -57,10 +57,10 @@ void MainWindow::RunSelfTest() noexcept {
                 return std::wstring{buffer};
             };
             const auto english_file_menu = menu_title(0);
-            SetUiLanguage(true);
+            SetUiLanguage(notepad_colon::UiLanguage::chinese_simplified);
             if (notepad_colon::GetUiLanguage() != notepad_colon::UiLanguage::chinese_simplified ||
-                menu_title(0) != L"文件(&F)" || menu_title(9) != L"帮助(&H)" ||
-                ::GetMenuItemCount(menu_.GetHandle()) != 10 || !validate_menu(menu_.GetHandle()))
+                menu_title(0) != L"文件(&F)" || menu_title(6) != L"帮助(&H)" ||
+                ::GetMenuItemCount(menu_.GetHandle()) != 7 || !validate_menu(menu_.GetHandle()))
                 result = 80;
             for (const auto& [id, english] : command_titles_) {
                 const auto* command = commands_.Find(mwfl::ControlId{id});
@@ -72,7 +72,71 @@ void MainWindow::RunSelfTest() noexcept {
                 !reopen || reopen->GetText() != L"重新打开为 简体中文 (GB18030)") result = 82;
             if (Tr(L"Saved") != L"已保存" || Tr(L"not in the catalog") != L"not in the catalog")
                 result = 83;
-            SetUiLanguage(false);
+            // The document properties and interface language belong to separate
+            // submenus; verify every language rebuild preserves that hierarchy.
+            const auto popup = [](HMENU parent, std::wstring_view title) -> HMENU {
+                for (int index = 0; index < ::GetMenuItemCount(parent); ++index) {
+                    wchar_t label[256]{};
+                    ::GetMenuStringW(parent, static_cast<UINT>(index), label, 256, MF_BYPOSITION);
+                    if (title == label) return ::GetSubMenu(parent, index);
+                }
+                return nullptr;
+            };
+            const auto original_store = settings_;
+            settings_ = mwfl::VersionedSettingsStore{HKEY_CURRENT_USER,
+                L"Software\\mwfl\\NotepadColon-Locale-Test-" + std::to_wstring(::GetCurrentProcessId()), 1};
+            const std::array legacy_values{
+                mwfl::SettingValue{L"FontName", std::wstring{L"Consolas"}},
+                mwfl::SettingValue{L"FontSize", std::uint32_t{11}},
+                mwfl::SettingValue{L"TabWidth", std::uint32_t{4}},
+                mwfl::SettingValue{L"Theme", std::uint32_t{0}},
+                mwfl::SettingValue{L"ChineseUi", std::uint32_t{1}}};
+            if (!settings_.Save(legacy_values)) result = 180;
+            ui_language_ = notepad_colon::UiLanguage::english;
+            LoadPreferences();
+            if (ui_language_ != notepad_colon::UiLanguage::chinese_simplified) result = 181;
+            for (const auto& language : notepad_colon::SupportedUiLanguages()) {
+                SetUiLanguage(language.language);
+                const auto document_menu = ::GetSubMenu(menu_.GetHandle(), 4);
+                const auto endings = popup(document_menu, Tr(L"Line Endings"));
+                const auto syntax = popup(document_menu, Tr(L"Syntax Highlighting"));
+                const auto interfaces = popup(::GetSubMenu(menu_.GetHandle(), 5), Tr(L"Interface Language"));
+                if (menu_title(4) != Tr(L"&Document") || !endings || !syntax || !interfaces ||
+                    ::GetMenuItemCount(endings) != 2 || ::GetMenuItemID(endings, 0) != static_cast<UINT>(kCrlf.value) ||
+                    ::GetMenuItemID(endings, 1) != static_cast<UINT>(kLf.value) ||
+                    ::GetMenuItemCount(interfaces) != static_cast<int>(notepad_colon::SupportedUiLanguages().size()) ||
+                    !validate_menu(menu_.GetHandle())) result = 182;
+                int checked = 0;
+                for (const auto& option : notepad_colon::SupportedUiLanguages()) {
+                    const auto* command = commands_.Find(UiLanguageCommandId(option.language));
+                    if (!command || CommandLabel(*command, false) != option.native_name) result = 183;
+                    const auto state = ::GetMenuState(interfaces, UiLanguageCommandId(option.language).value, MF_BYCOMMAND);
+                    if (state != static_cast<UINT>(-1) && (state & MF_CHECKED)) ++checked;
+                }
+                if (checked != 1 || !(::GetMenuState(interfaces, UiLanguageCommandId(language.language).value,
+                        MF_BYCOMMAND) & MF_CHECKED)) result = 184;
+                for (const auto& [id, english] : command_titles_) {
+                    const auto* command = commands_.Find(mwfl::ControlId{id});
+                    if (!command || CommandLabel(*command, true) != Tr(english)) result = 185;
+                }
+                wchar_t column_text[128]{};
+                LVCOLUMNW column{}; column.mask = LVCF_TEXT; column.pszText = column_text; column.cchTextMax = 128;
+                ListView_GetColumn(results_.GetHwnd(), 0, &column);
+                if (column_text != Tr(L"File")) result = 189;
+                wchar_t toolbar_text[512]{};
+                ::SendMessageW(toolbar_.GetHwnd(), TB_GETBUTTONTEXTW, kOpen.value, reinterpret_cast<LPARAM>(toolbar_text));
+                if (toolbar_text != commands_.Find(kOpen)->GetText()) result = 190;
+                if (!SavePreferences()) result = 186;
+                ui_language_ = notepad_colon::UiLanguage::english;
+                LoadPreferences();
+                if (ui_language_ != language.language) result = 187;
+            }
+            const std::array<std::wstring_view, 12> owned_preferences{L"FontName", L"FontSize", L"TabWidth", L"Theme",
+                L"AutoSave", L"AutoSaveSeconds", L"TrimTrailingOnSave", L"CreateBackup", L"EnsureFinalNewline",
+                L"ChineseUi", L"UiLanguage", L"HighlightRules"};
+            if (!settings_.RemoveOwned(owned_preferences)) result = 188;
+            settings_ = original_store;
+            SetUiLanguage(notepad_colon::UiLanguage::english);
             if (menu_title(0) != english_file_menu || Tr(L"Saved") != L"Saved") result = 84;
             for (const auto& [id, english] : command_titles_) {
                 const auto* command = commands_.Find(mwfl::ControlId{id});

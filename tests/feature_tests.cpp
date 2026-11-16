@@ -550,26 +550,32 @@ void TestLocalization() {
     Check(notepad_colon::GetUiLanguage() == UiLanguage::english, "English is the default language");
     Check(Tr(L"&File") == L"&File", "English returns the source text");
     Check(notepad_colon::TranslationCatalog(UiLanguage::english).empty(), "English has no catalog");
-    const auto catalog = notepad_colon::TranslationCatalog(UiLanguage::chinese_simplified);
-    Check(catalog.size() >= 500, "the Chinese catalog covers the whole interface");
-    std::set<std::wstring_view> seen;
-    for (const auto& entry : catalog) {
-        const auto label = Narrow(entry.english);
-        Check(!entry.english.empty() && !entry.translated.empty(), label + ": non-empty entry");
-        Check(seen.insert(entry.english).second, label + ": listed once");
-        // A menu mnemonic must survive translation or the item loses its key.
-        const auto has_mnemonic = [](std::wstring_view text) {
-            return text.find(L'&') != std::wstring_view::npos;
-        };
-        Check(has_mnemonic(entry.english) == has_mnemonic(entry.translated),
-              label + ": mnemonic preserved");
-        const auto ellipsis = [](std::wstring_view text) { return text.ends_with(L"..."); };
-        Check(ellipsis(entry.english) == ellipsis(entry.translated), label + ": ellipsis preserved");
-        Check(std::ranges::count(entry.english, L'\n') == std::ranges::count(entry.translated, L'\n'),
-              label + ": line breaks preserved");
-        Check(notepad_colon::HasTranslation(UiLanguage::chinese_simplified, entry.english),
-              label + ": reachable through lookup");
+    Check(notepad_colon::SupportedUiLanguages().size() == 6, "six interface languages are available");
+    const auto base = notepad_colon::TranslationCatalog(UiLanguage::chinese_simplified);
+    for (const auto& language : notepad_colon::SupportedUiLanguages()) {
+        if (language.language == UiLanguage::english) continue;
+        const auto catalog = notepad_colon::TranslationCatalog(language.language);
+        Check(catalog.size() >= 500 && catalog.size() == base.size(), "all languages cover the same complete interface");
+        std::set<std::wstring_view> seen;
+        notepad_colon::SetUiLanguage(language.language);
+        for (const auto& entry : catalog) {
+            const auto label = Narrow(entry.english);
+            Check(!entry.english.empty() && !entry.translated.empty(), label + ": non-empty entry");
+            Check(seen.insert(entry.english).second, label + ": listed once");
+            const auto has_mnemonic = [](std::wstring_view text) { return text.find(L'&') != std::wstring_view::npos; };
+            Check(has_mnemonic(entry.english) == has_mnemonic(entry.translated), label + ": mnemonic preserved");
+            Check(entry.english.ends_with(L"...") == entry.translated.ends_with(L"..."), label + ": ellipsis preserved");
+            Check(std::ranges::count(entry.english, L'\n') == std::ranges::count(entry.translated, L'\n'),
+                label + ": line breaks preserved");
+            Check(notepad_colon::HasTranslation(language.language, entry.english) && Tr(entry.english) == entry.translated,
+                label + ": translated lookup is reachable");
+        }
+        for (const auto& entry : base)
+            Check(seen.contains(entry.english), "no English key is missing from another language");
+        Check(Tr(L"unknown key") == L"unknown key", "unknown strings safely fall back to English");
     }
+    notepad_colon::SetUiLanguage(static_cast<UiLanguage>(999));
+    Check(notepad_colon::GetUiLanguage() == UiLanguage::english, "invalid language settings fall back to English");
     notepad_colon::SetUiLanguage(UiLanguage::chinese_simplified);
     Check(Tr(L"&File") == L"文件(&F)" && Tr(L"Replace in Files...") == L"在文件中替换...",
           "Chinese lookups return the translation");

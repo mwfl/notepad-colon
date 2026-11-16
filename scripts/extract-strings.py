@@ -3,7 +3,7 @@
 
 Translatable strings are the arguments of Tr(L"...") and the English titles
 passed to mwfl::Command(id, L"..."). With --check, the script also verifies
-that the Simplified Chinese catalog (src/strings_zh_cn.inc) covers all of
+that every supported translation catalog covers all of
 them, keeps mnemonics and ellipses, and contains no stale entries.
 
 usage: extract-strings.py [--check] [--missing]
@@ -38,9 +38,9 @@ def source_strings():
     return found
 
 
-def catalog():
+def catalog(filename='strings_zh_cn.inc'):
     entries = {}
-    path = ROOT / 'src' / 'strings_zh_cn.inc'
+    path = ROOT / 'src' / filename
     for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
         line = line.strip()
         if not line or line.startswith('//'):
@@ -60,28 +60,31 @@ def main():
         for value in strings:
             print(value)
         return 0
-    translated = catalog()
-    missing = [value for value in strings if value not in translated]
     if '--missing' in sys.argv:
-        for value in missing:
-            print(value)
+        translated = catalog()
+        for value in strings:
+            if value not in translated:
+                print(value)
         return 0
-    problems = [f'missing translation: "{value}" ({strings[value]})' for value in missing]
-    problems += [f'stale catalog entry: "{value}"' for value in translated if value not in strings]
-    for english, chinese in translated.items():
-        if not chinese:
-            problems.append(f'empty translation: "{english}"')
-        if ('&' in english.replace('&&', '')) != ('&' in chinese.replace('&&', '')):
-            problems.append(f'mnemonic mismatch: "{english}"')
-        if english.endswith('...') != chinese.endswith('...'):
-            problems.append(f'ellipsis mismatch: "{english}"')
-        if english.count('\\n') != chinese.count('\\n'):
-            problems.append(f'line-break mismatch: "{english}"')
-        if english.startswith(' ') != chinese.startswith(' ') and not english.strip() == '':
-            pass  # leading spaces are a word-separator convention, not required in Chinese
+    problems = []
+    for filename in ('strings_zh_cn.inc', 'strings_zh_tw.inc', 'strings_es.inc', 'strings_fr.inc', 'strings_hi.inc'):
+        translated = catalog(filename)
+        errors = [f'missing translation: "{value}" ({strings[value]})' for value in strings if value not in translated]
+        errors += [f'stale catalog entry: "{value}"' for value in translated if value not in strings]
+        for english, target in translated.items():
+            if not target:
+                errors.append(f'empty translation: "{english}"')
+            if ('&' in english.replace('&&', '')) != ('&' in target.replace('&&', '')):
+                errors.append(f'mnemonic mismatch: "{english}"')
+            if english.endswith('...') != target.endswith('...'):
+                errors.append(f'ellipsis mismatch: "{english}"')
+            if english.count('\\n') != target.count('\\n'):
+                errors.append(f'line-break mismatch: "{english}"')
+        problems.extend(f'{filename}: {error}' for error in errors)
+        print(f'{filename}: {len(translated)} entries, {len(errors)} problem(s)')
     for problem in problems:
         print(problem)
-    print(f'{len(strings)} strings, {len(translated)} catalog entries, {len(problems)} problem(s)')
+    print(f'{len(strings)} strings, {len(problems)} problem(s)')
     return 1 if problems else 0
 
 

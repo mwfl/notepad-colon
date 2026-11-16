@@ -88,3 +88,21 @@ without ever opening a folder. A folder supplies navigation and a search scope;
 search starts only when the user invokes **Find in Files**. The dialog supports
 semicolon-separated include and exclude globs and can instead search only the
 currently open, named documents, including their unsaved contents.
+
+## Interface languages and menus
+
+English is the default interface language. Simplified Chinese, Traditional Chinese,
+Spanish, French and Hindi each include the complete checked interface catalog.
+Choose **Tools > Interface Language** to switch immediately; native names remain
+visible in every language and the choice is saved for the next launch. Existing
+Simplified Chinese preferences migrate without changing back to English.
+
+The seven top-level menus are File, Edit, Search, View, Document, Tools and Help.
+**Document > Encoding**, **Document > Line Endings** and **Document > Syntax
+Highlighting** configure the current file. Syntax highlighting chooses the code
+language; it is separate from the application's interface language. The status
+bar continues to display the current encoding and line endings. Existing command
+IDs and shortcuts remain compatible with saved configurations.
+
+Every catalog is checked for complete key coverage, duplicate entries, menu
+mnemonics, dialog ellipses and line breaks by `scripts/extract-strings.py --check`.

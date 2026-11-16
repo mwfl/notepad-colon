@@ -536,7 +536,7 @@ void MainWindow::SyncPresentation(std::wstring_view action) {
         status_.SetText(std::wstring(action) + Tr(L" | Pos ") + std::to_wstring(selection.end) +
             L" | " + DocumentEncodingName(*document) + L" | " +
             std::wstring(LineEndingName(document->line_ending)) + L" | " +
-            std::wstring(notepad_colon::LanguageName(document->language)) + L" | " +
+            Tr(notepad_colon::LanguageName(document->language)) + L" | " +
             DelimitedFieldStatus(*document) +
             std::to_wstring(workspace_.GetCount()) + Tr(L" document(s)") +
             (PendingReviewCount() == 0 ? std::wstring{}

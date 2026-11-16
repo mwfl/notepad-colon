@@ -105,9 +105,11 @@ void MainWindow::BuildCommands() {
             ++index;
         }
     }
-    commands_
-        .Add(mwfl::Command(kEnglishUi, L"English UI", [this] { SetUiLanguage(false); }))
-        .Add(mwfl::Command(kChineseUi, L"简体中文界面", [this] { SetUiLanguage(true); }));
+    for (const auto& entry : notepad_colon::SupportedUiLanguages()) {
+        const auto language = entry.language;
+        commands_.Add(mwfl::Command(UiLanguageCommandId(language), std::wstring{entry.native_name},
+            [this, language] { SetUiLanguage(language); }));
+    }
     commands_.Add(mwfl::Command(kReloadLanguages, L"Reload Language Definitions",
         [this] { ReloadLanguageDefinitions(); }));
     commands_
@@ -317,13 +319,17 @@ void MainWindow::RememberCommandTitles() {
             (id >= kRecentBase.value &&
              id < kRecentBase.value + static_cast<WORD>(recent_.GetMaximumEntries())) ||
             id >= kLanguageBase.value;  // languages and code pages are composed separately
-        if (!dynamic) command_titles_.try_emplace(id, CommandLabel(command, true));
+        const bool interface_language = std::ranges::any_of(notepad_colon::SupportedUiLanguages(),
+            [&](const auto& entry) { return UiLanguageCommandId(entry.language).value == id; });
+        if (!dynamic && !interface_language) command_titles_.try_emplace(id, CommandLabel(command, true));
     }
 }
 
 void MainWindow::ApplyUiLanguage() {
-    notepad_colon::SetUiLanguage(chinese_ui_ ? notepad_colon::UiLanguage::chinese_simplified
-                                             : notepad_colon::UiLanguage::english);
+    notepad_colon::SetUiLanguage(ui_language_);
+    for (const auto& entry : notepad_colon::SupportedUiLanguages())
+        if (auto* command = commands_.Find(UiLanguageCommandId(entry.language)))
+            command->SetChecked(entry.language == ui_language_);
     for (const auto& [id, english] : command_titles_)
         if (auto* command = commands_.Find(mwfl::ControlId{id})) command->SetText(Tr(english));
     // Code-page commands are composed from a verb and the code-page name.
@@ -338,6 +344,30 @@ void MainWindow::ApplyUiLanguage() {
     if (auto* command = commands_.Find({static_cast<WORD>(kLanguageBase.value)}))
         command->SetText(Tr(L"Plain Text"));
     RefreshShortcutLabels();
+    // Refresh existing controls as well as menus; startup calls this before
+    // those HWNDs exist, so keep every update conditional on its control.
+    const auto name = [](HWND window, const std::wstring& text) {
+        if (window) static_cast<void>(mwfl::SetAccessibleName(window, text.c_str()));
+    };
+    name(toolbar_.GetHwnd(), Tr(L"Primary commands"));
+    name(tabs_.GetHwnd(), Tr(L"Open documents"));
+    name(search_.GetHwnd(), Tr(L"Find text"));
+    name(replacement_.GetHwnd(), Tr(L"Replacement text"));
+    name(status_.GetHwnd(), Tr(L"Document status"));
+    name(tree_.GetHwnd(), Tr(L"Workspace files"));
+    name(workspace_filter_.GetHwnd(), Tr(L"Filter workspace files"));
+    name(results_.GetHwnd(), Tr(L"Folder search results"));
+    if (toolbar_.GetHwnd())
+        for (const auto id : {kNew, kOpen, kSave, kOpenFolder, kUndo, kRedo, kToggleFindBar})
+            if (const auto* command = commands_.Find(id)) static_cast<void>(toolbar_.UpdateCommand(*command));
+    if (results_.GetHwnd()) {
+        int column = 0;
+        for (const auto text : {L"File", L"Line", L"Column", L"Preview"}) {
+            auto translated = Tr(text);
+            LVCOLUMNW value{}; value.mask = LVCF_TEXT; value.pszText = translated.data();
+            ListView_SetColumn(results_.GetHwnd(), column++, &value);
+        }
+    }
 }
 
 // Menus show a command's shortcut after a tab. The label is rebuilt whenever
@@ -367,121 +397,143 @@ std::wstring MainWindow::CommandLabel(const mwfl::Command& command, bool keep_mn
     return label;
 }
 
-void MainWindow::SetUiLanguage(bool chinese) {
-    if (chinese_ui_ == chinese) return;
-    chinese_ui_ = chinese; ApplyUiLanguage(); BuildMenu();
+void MainWindow::SetUiLanguage(notepad_colon::UiLanguage language) {
+    if (!notepad_colon::IsValidUiLanguage(language) || ui_language_ == language) return;
+    ui_language_ = language; ApplyUiLanguage(); BuildMenu();
     if (!IsTestMode()) static_cast<void>(SavePreferences());
     SyncPresentation(Tr(L"Interface language changed"));
 }
 
 void MainWindow::BuildMenu() {
-    mwfl::Menu file, edit, search, encoding, line_endings, language, view, code, tools, help;
+    mwfl::Menu file, edit, search, view, document, tools, help;
     mwfl::Must(menu_.Create(), "create menu bar");
-    mwfl::Must(file.CreatePopup(), "create file menu");
-    mwfl::Must(edit.CreatePopup(), "create edit menu");
-    mwfl::Must(search.CreatePopup(), "create search menu");
-    mwfl::Must(encoding.CreatePopup(), "create encoding menu");
-    mwfl::Must(line_endings.CreatePopup(), "create line endings menu");
-    mwfl::Must(language.CreatePopup(), "create language menu");
-    mwfl::Must(view.CreatePopup(), "create view menu");
-    mwfl::Must(code.CreatePopup(), "create code menu");
-    mwfl::Must(tools.CreatePopup(), "create tools menu");
-    mwfl::Must(help.CreatePopup(), "create help menu");
-    for (const auto id : {kNew, kOpen, kOpenFolder, kSave, kSaveAs, kSaveAll,
-                          kSaveNamedSession, kOpenNamedSession,
-                          kExportText, kExportHtml, kPrintPreview, kPrint,
-                          kPageSetup, kPrinterSettings, kClose})
-        mwfl::Must(file.AppendCommand(*commands_.Find(id)), "append file command");
-    mwfl::Must(file.AppendSeparator(), "append file separator");
-    mwfl::Must(file.AppendCommand(*commands_.Find(kExit)), "append exit command");
+    for (auto* menu : {&file, &edit, &search, &view, &document, &tools, &help})
+        mwfl::Must(menu->CreatePopup(), "create main popup");
+    const auto append = [&](mwfl::Menu& menu, std::initializer_list<mwfl::ControlId> ids) {
+        for (const auto id : ids)
+            mwfl::Must(menu.AppendCommand(*commands_.Find(id)), "append grouped command");
+    };
+    const auto separator = [](mwfl::Menu& menu) {
+        mwfl::Must(menu.AppendSeparator(), "append menu separator");
+    };
+    const auto submenu = [&](mwfl::Menu& parent, std::wstring title,
+                              std::initializer_list<mwfl::ControlId> ids) {
+        mwfl::Menu child;
+        mwfl::Must(child.CreatePopup(), "create grouped popup");
+        append(child, ids);
+        mwfl::Must(parent.AppendSubmenu(std::move(child), title), "append grouped popup");
+    };
+    append(file, {kNew, kOpen, kOpenFolder});
+    separator(file);
+    append(file, {kSave, kSaveAs, kSaveAll});
+    submenu(file, Tr(L"Sessions"), {kSaveNamedSession, kOpenNamedSession});
+    submenu(file, Tr(L"Export"), {kExportText, kExportHtml});
+    submenu(file, Tr(L"Printing"), {kPrint, kPrintPreview, kPageSetup, kPrinterSettings});
     if (!recent_.GetPaths().empty()) {
-        mwfl::Must(file.AppendSeparator(), "append recent separator");
+        mwfl::Menu recent;
+        mwfl::Must(recent.CreatePopup(), "create recent popup");
         for (std::size_t index = 0; index < recent_.GetPaths().size(); ++index)
-            mwfl::Must(file.AppendCommand(*commands_.Find(
+            mwfl::Must(recent.AppendCommand(*commands_.Find(
                 {static_cast<WORD>(kRecentBase.value + index)})), "append recent file");
+        mwfl::Must(file.AppendSubmenu(std::move(recent), Tr(L"Recent Files")), "append recent popup");
     }
-    for (const auto id : {kUndo, kRedo, kCut, kCopy, kPaste, kSelectAll,
-                          kCompleteWord,
-                          kPinTab, kSortTabs, kCloseOtherTabs, kCloseLeftTabs,
-                          kCloseRightTabs, kOpenNewWindow, kPreviousLargeWindow, kNextLargeWindow})
-        mwfl::Must(edit.AppendCommand(*commands_.Find(id)), "append edit command");
-    for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kSearchMatchCase,
-                          kSearchWholeWord, kSearchRegex, kSearchSelection,
-                          kGoToLineColumn, kDocumentSymbols, kQuickOpen, kPreviousSearch,
-                          kMarkAll, kClearSearchMarks, kFindInFiles, kReplaceInFiles, kReplacementHistory, kCancelSearch})
-        mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
-    for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi})
-        mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");
+    separator(file);
+    append(file, {kClose, kExit});
+
+    append(edit, {kUndo, kRedo});
+    separator(edit);
+    append(edit, {kCut, kCopy, kPaste, kSelectAll, kCompleteWord});
+    submenu(edit, Tr(L"Selections"), {kRectangular, kSelectNext, kSelectAllOccurrences});
+    separator(edit);
+    submenu(edit, Tr(L"Lines"), {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
+        kSortAscending, kSortDescending, kUniqueLines, kReverseLines, kRemoveBlankLines,
+        kJoinLines, kSplitLines});
+    submenu(edit, Tr(L"Letter Case"), {kUppercase, kLowercase, kTitleCase, kSentenceCase});
+    submenu(edit, Tr(L"Whitespace and Indentation"), {kIndent, kOutdent, kTrimTrailing,
+        kTabsToSpaces, kSpacesToTabs});
+    submenu(edit, Tr(L"Comments"), {kToggleComment, kBlockComment});
+    submenu(edit, Tr(L"Encode / Decode Text"), {kJsonEscape, kJsonUnescape,
+        kBase64Encode, kBase64Decode, kUrlEncode, kUrlDecode});
+    submenu(edit, Tr(L"Insert"), {kInsertDateTime, kInsertSequence});
+
+    append(search, {kFindNext, kReplaceNext, kReplaceAll, kPreviousSearch});
+    submenu(search, Tr(L"Search Options"), {kSearchMatchCase, kSearchWholeWord, kSearchRegex, kSearchSelection});
+    append(search, {kMarkAll, kClearSearchMarks});
+    separator(search);
+    append(search, {kFindInFiles, kReplaceInFiles, kReplacementHistory, kCancelSearch});
+    separator(search);
+    append(search, {kGoToLineColumn, kDocumentSymbols, kQuickOpen});
+
+    submenu(view, Tr(L"Panels"), {kToggleFindBar, kToggleWorkspace, kToggleResults});
+    append(view, {kWordWrap, kWhitespace});
+    submenu(view, Tr(L"Zoom"), {kZoomIn, kZoomOut, kZoomReset});
+    submenu(view, Tr(L"Split View"), {kSplitView, kRotateSplit, kFocusOtherView});
+    submenu(view, Tr(L"Tabs"), {kPinTab, kSortTabs, kCloseOtherTabs, kCloseLeftTabs,
+        kCloseRightTabs, kOpenNewWindow});
+    submenu(view, Tr(L"Folding and Bookmarks"), {kToggleFold, kToggleBookmark, kNextBookmark});
+    separator(view);
+    submenu(view, Tr(L"Workspace"), {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,
+        kWorkspaceRename, kWorkspaceRecycle, kWorkspaceReveal, kWorkspaceCopyPath,
+        kWorkspaceCopyRelativePath, kWorkspaceRemoveRoot, kWorkspaceManager, kFavoriteWorkspace});
+    submenu(view, Tr(L"Large Files and Logs"), {kPreviousLargeWindow, kNextLargeWindow, kFollowTail,
+        kRainbowColumns, kExtractColumn, kSortColumnAscending, kSortColumnDescending,
+        kFilterLines, kGoToSourceLine, kHighlightLines, kHighlightRules});
+    append(view, {kRefreshGitChanges});
+
+    mwfl::Menu encoding, convert, reopen, syntax;
+    for (auto* menu : {&encoding, &convert, &reopen, &syntax})
+        mwfl::Must(menu->CreatePopup(), "create document popup");
+    append(convert, {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi});
+    separator(convert);
     for (WORD index = 0; index < notepad_colon::SupportedLegacyCodePages().size(); ++index)
-        mwfl::Must(encoding.AppendCommand(*commands_.Find(
-            {static_cast<WORD>(kConvertCodePageBase.value + index)})), "append convert command");
-    mwfl::Must(encoding.AppendSeparator(), "append encoding separator");
-    mwfl::Must(encoding.AppendCommand(*commands_.Find(kReopenAutomatic)), "append automatic reopen command");
-    mwfl::Must(encoding.AppendCommand(*commands_.Find(kReopenSystemAnsi)), "append reopen command");
+        mwfl::Must(convert.AppendCommand(*commands_.Find(
+            {static_cast<WORD>(kConvertCodePageBase.value + index)})), "append conversion");
+    append(reopen, {kReopenAutomatic, kReopenSystemAnsi});
+    separator(reopen);
     for (WORD index = 0; index < notepad_colon::SupportedLegacyCodePages().size(); ++index)
-        mwfl::Must(encoding.AppendCommand(*commands_.Find(
-            {static_cast<WORD>(kReopenCodePageBase.value + index)})), "append reopen command");
-    mwfl::Must(encoding.AppendSeparator(), "append encoding separator");
-    mwfl::Must(encoding.AppendCommand(*commands_.Find(kEncodingInfo)), "append encoding information");
-    for (const auto id : {kCrlf, kLf})
-        mwfl::Must(line_endings.AppendCommand(*commands_.Find(id)), "append line ending command");
-    for (const auto value : notepad_colon::AllLanguages()) {
-        const auto id = mwfl::ControlId{static_cast<WORD>(
-            kLanguageBase.value + static_cast<WORD>(value))};
-        mwfl::Must(language.AppendCommand(*commands_.Find(id)), "append language command");
-    }
+        mwfl::Must(reopen.AppendCommand(*commands_.Find(
+            {static_cast<WORD>(kReopenCodePageBase.value + index)})), "append reopen");
+    mwfl::Must(encoding.AppendSubmenu(std::move(convert), Tr(L"Convert Encoding")), "append conversions");
+    mwfl::Must(encoding.AppendSubmenu(std::move(reopen), Tr(L"Reopen with Encoding")), "append reopen popup");
+    separator(encoding);
+    append(encoding, {kEncodingInfo});
+    mwfl::Must(document.AppendSubmenu(std::move(encoding), Tr(L"Encoding")), "append encoding popup");
+    submenu(document, Tr(L"Line Endings"), {kCrlf, kLf});
+    for (const auto value : notepad_colon::AllLanguages())
+        mwfl::Must(syntax.AppendCommand(*commands_.Find({static_cast<WORD>(
+            kLanguageBase.value + static_cast<WORD>(value))})), "append syntax command");
     std::size_t custom_index = 0;
     for (const auto& definition : language_registry_.Languages()) {
         if (definition.builtin) continue;
-        const auto id = mwfl::ControlId{static_cast<WORD>(
-            kCustomLanguageBase.value + custom_index)};
-        mwfl::Must(language.AppendCommand(*commands_.Find(id)), "append custom language command");
-        ++custom_index;
+        mwfl::Must(syntax.AppendCommand(*commands_.Find({static_cast<WORD>(
+            kCustomLanguageBase.value + custom_index++)})), "append custom syntax");
     }
-    if (custom_index != 0)
-        mwfl::Must(language.AppendSeparator(), "append custom language separator");
-    mwfl::Must(language.AppendCommand(*commands_.Find(kReloadLanguages)),
-               "append reload languages command");
-    for (const auto id : {kToggleFindBar, kToggleWorkspace, kToggleResults,
-                          kSplitView, kRotateSplit, kFocusOtherView, kWhitespace, kWordWrap, kZoomIn, kZoomOut, kZoomReset,
-                          kRectangular, kToggleFold, kToggleBookmark, kNextBookmark,
-                          kFollowTail, kRainbowColumns, kExtractColumn, kSortColumnAscending,
-                          kSortColumnDescending, kFilterLines, kGoToSourceLine, kHighlightLines,
-                          kHighlightRules, kRefreshGitChanges})
-        mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append view command");
-    for (const auto id : {kWorkspaceRefresh, kWorkspaceNewFile, kWorkspaceNewFolder,
-                          kWorkspaceRename, kWorkspaceRecycle, kWorkspaceReveal,
-                          kWorkspaceCopyPath, kWorkspaceCopyRelativePath, kWorkspaceRemoveRoot,
-                          kWorkspaceManager, kFavoriteWorkspace})
-        mwfl::Must(view.AppendCommand(*commands_.Find(id)), "append workspace command");
-    for (const auto id : {kMoveLineUp, kMoveLineDown, kDuplicateLine, kDeleteLine,
-                          kUppercase, kLowercase, kTitleCase, kSentenceCase,
-                          kIndent, kOutdent, kToggleComment, kSelectNext,
-                          kSelectAllOccurrences, kSortAscending, kSortDescending,
-                          kUniqueLines, kReverseLines, kRemoveBlankLines, kTrimTrailing,
-                          kJoinLines, kSplitLines, kTabsToSpaces, kSpacesToTabs,
-                          kJsonEscape, kJsonUnescape, kBlockComment,
-                          kBase64Encode, kBase64Decode, kUrlEncode, kUrlDecode,
-                          kInsertDateTime, kInsertSequence})
-        mwfl::Must(code.AppendCommand(*commands_.Find(id)), "append code command");
-    for (const auto id : {kCommandPalette, kMacroStart, kMacroStop, kMacroPlay,
-                          kMacroPlayFive, kMacroSave, kMacroManage,
-                          kShortcutSettings, kExportConfiguration, kImportConfiguration,
-                          kDocumentStatistics,
-                          kPreferences, kRecoveryManager, kCompareWithFile,
-                          kCompareWithDisk, kReviewChanges, kRegisterAssociation, kRemoveAssociation,
-                          kAddShellMenus, kRemoveShellMenus,
-                          kEnglishUi, kChineseUi, kOpenTerminal})
-        mwfl::Must(tools.AppendCommand(*commands_.Find(id)), "append tools command");
-    mwfl::Must(help.AppendCommand(*commands_.Find(kAbout)), "append about command");
+    separator(syntax);
+    append(syntax, {kReloadLanguages});
+    mwfl::Must(document.AppendSubmenu(std::move(syntax), Tr(L"Syntax Highlighting")), "append syntax popup");
+    separator(document);
+    append(document, {kCompareWithFile, kCompareWithDisk, kReviewChanges, kDocumentStatistics});
+
+    append(tools, {kCommandPalette});
+    separator(tools);
+    append(tools, {kPreferences, kShortcutSettings});
+    mwfl::Menu interface_language;
+    mwfl::Must(interface_language.CreatePopup(), "create interface language popup");
+    for (const auto& entry : notepad_colon::SupportedUiLanguages())
+        mwfl::Must(interface_language.AppendCommand(*commands_.Find(UiLanguageCommandId(entry.language))),
+            "append interface language");
+    mwfl::Must(tools.AppendSubmenu(std::move(interface_language), Tr(L"Interface Language")), "append interface languages");
+    submenu(tools, Tr(L"Settings Transfer"), {kExportConfiguration, kImportConfiguration});
+    separator(tools);
+    submenu(tools, Tr(L"Macros"), {kMacroStart, kMacroStop, kMacroPlay, kMacroPlayFive, kMacroSave, kMacroManage});
+    append(tools, {kRecoveryManager, kOpenTerminal});
+    submenu(tools, Tr(L"Windows Integration"), {kRegisterAssociation, kRemoveAssociation, kAddShellMenus, kRemoveShellMenus});
+    append(help, {kAbout});
     mwfl::Must(menu_.AppendSubmenu(std::move(file), Tr(L"&File")), "append file menu");
     mwfl::Must(menu_.AppendSubmenu(std::move(edit), Tr(L"&Edit")), "append edit menu");
     mwfl::Must(menu_.AppendSubmenu(std::move(search), Tr(L"&Search")), "append search menu");
-    mwfl::Must(menu_.AppendSubmenu(std::move(encoding), Tr(L"En&coding")), "append encoding menu");
-    mwfl::Must(menu_.AppendSubmenu(std::move(line_endings), Tr(L"&EOL")), "append line endings menu");
-    mwfl::Must(menu_.AppendSubmenu(std::move(language), Tr(L"&Language")), "append language menu");
     mwfl::Must(menu_.AppendSubmenu(std::move(view), Tr(L"&View")), "append view menu");
-    mwfl::Must(menu_.AppendSubmenu(std::move(code), Tr(L"&Code")), "append code menu");
+    mwfl::Must(menu_.AppendSubmenu(std::move(document), Tr(L"&Document")), "append document menu");
     mwfl::Must(menu_.AppendSubmenu(std::move(tools), Tr(L"&Tools")), "append tools menu");
     mwfl::Must(menu_.AppendSubmenu(std::move(help), Tr(L"&Help")), "append help menu");
     mwfl::Must(menu_.AttachToWindow(GetHwnd()), "attach menu");

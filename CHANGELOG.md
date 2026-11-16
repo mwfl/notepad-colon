@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add complete Traditional Chinese, Spanish, French and Hindi interfaces alongside
+  English (the default) and Simplified Chinese. Switch immediately from Tools >
+  Interface Language; keep native language names visible, show the current choice,
+  remember it on restart, and migrate the previous ChineseUi preference.
+- Consolidate the menu bar into File, Edit, Search, View, Document, Tools and Help.
+  Group encoding, line endings and syntax highlighting under Document; organize
+  sessions, printing, text transformations, tabs, workspaces and macros into
+  focused submenus. Preserve existing command IDs and keyboard shortcuts.
+
 - Review Replace in Files with read-only before/after panes, match navigation
   and per-file checkboxes. Execute the frozen reviewed output; reject stale
   disk or buffer inputs instead of rescanning after confirmation.

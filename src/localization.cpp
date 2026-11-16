@@ -10,26 +10,55 @@ constexpr Translation kChineseSimplified[] = {
 #include "strings_zh_cn.inc"
 };
 
+constexpr Translation kChineseTraditional[] = {
+#include "strings_zh_tw.inc"
+};
+constexpr Translation kSpanish[] = {
+#include "strings_es.inc"
+};
+constexpr Translation kFrench[] = {
+#include "strings_fr.inc"
+};
+constexpr Translation kHindi[] = {
+#include "strings_hi.inc"
+};
+constexpr UiLanguageInfo kLanguages[]{
+    {UiLanguage::english, L"English", "en"},
+    {UiLanguage::chinese_simplified, L"简体中文", "zh-Hans"},
+    {UiLanguage::chinese_traditional, L"繁體中文", "zh-Hant"},
+    {UiLanguage::spanish, L"Español", "es"},
+    {UiLanguage::french, L"Français", "fr"},
+    {UiLanguage::hindi, L"हिन्दी", "hi"},
+};
 std::atomic<UiLanguage> active_language{UiLanguage::english};
 
 using Index = std::unordered_map<std::wstring_view, std::wstring_view>;
 
-const Index& ChineseIndex() {
-    static const auto index = [] {
-        auto built = std::make_unique<Index>();
-        built->reserve(std::size(kChineseSimplified));
-        for (const auto& entry : kChineseSimplified) built->emplace(entry.english, entry.translated);
-        return built;
-    }();
-    return *index;
+Index MakeIndex(std::span<const Translation> catalog) {
+    Index index;
+    index.reserve(catalog.size());
+    for (const auto& entry : catalog) index.emplace(entry.english, entry.translated);
+    return index;
 }
-
 const Index* IndexFor(UiLanguage language) {
-    return language == UiLanguage::chinese_simplified ? &ChineseIndex() : nullptr;
+    switch (language) {
+    case UiLanguage::chinese_simplified: { static const auto index = MakeIndex(kChineseSimplified); return &index; }
+    case UiLanguage::chinese_traditional: { static const auto index = MakeIndex(kChineseTraditional); return &index; }
+    case UiLanguage::spanish: { static const auto index = MakeIndex(kSpanish); return &index; }
+    case UiLanguage::french: { static const auto index = MakeIndex(kFrench); return &index; }
+    case UiLanguage::hindi: { static const auto index = MakeIndex(kHindi); return &index; }
+    default: return nullptr;
+    }
 }
 }  // namespace
 
-void SetUiLanguage(UiLanguage language) noexcept { active_language.store(language); }
+std::span<const UiLanguageInfo> SupportedUiLanguages() noexcept { return kLanguages; }
+bool IsValidUiLanguage(UiLanguage language) noexcept {
+    return static_cast<std::uint32_t>(language) < std::size(kLanguages);
+}
+void SetUiLanguage(UiLanguage language) noexcept {
+    active_language.store(IsValidUiLanguage(language) ? language : UiLanguage::english);
+}
 
 UiLanguage GetUiLanguage() noexcept { return active_language.load(); }
 
@@ -47,8 +76,14 @@ bool HasTranslation(UiLanguage language, std::wstring_view english) {
 }
 
 std::span<const Translation> TranslationCatalog(UiLanguage language) noexcept {
-    if (language == UiLanguage::chinese_simplified) return kChineseSimplified;
-    return {};
+    switch (language) {
+    case UiLanguage::chinese_simplified: return kChineseSimplified;
+    case UiLanguage::chinese_traditional: return kChineseTraditional;
+    case UiLanguage::spanish: return kSpanish;
+    case UiLanguage::french: return kFrench;
+    case UiLanguage::hindi: return kHindi;
+    default: return {};
+    }
 }
 
 }  // namespace notepad_colon

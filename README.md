@@ -124,7 +124,12 @@ and 4 GiB verification workflow.
 
 - Windows 10 or newer
 - x64 (tested packaged build); ARM64 (cross-compiled in CI)
-- English and Simplified Chinese interface (**Tools > 简体中文界面**)
+- English (default), Simplified Chinese, Traditional Chinese, Spanish, French
+  and Hindi interfaces (**Tools > Interface Language**); switching is immediate
+  and the selected language is remembered. Language names always appear in
+  their own script, including **English**.
+- Seven grouped menus; document encoding, line endings and syntax highlighting
+  are under **Document**, separate from the interface language.
 - MSVC C++20 with Visual Studio 2026
 
 ## Build from source

@@ -7,7 +7,17 @@
 
 namespace notepad_colon {
 
-enum class UiLanguage : std::uint32_t { english = 0, chinese_simplified = 1 };
+// Persisted values: retain English=0 and Simplified Chinese=1 for existing settings.
+enum class UiLanguage : std::uint32_t {
+    english = 0, chinese_simplified = 1, chinese_traditional = 2, spanish = 3, french = 4, hindi = 5
+};
+struct UiLanguageInfo {
+    UiLanguage language;
+    std::wstring_view native_name;
+    std::string_view locale;
+};
+std::span<const UiLanguageInfo> SupportedUiLanguages() noexcept;
+bool IsValidUiLanguage(UiLanguage language) noexcept;
 
 struct Translation {
     std::wstring_view english;

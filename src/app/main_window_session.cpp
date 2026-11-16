@@ -13,7 +13,8 @@ void MainWindow::LoadPreferences() {
         mwfl::SettingDefinition{L"TrimTrailingOnSave", mwfl::SettingType::dword, 4, false},
         mwfl::SettingDefinition{L"CreateBackup", mwfl::SettingType::dword, 4, false},
         mwfl::SettingDefinition{L"EnsureFinalNewline", mwfl::SettingType::dword, 4, false},
-        mwfl::SettingDefinition{L"ChineseUi", mwfl::SettingType::dword, 4, false},
+        mwfl::SettingDefinition{L"ChineseUi", mwfl::SettingType::dword, 4, false}, // Pre-six-language settings.
+        mwfl::SettingDefinition{L"UiLanguage", mwfl::SettingType::dword, 4, false},
         mwfl::SettingDefinition{L"HighlightRules", mwfl::SettingType::string, 2048, false}};
     const auto loaded = settings_.Load(schema);
     if (!loaded) return;
@@ -42,8 +43,13 @@ void MainWindow::LoadPreferences() {
         if (auto rules = utf8 ? notepad_colon::ParseHighlightRules(*utf8) : std::nullopt)
             highlight_rules_ = std::move(*rules);
     }
-    if (const auto* value = mwfl::FindSetting(loaded.values, L"ChineseUi"))
-        chinese_ui_ = std::get<std::uint32_t>(value->data) != 0;
+    if (const auto* value = mwfl::FindSetting(loaded.values, L"UiLanguage")) {
+        const auto language = static_cast<notepad_colon::UiLanguage>(std::get<std::uint32_t>(value->data));
+        ui_language_ = notepad_colon::IsValidUiLanguage(language) ? language : notepad_colon::UiLanguage::english;
+    } else if (const auto* legacy = mwfl::FindSetting(loaded.values, L"ChineseUi")) {
+        ui_language_ = std::get<std::uint32_t>(legacy->data) != 0 ?
+            notepad_colon::UiLanguage::chinese_simplified : notepad_colon::UiLanguage::english;
+    }
     preferences_ = notepad_colon::SanitizePreferences(std::move(candidate));
 }
 
@@ -58,7 +64,7 @@ bool MainWindow::SavePreferences() {
         mwfl::SettingValue{L"TrimTrailingOnSave", static_cast<std::uint32_t>(preferences_.trim_trailing_whitespace_on_save)},
         mwfl::SettingValue{L"CreateBackup", static_cast<std::uint32_t>(preferences_.create_backup_before_save)},
         mwfl::SettingValue{L"EnsureFinalNewline", static_cast<std::uint32_t>(preferences_.ensure_final_newline)},
-        mwfl::SettingValue{L"ChineseUi", static_cast<std::uint32_t>(chinese_ui_)},
+        mwfl::SettingValue{L"UiLanguage", static_cast<std::uint32_t>(ui_language_)},
         mwfl::SettingValue{L"HighlightRules", mwfl::FromUtf8(
             notepad_colon::FormatHighlightRules(highlight_rules_)).value_or(std::wstring{})}};
     return static_cast<bool>(settings_.Save(values));

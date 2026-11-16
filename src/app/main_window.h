@@ -218,6 +218,10 @@ constexpr mwfl::ControlId kPreviousLargeWindow{436};
 constexpr mwfl::ControlId kNextLargeWindow{437};
 constexpr mwfl::ControlId kEnglishUi{438};
 constexpr mwfl::ControlId kChineseUi{439};
+inline mwfl::ControlId UiLanguageCommandId(notepad_colon::UiLanguage language) noexcept {
+    const auto value = static_cast<WORD>(language);
+    return {static_cast<WORD>(value < 2 ? kEnglishUi.value + value : 472 + value)};
+}
 constexpr mwfl::ControlId kWorkspaceFilter{440};
 constexpr mwfl::ControlId kWorkspaceManager{441};
 constexpr mwfl::ControlId kFavoriteWorkspace{442};
@@ -603,7 +607,7 @@ private:
     static std::wstring CommandLabel(const mwfl::Command& command, bool keep_mnemonic);
     void RememberCommandTitles();
 
-    void SetUiLanguage(bool chinese);
+    void SetUiLanguage(notepad_colon::UiLanguage language);
 
     void BuildMenu();
 
@@ -1029,7 +1033,7 @@ private:
     bool self_test_ = false;
     bool activation_test_server_ = false;
     bool large_file_self_test_ = false;
-    bool chinese_ui_ = false;
+    notepad_colon::UiLanguage ui_language_ = notepad_colon::UiLanguage::english;
     // English source text of every translatable command, keyed by command id.
     std::unordered_map<WORD, std::wstring> command_titles_;
     int activation_test_result_ = 4;
