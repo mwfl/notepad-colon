@@ -88,6 +88,9 @@ std::optional<LoadedEditorFile> LoadEditorFile(const std::filesystem::path& path
 bool MainWindow::OpenPath(const std::filesystem::path& path, unsigned int ansi_code_page,
                            bool pin_legacy_encoding, bool recovery_copy,
                            std::optional<notepad_colon::EncodingKind> known_encoding) {
+    if (ReplacementOwnsPath(path)) {
+        status_.SetText(Tr(L"This file is part of a running replacement; wait for it to finish")); return false;
+    }
     for (const auto& metadata : workspace_.GetDocuments()) {
         if (!metadata.path.empty() && SamePath(metadata.path, path)) {
             workspace_.Activate(metadata.id);
@@ -203,6 +206,9 @@ bool MainWindow::SaveDocument(EditorDocument& document, bool choose_path) {
             if (!selected.accepted) return false;
             path = selected.path;
         }
+    }
+    if (ReplacementOwnsPath(path)) {
+        status_.SetText(Tr(L"This file is part of a running replacement; wait for it to finish")); return false;
     }
     if (path == metadata->path && document.external_changed) {
         status_.SetText(Tr(L"The file changed on disk; review it or use Save As before overwriting"));
@@ -633,6 +639,7 @@ bool MainWindow::ReloadDocumentFromDisk(EditorDocument& document, bool follow_ta
     document.recovery_revision = UINT64_MAX;
     document.editor->SetReadOnly(document.read_only);
     document.loading_large_window = false;
+    ++document.revision;
     document.editor->Send(SCI_SETEOLMODE, document.line_ending == notepad_colon::LineEnding::lf ? SC_EOL_LF :
         document.line_ending == notepad_colon::LineEnding::cr ? SC_EOL_CR : SC_EOL_CRLF);
     document.editor->SetSavePoint();

@@ -403,7 +403,7 @@ void TestReplaceInText() {
     result = ReplaceAllInText(L"Hello HELLO", L"hello", L"x", {.match_case = true, .regular_expression = true});
     Check(result.count == 0 && result.text == L"Hello HELLO", "regular expressions honour match case");
     result = ReplaceAllInText(L"abc", L"x*", L"-", {.regular_expression = true});
-    Check(result.count == 0 && result.text == L"abc", "empty regular-expression matches are skipped");
+    Check(result.count == 4 && result.text == L"-a-b-c-", "empty regular-expression matches advance and include end of input");
     result = ReplaceAllInText(L"abc", L"(", L"-", {.regular_expression = true});
     Check(result.count == 0 && result.text == L"abc" && !result.error.empty(),
           "an invalid regular expression reports an error and changes nothing");

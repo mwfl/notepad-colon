@@ -161,6 +161,7 @@ add_library(notepad_colon_model
     src/output.cpp
     src/preferences.cpp
     src/recovery.cpp
+    src/replace_plan.cpp
     src/session.cpp
     src/shell_menu.cpp
     src/session_writer.cpp
@@ -287,6 +288,11 @@ if(BUILD_TESTING)
     target_compile_features(notepad_colon_feature_tests PRIVATE cxx_std_20)
     target_compile_options(notepad_colon_feature_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
     add_test(NAME notepad-colon.features COMMAND notepad_colon_feature_tests)
+    add_executable(notepad_colon_replace_plan_tests tests/replace_plan_tests.cpp)
+    target_link_libraries(notepad_colon_replace_plan_tests PRIVATE notepad_colon_model)
+    target_compile_features(notepad_colon_replace_plan_tests PRIVATE cxx_std_20)
+    target_compile_options(notepad_colon_replace_plan_tests PRIVATE /W4 /permissive- /EHsc /utf-8 /WX)
+    add_test(NAME notepad-colon.replace-plans COMMAND notepad_colon_replace_plan_tests)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_FOUND)
         # Every interface string in the sources must be in the translation catalog.

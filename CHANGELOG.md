@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Review Replace in Files with read-only before/after panes, match navigation
+  and per-file checkboxes. Execute the frozen reviewed output; reject stale
+  disk or buffer inputs instead of rescanning after confirmation.
+- Always retain checked replacement recovery copies and durable per-file
+  progress, including partial cancellations. Add Replacement History with
+  conflict-aware disk restore and recovery into new tabs, bounded to 100
+  records and approximately 512 MiB without silently deleting old originals.
+- Support zero-width regex replacements and bound replacement expansion while
+  formatting to keep `$'`/`$`` references from allocating unbounded results.
+
 - Unify opening, external reload, comparisons and folder operations on a checked,
   lossless decoder. Preserve legacy code-page overrides, UTF-16 byte order and
   BOM presence; add automatic-encoding reopen and reject malformed text safely.

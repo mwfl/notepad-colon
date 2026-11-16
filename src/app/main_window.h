@@ -34,6 +34,7 @@
 #include <notepad_colon/lightweight_completion.h>
 #include <notepad_colon/line_tools.h>
 #include <notepad_colon/workspace.h>
+#include <notepad_colon/replace_plan.h>
 #include <notepad_colon/workspace_state.h>
 #include "../scintilla_support.h"
 #include "../wasm_syntax_client.h"
@@ -129,6 +130,7 @@ constexpr mwfl::ControlId kGoToSourceLine{469};
 constexpr mwfl::ControlId kExtractColumn{470};
 constexpr mwfl::ControlId kSortColumnAscending{471};
 constexpr mwfl::ControlId kSortColumnDescending{472};
+constexpr mwfl::ControlId kReplacementHistory{473};
 // Margin marker on lines another program changed and nobody reviewed yet.
 constexpr int kReviewMarker = 4;
 constexpr mwfl::ControlId kRecentBase{300};
@@ -337,12 +339,17 @@ struct EditorDocument {
 };
 
 // A Replace in Files request travels through two background phases: a
-// preview that only counts, then (after confirmation) the rewrite.
+// frozen preview with recovery snapshots, then the selected guarded writes.
 struct PendingReplace {
     std::wstring query;
     std::wstring replacement;
     notepad_colon::ReplaceOptions options;
     bool applying = false;
+    bool running = false;
+    bool restoring = false;
+    bool cancel_requested = false;
+    notepad_colon::ReplacePlan plan;
+    std::vector<notepad_colon::ReplaceBufferSnapshot> buffers;
     std::size_t open_documents_changed = 0;
     std::size_t open_replacements = 0;
 };
@@ -889,7 +896,12 @@ private:
     void BeginReplaceInFiles(std::wstring query, std::wstring replacement, bool backups);
     void RunReplacePhase(bool apply);
     void CompleteReplace();
-    std::pair<std::size_t, std::size_t> ReplaceInOpenDocuments(bool apply);
+    bool ReviewReplacement(notepad_colon::ReplacePlan& plan, bool history = false);
+    void ShowReplacementHistory();
+    std::filesystem::path ReplacementHistoryPath() const;
+    bool ReplacementOwnsPath(const std::filesystem::path& path) const;
+    bool ValidateReplacementBuffers(notepad_colon::ReplacePlan& plan);
+    void ApplyReplacementBuffers(notepad_colon::ReplacePlan& plan);
     void ShowReplaceOutcome(const notepad_colon::ReplaceResult& result);
 
     void CheckExternalChanges(bool force);
@@ -980,7 +992,7 @@ private:
     std::vector<BackgroundTask> search_workers_;
     std::vector<BackgroundTask> workspace_workers_;
     notepad_colon::LatestOperation<notepad_colon::SearchResult> search_operations_;
-    notepad_colon::LatestOperation<notepad_colon::ReplaceResult> replace_operations_;
+    notepad_colon::LatestOperation<notepad_colon::ReplacePlan> replace_operations_;
     PendingReplace pending_replace_;
     notepad_colon::LatestOperation<notepad_colon::LineFilterResult> filter_operations_;
     std::wstring filter_title_;

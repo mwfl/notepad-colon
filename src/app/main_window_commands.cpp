@@ -197,6 +197,7 @@ void MainWindow::BuildCommands() {
                  .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'F'}))
         .Add(mwfl::Command(kReplaceInFiles, L"Replace in Files...", [this] { StartReplaceInFiles(); })
                  .SetShortcut({FVIRTKEY | FCONTROL | FSHIFT, 'H'}))
+        .Add(mwfl::Command(kReplacementHistory, L"Replacement History...", [this] { ShowReplacementHistory(); }))
         .Add(mwfl::Command(kCancelSearch, L"Cancel Folder Search", [this] { CancelFolderSearch(); }));
     commands_
         .Add(mwfl::Command(kWorkspaceRefresh, L"Refresh Workspace", [this] { RefreshWorkspace(); }))
@@ -407,7 +408,7 @@ void MainWindow::BuildMenu() {
     for (const auto id : {kFindNext, kReplaceNext, kReplaceAll, kSearchMatchCase,
                           kSearchWholeWord, kSearchRegex, kSearchSelection,
                           kGoToLineColumn, kDocumentSymbols, kQuickOpen, kPreviousSearch,
-                          kMarkAll, kClearSearchMarks, kFindInFiles, kReplaceInFiles, kCancelSearch})
+                          kMarkAll, kClearSearchMarks, kFindInFiles, kReplaceInFiles, kReplacementHistory, kCancelSearch})
         mwfl::Must(search.AppendCommand(*commands_.Find(id)), "append search command");
     for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi})
         mwfl::Must(encoding.AppendCommand(*commands_.Find(id)), "append encoding command");

@@ -22,7 +22,7 @@ CODE_PAGE = re.compile(r'LegacyCodePage\{\w+,\s*' + LITERAL + r'\}')
 
 def source_strings():
     found = {}
-    for path in sorted((ROOT / 'src' / 'app').glob('*.cpp')):
+    for path in sorted([*(ROOT / 'src' / 'app').glob('*.cpp'), ROOT / 'src' / 'replace_plan.cpp', ROOT / 'src' / 'workspace.cpp']):
         if 'self_test' in path.name:
             continue
         text = path.read_text(encoding='utf-8')

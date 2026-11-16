@@ -268,6 +268,7 @@ bool MainWindow::PromptFolderSearch(std::wstring& query, bool& open_documents_on
 }
 
 void MainWindow::StartFolderSearch() {
+    if (pending_replace_.running) { status_.SetText(Tr(L"Wait for the current replacement to finish")); return; }
     if (workspace_catalog_.Roots().empty()) {
         OpenFolderInteractive();
         return;
@@ -355,9 +356,10 @@ void MainWindow::StartFolderSearch() {
 }
 
 void MainWindow::CancelFolderSearch() {
+    if (pending_replace_.running) pending_replace_.cancel_requested = true;
     for (auto& worker : search_workers_) worker.thread.request_stop();
     search_operations_.Begin();
-    replace_operations_.Begin();
+    if (!pending_replace_.running) replace_operations_.Begin();
     filter_operations_.Begin();
     extract_operations_.Begin();
     if (auto* command = commands_.Find(kCancelSearch)) {

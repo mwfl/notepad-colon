@@ -49,10 +49,11 @@ code indexing out of the process.
   scope, wraparound, replace, history, and bounded **Mark All**.
 - Cancellable folder and open-document search with previews, include/exclude
   globs, `.gitignore`, multiline patterns, binary detection, and safety limits.
-- **Replace in Files** with a count-first preview. Every file keeps its
-  encoding, byte order mark and line endings, is replaced atomically, and can
-  keep a `.bak` copy; documents open in the editor are changed in the editor
-  (undoable) instead of behind your back.
+- **Replace in Files** with a read-only before/after preview, match navigation,
+  and per-file selection. Apply exactly the reviewed output after checking for
+  newer changes. Every disk file keeps its encoding, BOM and line endings;
+  open documents stay unsaved and undoable. **Replacement History** keeps
+  checked recovery copies even when optional adjacent `.bak` files are disabled.
 - A lazy workspace tree and fuzzy Quick Open. Opening a folder does not trigger
   background analysis.
 

@@ -1,6 +1,7 @@
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/editor_config.h>
+#include <notepad_colon/localization.h>
 
 #include <windows.h>
 
@@ -11,6 +12,7 @@
 #include <optional>
 #include <regex>
 #include <span>
+#include <stdexcept>
 
 namespace notepad_colon {
 namespace {
@@ -364,9 +366,36 @@ bool MatchesWorkspaceGlobs(const std::filesystem::path& relative,
            !MatchesAny(relative, CompileGlobs(exclude_globs));
 }
 
+namespace {
+constexpr std::size_t kMaximumReplacementText = 32 * 1024 * 1024;
+struct ReplacementOutputIterator {
+    using iterator_category = std::output_iterator_tag;
+    using value_type = void;
+    using difference_type = std::ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+    std::wstring* output;
+    ReplacementOutputIterator& operator*() { return *this; }
+    ReplacementOutputIterator& operator++() { return *this; }
+    ReplacementOutputIterator operator++(int) { return *this; }
+    ReplacementOutputIterator& operator=(wchar_t value) {
+        if (output->size() >= kMaximumReplacementText) throw std::length_error("replacement limit");
+        output->push_back(value); return *this;
+    }
+};
+}
 TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query,
-                                 std::wstring_view replacement, const SearchOptions& options) {
+                                 std::wstring_view replacement, const SearchOptions& options,
+                                 std::stop_token stop) {
     TextReplacement result;
+    const auto cancel = [&] {
+        result.text.clear(); result.count = 0; result.spans.clear(); result.cancelled = true;
+    };
+    const auto too_large = [&] {
+        result.text.clear(); result.count = 0; result.spans.clear();
+        result.error = Tr(L"Replacement output exceeds the 64 MiB text limit; use a smaller scope or replacement");
+    };
+    if (stop.stop_requested()) { cancel(); return result; }
     if (query.empty()) { result.text = std::wstring{text}; return result; }
     if (options.regular_expression) {
         try {
@@ -377,32 +406,50 @@ TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query
             using Iterator = std::regex_iterator<std::wstring_view::const_iterator>;
             auto cursor = text.begin();
             for (Iterator match{text.begin(), text.end(), expression}, end; match != end; ++match) {
-                // An empty match (for example "x*") would never advance the scan.
-                if (match->length() == 0) continue;
+                if (stop.stop_requested()) { cancel(); return result; }
+                const auto prefix_size = static_cast<std::size_t>((*match)[0].first - cursor);
+                if (prefix_size > kMaximumReplacementText - result.text.size()) throw std::length_error("replacement limit");
                 result.text.append(cursor, (*match)[0].first);
-                result.text += match->format(format);
+                const auto start = result.text.size();
+                match->format(ReplacementOutputIterator{&result.text}, format);
+                if (result.spans.size() < 256)
+                    result.spans.push_back({static_cast<std::size_t>((*match)[0].first - text.begin()),
+                        static_cast<std::size_t>(match->length()), start, result.text.size() - start});
                 cursor = (*match)[0].second;
                 ++result.count;
             }
+            if (static_cast<std::size_t>(text.end() - cursor) > kMaximumReplacementText - result.text.size())
+                throw std::length_error("replacement limit");
             result.text.append(cursor, text.end());
+        } catch (const std::length_error&) { too_large();
         } catch (const std::regex_error&) {
             result.text = std::wstring{text};
             result.count = 0;
+            result.spans.clear();
             result.error = L"Invalid regular expression";
         }
         return result;
     }
-    result.text.reserve(text.size());
+    result.text.reserve((std::min)(text.size(), kMaximumReplacementText));
     std::size_t copied = 0;
     for (std::size_t offset = 0; offset + query.size() <= text.size();) {
+        if (stop.stop_requested()) { cancel(); return result; }
         if (MatchAt(text, query, offset, options)) {
-            result.text.append(text, copied, offset - copied);
+            const auto amount = offset - copied;
+            if (amount > kMaximumReplacementText - result.text.size() ||
+                replacement.size() > kMaximumReplacementText - result.text.size() - amount) {
+                too_large(); return result;
+            }
+            result.text.append(text, copied, amount);
+            if (result.spans.size() < 256)
+                result.spans.push_back({offset, query.size(), result.text.size(), replacement.size()});
             result.text.append(replacement);
             offset += query.size();
             copied = offset;
             ++result.count;
         } else ++offset;
     }
+    if (text.size() - copied > kMaximumReplacementText - result.text.size()) { too_large(); return result; }
     result.text.append(text, copied, text.size() - copied);
     return result;
 }
@@ -443,7 +490,9 @@ ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring
         const auto loaded = LoadText(path, options.search.maximum_file_size);
         if (!loaded) { ++result.files_skipped; continue; }
         ++result.files_searched;
-        auto replaced = ReplaceAllInText(loaded->text, query, replacement, options.search);
+        auto replaced = ReplaceAllInText(loaded->text, query, replacement, options.search, stop);
+        if (replaced.cancelled) { result.cancelled = true; break; }
+        if (!replaced.error.empty()) { result.error = replaced.error; break; }
         if (replaced.count == 0) continue;
         ReplaceFileOutcome outcome{path, replaced.count};
         if (options.dry_run) {

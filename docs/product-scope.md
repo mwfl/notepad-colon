@@ -56,9 +56,30 @@ keeps at most 100,000 lines or 16 MiB of text, and is cancellable. A large
 file must be saved before it is filtered, because the scan reads the file on
 disk rather than the in-memory edit list.
 
-Replace in Files scans at most 100,000 entries, skips binary files and files
-over 8 MiB, and never rewrites a file whose result cannot be represented in
-that file's own encoding.
+Replace in Files scans at most 100,000 entries per workspace root, honoring
+include/exclude globs and `.gitignore` for both disk files and open buffers.
+It skips binary and disk inputs over 8 MiB. Each reviewed batch contains at
+most 256 files and 128 MiB of UTF-8 before/after snapshots, with a 64 MiB
+UTF-16 output ceiling per file. The complete staged text is visible; navigation
+records the first 256 matches per file and at most 4,096 matches per batch.
+The preview reports skips and limits. Execution never rescans for new matches.
+
+All selected disk identities, original contents and staged artifacts are checked
+before the first write; each atomic write checks the identity again. Stale
+previews abort before writes. A race or cancellation during application may
+leave a partial batch; its completed files remain recorded in Replacement
+History. Open buffers are checked again before their single undoable edit.
+Unrepresentable legacy-encoding output is displayed but cannot be selected.
+
+Replacement History always keeps checksummed originals independently of optional
+adjacent `.bak` copies, plus a flushed journal and previous manifest generation.
+Restore refuses later disk changes and currently open disk targets. Editor-buffer
+originals can be recovered into new unnamed tabs. Interrupted writes can be
+recovered when the current text still matches the staged output. History is
+limited to 100 operations and approximately 512 MiB; it stops accepting new
+batches rather than discarding recovery copies automatically. Review and delete
+records explicitly from **Search > Replacement History**. Batches are atomic
+per file, not transactions spanning all files.
 
 ## Folder behavior
 

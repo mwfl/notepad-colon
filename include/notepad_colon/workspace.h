@@ -73,10 +73,17 @@ bool MatchesWorkspaceGlobs(const std::filesystem::path& relative,
                            const std::vector<std::wstring>& include_globs,
                            const std::vector<std::wstring>& exclude_globs);
 
+struct ReplacementSpan {
+    std::size_t before_start = 0, before_length = 0;
+    std::size_t after_start = 0, after_length = 0;
+};
+
 struct TextReplacement {
     std::wstring text;
     std::size_t count = 0;
     std::wstring error;
+    std::vector<ReplacementSpan> spans; // First 256 matches, for bounded preview navigation.
+    bool cancelled = false;
 };
 
 struct ReplaceFileOutcome {
@@ -112,7 +119,7 @@ struct ReplaceResult {
 // SearchText. Regular-expression replacements accept $1-style references.
 TextReplacement ReplaceAllInText(std::wstring_view text, std::wstring_view query,
                                  std::wstring_view replacement,
-                                 const SearchOptions& options = {});
+                                 const SearchOptions& options = {}, std::stop_token stop = {});
 
 // Rewrites matching files under `root`. Each file keeps its encoding, byte
 // order mark and line endings, is replaced atomically, and is left untouched
