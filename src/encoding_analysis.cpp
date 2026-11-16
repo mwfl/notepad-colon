@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <limits>
 
@@ -13,7 +14,36 @@ unsigned int EffectiveCodePage(unsigned int value) noexcept {
     return value ? value : ::GetACP();
 }
 
+struct FileHandle {
+    HANDLE value = INVALID_HANDLE_VALUE;
+    ~FileHandle() { if (value != INVALID_HANDLE_VALUE) ::CloseHandle(value); }
+};
+
 bool IsContinuation(std::uint8_t value) noexcept { return (value & 0xc0u) == 0x80u; }
+
+bool ValidUtf16(std::wstring_view text) noexcept {
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const auto unit = static_cast<unsigned int>(text[index]);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+            if (++index == text.size() || text[index] < 0xdc00 || text[index] > 0xdfff) return false;
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    }
+    return true;
+}
+
+std::optional<EncodedWriteExpectation> HandleState(HANDLE file) noexcept {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!::GetFileInformationByHandle(file, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        return std::nullopt;
+    ULARGE_INTEGER size{}, write{}, identity{};
+    size.LowPart = info.nFileSizeLow; size.HighPart = info.nFileSizeHigh;
+    write.LowPart = info.ftLastWriteTime.dwLowDateTime; write.HighPart = info.ftLastWriteTime.dwHighDateTime;
+    identity.LowPart = info.nFileIndexLow; identity.HighPart = info.nFileIndexHigh;
+    // This application targets MSVC on Windows; its file_clock stores FILETIME ticks.
+    const auto time = std::filesystem::file_time_type{
+        std::filesystem::file_time_type::duration{static_cast<long long>(write.QuadPart)}};
+    return EncodedWriteExpectation{size.QuadPart, time, true, identity.QuadPart, info.dwVolumeSerialNumber};
+}
 
 std::vector<std::size_t> InvalidUtf8(std::span<const std::uint8_t> bytes) {
     std::vector<std::size_t> invalid;
@@ -68,8 +98,12 @@ std::optional<std::wstring> DecodeBytes(std::span<const std::uint8_t> bytes,
     std::size_t offset = 0;
     UINT code_page = CP_UTF8;
     DWORD flags = MB_ERR_INVALID_CHARS;
-    if (encoding == EncodingKind::utf8_bom) offset = bytes.size() >= 3 ? 3 : 0;
+    if (encoding == EncodingKind::utf8_bom)
+        offset = bytes.size() >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
     else if (encoding == EncodingKind::utf16_le || encoding == EncodingKind::utf16_be) {
+        if (bytes.size() >= 2 &&
+            ((encoding == EncodingKind::utf16_le && bytes[0] == 0xfe && bytes[1] == 0xff) ||
+             (encoding == EncodingKind::utf16_be && bytes[0] == 0xff && bytes[1] == 0xfe))) return std::nullopt;
         offset = bytes.size() >= 2 && ((bytes[0] == 0xff && bytes[1] == 0xfe) ||
                                       (bytes[0] == 0xfe && bytes[1] == 0xff)) ? 2 : 0;
         if ((bytes.size() - offset) % 2) return std::nullopt;
@@ -79,29 +113,37 @@ std::optional<std::wstring> DecodeBytes(std::span<const std::uint8_t> bytes,
             text[index] = static_cast<wchar_t>(encoding == EncodingKind::utf16_le
                 ? static_cast<unsigned>(a | (b << 8)) : static_cast<unsigned>((a << 8) | b));
         }
-        return text;
+        return ValidUtf16(text) ? std::optional{std::move(text)} : std::nullopt;
     } else if (encoding == EncodingKind::ansi) {
-        code_page = EffectiveCodePage(ansi_code_page); flags = 0;
+        code_page = EffectiveCodePage(ansi_code_page);
     } else if (encoding == EncodingKind::binary) return std::nullopt;
     if (bytes.size() - offset > static_cast<std::size_t>((std::numeric_limits<int>::max)())) return std::nullopt;
-    const auto* input = reinterpret_cast<const char*>(bytes.data() + offset);
     const auto count = static_cast<int>(bytes.size() - offset);
     if (!count) return std::wstring{};
+    const auto* input = reinterpret_cast<const char*>(bytes.data() + offset);
     const int required = ::MultiByteToWideChar(code_page, flags, input, count, nullptr, 0);
     if (required <= 0) return std::nullopt;
     std::wstring text(static_cast<std::size_t>(required), L'\0');
     if (!::MultiByteToWideChar(code_page, flags, input, count, text.data(), required)) return std::nullopt;
+    if (encoding == EncodingKind::ansi) {
+        const auto round_trip = EncodeText(text, encoding, code_page);
+        if (!round_trip || round_trip->size() != bytes.size() ||
+            !std::equal(round_trip->begin(), round_trip->end(), bytes.begin())) return std::nullopt;
+    }
     return text;
 }
 
 std::optional<std::vector<std::uint8_t>> EncodeText(std::wstring_view text,
                                                     EncodingKind encoding,
-                                                    unsigned int ansi_code_page) {
+                                                    unsigned int ansi_code_page, bool unicode_bom) {
     if (encoding == EncodingKind::binary || text.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()))
         return std::nullopt;
+    if (!ValidUtf16(text)) return std::nullopt;
     std::vector<std::uint8_t> output;
     if (encoding == EncodingKind::utf16_le || encoding == EncodingKind::utf16_be) {
-        if (encoding == EncodingKind::utf16_le) output = {0xff, 0xfe}; else output = {0xfe, 0xff};
+        if (unicode_bom) {
+            if (encoding == EncodingKind::utf16_le) output = {0xff, 0xfe}; else output = {0xfe, 0xff};
+        }
         output.reserve(output.size() + text.size() * 2);
         for (const auto value : text) {
             const auto low = static_cast<std::uint8_t>(value & 0xff), high = static_cast<std::uint8_t>(value >> 8);
@@ -158,43 +200,164 @@ EncodingAnalysis AnalyzeEncoding(std::span<const std::uint8_t> bytes, unsigned i
     result.valid = result.invalid_byte_offsets.empty() || result.encoding == EncodingKind::ansi;
     if (result.contains_nul && !result.has_bom && result.encoding == EncodingKind::utf8)
         result.encoding = EncodingKind::binary;
-    if (const auto text = DecodeBytes(bytes, result.encoding, result.code_page)) AnalyzeText(*text, result);
+    if (result.encoding == EncodingKind::utf16_le) result.code_page = 1200;
+    else if (result.encoding == EncodingKind::utf16_be) result.code_page = 1201;
+    if (const auto text = DecodeBytes(bytes, result.encoding, result.code_page)) {
+        AnalyzeText(*text, result);
+    } else result.valid = false;
     return result;
+}
+
+std::optional<EncodedWriteExpectation> ReadEncodedFileState(const std::filesystem::path& path) noexcept {
+    const auto file = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const auto error = ::GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return EncodedWriteExpectation{};
+        return std::nullopt;
+    }
+    const auto state = HandleState(file);
+    ::CloseHandle(file);
+    return state;
+}
+
+std::optional<EncodedWriteExpectation> ReadEncodedFileHandleState(void* handle) noexcept {
+    return HandleState(static_cast<HANDLE>(handle));
+}
+
+bool MatchesEncodedFileState(const EncodedWriteExpectation& expected,
+                             const EncodedWriteExpectation& current) noexcept {
+    return expected.exists == current.exists && (!expected.exists ||
+        (expected.size == current.size && expected.last_write == current.last_write &&
+         (!expected.file_index || (expected.file_index == current.file_index && expected.volume_serial == current.volume_serial))));
+}
+
+std::optional<DecodedFileText> DecodeFileText(std::span<const std::uint8_t> bytes,
+    unsigned int legacy_code_page, std::optional<EncodingKind> force_encoding,
+    std::optional<EncodingKind> fallback_encoding) {
+    auto analysis = AnalyzeEncoding(bytes, legacy_code_page);
+    if (!force_encoding && analysis.encoding == EncodingKind::binary && fallback_encoding &&
+        (*fallback_encoding == EncodingKind::utf16_le || *fallback_encoding == EncodingKind::utf16_be))
+        force_encoding = fallback_encoding;
+    if (!force_encoding && legacy_code_page && analysis.ascii_only && !analysis.contains_nul)
+        force_encoding = EncodingKind::ansi;
+    if (force_encoding) {
+        analysis.encoding = *force_encoding;
+        analysis.code_page = *force_encoding == EncodingKind::ansi ? EffectiveCodePage(legacy_code_page) :
+            *force_encoding == EncodingKind::utf16_le ? 1200u : *force_encoding == EncodingKind::utf16_be ? 1201u : CP_UTF8;
+        analysis.has_bom = (*force_encoding == EncodingKind::utf8_bom && bytes.size() >= 3 &&
+            bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) ||
+            (*force_encoding == EncodingKind::utf16_le && bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe) ||
+            (*force_encoding == EncodingKind::utf16_be && bytes.size() >= 2 && bytes[0] == 0xfe && bytes[1] == 0xff);
+    }
+    if (analysis.encoding == EncodingKind::binary) return std::nullopt;
+    auto text = DecodeBytes(bytes, analysis.encoding, analysis.code_page);
+    // The editor is text-only, and its control's SetText accepts a terminated
+    // string. Never silently truncate a file at an embedded NUL.
+    if (!text || text->find(L'\0') != std::wstring::npos) return std::nullopt;
+    analysis.valid = true;
+    analysis.invalid_byte_offsets.clear();
+    analysis.eol = {};
+    analysis.unicode_risks.clear();
+    AnalyzeText(*text, analysis);
+    return DecodedFileText{std::move(*text), std::move(analysis)};
+}
+
+std::optional<EncodedFileText> ReadEncodedFileText(const std::filesystem::path& path,
+    std::uintmax_t maximum_size, unsigned int legacy_code_page,
+    std::optional<EncodingKind> force_encoding, std::optional<EncodingKind> fallback_encoding,
+    bool allow_live_writes) {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    try {
+        const DWORD sharing = FILE_SHARE_READ | FILE_SHARE_DELETE | (allow_live_writes ? FILE_SHARE_WRITE : 0);
+        file = ::CreateFileW(path.c_str(), GENERIC_READ, sharing,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+        const auto before = HandleState(file);
+        if (!before || before->size > maximum_size || before->size > (std::numeric_limits<std::size_t>::max)()) {
+            ::CloseHandle(file); return std::nullopt;
+        }
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(before->size));
+        std::size_t offset = 0;
+        while (offset < bytes.size()) {
+            const auto count = static_cast<DWORD>((std::min<std::size_t>)(1024 * 1024, bytes.size() - offset));
+            DWORD read = 0;
+            if (!::ReadFile(file, bytes.data() + offset, count, &read, nullptr) || read != count) {
+                ::CloseHandle(file); return std::nullopt;
+            }
+            offset += read;
+        }
+        if (before != HandleState(file)) { ::CloseHandle(file); return std::nullopt; }
+        auto decoded = DecodeFileText(bytes, legacy_code_page, force_encoding, fallback_encoding);
+        const auto current = ReadEncodedFileState(path);
+        ::CloseHandle(file); file = INVALID_HANDLE_VALUE;
+        if (!decoded || current != before) return std::nullopt;
+        EncodedFileText result;
+        result.text = std::move(decoded->text);
+        result.analysis = std::move(decoded->analysis);
+        result.state = *before;
+        return result;
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
+        return std::nullopt;
+    }
 }
 
 bool WriteEncodedFileAtomic(const std::filesystem::path& path, std::wstring_view text,
                             EncodingKind encoding, unsigned int ansi_code_page,
-                            std::optional<EncodedWriteExpectation> expected) noexcept {
+                            std::optional<EncodedWriteExpectation> expected,
+                            bool unicode_bom, EncodedWriteExpectation* written_state) noexcept {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    std::filesystem::path temporary;
     try {
-        const auto bytes = EncodeText(text, encoding, ansi_code_page);
+        const auto bytes = EncodeText(text, encoding, ansi_code_page, unicode_bom);
         if (!bytes) return false;
-        auto temporary = path;
-        temporary += L".npc-tmp-" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
-                     std::to_wstring(::GetTickCount64());
-        {
-            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-            if (!output || (!bytes->empty() && !output.write(
-                reinterpret_cast<const char*>(bytes->data()), static_cast<std::streamsize>(bytes->size())))) {
-                std::error_code ignored; std::filesystem::remove(temporary, ignored); return false;
+        static std::atomic_uint64_t sequence{0};
+        temporary = path.wstring() + L".npc-tmp-" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
+                     std::to_wstring(::GetTickCount64()) + L"-" + std::to_wstring(++sequence);
+        file = ::CreateFileW(temporary.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, 0, nullptr, CREATE_NEW,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        std::size_t offset = 0;
+        bool success = true;
+        while (offset < bytes->size() && success) {
+            const auto count = static_cast<DWORD>((std::min<std::size_t>)(1024 * 1024, bytes->size() - offset));
+            DWORD written = 0;
+            success = ::WriteFile(file, bytes->data() + offset, count, &written, nullptr) && written == count;
+            offset += written;
+        }
+        if (success) success = ::FlushFileBuffers(file) != FALSE;
+        ::CloseHandle(file); file = INVALID_HANDLE_VALUE;
+        const auto replacement_state = success ? ReadEncodedFileState(temporary) : std::nullopt;
+        const auto current = ReadEncodedFileState(path);
+        if (!replacement_state || !current || (expected && !MatchesEncodedFileState(*expected, *current))) {
+            ::DeleteFileW(temporary.c_str()); return false;
+        }
+        FileHandle guard;
+        if (current->exists) {
+            guard.value = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (guard.value == INVALID_HANDLE_VALUE || HandleState(guard.value) != current || ReadEncodedFileState(path) != current) {
+                ::DeleteFileW(temporary.c_str()); return false;
             }
         }
-        if (expected) {
-            std::error_code error;
-            const bool exists = std::filesystem::exists(path, error);
-            const auto size = exists ? std::filesystem::file_size(path, error) : 0;
-            const auto write = exists ? std::filesystem::last_write_time(path, error)
-                                      : std::filesystem::file_time_type{};
-            if (error || exists != expected->exists ||
-                (exists && (size != expected->size || write != expected->last_write))) {
-                std::filesystem::remove(temporary, error); return false;
-            }
-        }
-        if (!::MoveFileExW(temporary.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            std::error_code ignored; std::filesystem::remove(temporary, ignored); return false;
+        success = current->exists
+            ? ::ReplaceFileW(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr) != FALSE
+            : ::MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        if (!success) { ::DeleteFileW(temporary.c_str()); return false; }
+        if (written_state) {
+            const auto saved = ReadEncodedFileState(path);
+            // A competing writer after the commit must not become our baseline.
+            if (saved != replacement_state) return false;
+            *written_state = *saved;
         }
         return true;
-    } catch (...) { return false; }
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
+        if (!temporary.empty()) ::DeleteFileW(temporary.c_str());
+        return false;
+    }
 }
 
 }  // namespace notepad_colon

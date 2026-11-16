@@ -29,6 +29,24 @@ definitions, references, refactoring, or background diagnostics. The unused
 LanguageService placeholder was removed so the architecture reflects that
 product decision rather than advertising a future IDE subsystem.
 
+## Encoding and disk generations
+
+Opening, external reload, comparison and folder operations share a strict
+decoder. UTF-8 and UTF-16 must be valid, legacy decoding must round-trip to the
+same bytes, and embedded NUL text is refused rather than truncated by the editor
+control. EditorConfig charset values are decoding fallbacks for BOMless UTF-16;
+they do not override a detected BOM or convert an existing file implicitly.
+Explicit per-document code-page and line-ending choices survive recovery.
+
+Ordinary reads reject an active writer and verify file identity, size and write
+time before publishing the text. Follow mode explicitly allows live UTF-8
+reads; an invalid or changing update keeps the last usable view for a later
+retry. Saves flush a temporary file and validate the original disk generation
+before atomic replacement. File identity detects replacements that preserve
+both the length and timestamp. Large-file snapshots hold independent reader
+handles, so deleting or atomically replacing the original does not destroy the
+source of a recoverable snapshot or Save As operation.
+
 ## Line tools
 
 Rainbow columns and highlighted log lines decorate only the lines a view is

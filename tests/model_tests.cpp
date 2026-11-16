@@ -455,6 +455,10 @@ int main() {
                                   notepad_colon::LineEnding::crlf, {0, 7, 0}, true});
     original.documents[0].encoding = notepad_colon::Encoding::ansi;
     original.documents[0].ansi_code_page = 932;
+    original.documents[0].legacy_encoding_override = true;
+    original.documents[0].unicode_bom = false;
+    original.documents[0].line_ending_override = notepad_colon::LineEnding::cr;
+    original.documents[0].disk_state = notepad_colon::FileState{12, {}, true, 1234, 5678};
     const auto encoded = notepad_colon::SerializeSession(original);
     notepad_colon::Session decoded;
     Check(notepad_colon::DeserializeSession(encoded, decoded), "serialized session must parse");
@@ -471,12 +475,22 @@ int main() {
     if (decoded.documents.size() == 2) {
         Check(decoded.documents[0].path == original.documents[0].path, "Unicode path must round trip");
         Check(decoded.documents[0].ansi_code_page == 932, "explicit code page must survive session round trip");
+        Check(decoded.documents[0].legacy_encoding_override && !decoded.documents[0].unicode_bom &&
+              decoded.documents[0].line_ending_override == notepad_colon::LineEnding::cr &&
+              decoded.documents[0].disk_state == original.documents[0].disk_state,
+              "encoding overrides, BOM policy, line-ending choice and file identity survive session recovery");
     Check(decoded.documents[1].recovery_text == original.documents[1].recovery_text,
               "recovery text must round trip");
     }
     Check(!notepad_colon::DeserializeSession("bad", decoded), "invalid sessions must be rejected");
     Check(notepad_colon::DeserializeSession("NPCSESSION\t1\t0\n", decoded),
           "version 1 sessions must remain readable");
+    Check(notepad_colon::DeserializeSession(
+              "NPCSESSION\t5\t0\n4\t1\t0\t0\t0\t1\tlegacy.txt\tdraft\t932\t0\t\t0\t0\t0\t0\t0\t0\n"
+              "NPCEND\t1\t13127183140635081341\n", decoded) &&
+          decoded.documents.size() == 1 && decoded.documents[0].legacy_encoding_override &&
+          decoded.documents[0].ansi_code_page == 932 && decoded.documents[0].unicode_bom,
+          "version 5 sessions migrate their saved legacy code page and default BOM policy");
     Check(notepad_colon::DeserializeSession("NPCSESSION\t3\t0\n4\t0\t0\t0\t0\t1\tfile.txt\t\n", decoded) &&
           decoded.documents.size() == 1 && decoded.documents[0].dirty &&
           decoded.documents[0].recovery_text.empty() && decoded.documents[0].ansi_code_page == 0,

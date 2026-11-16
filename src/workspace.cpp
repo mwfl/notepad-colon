@@ -1,5 +1,6 @@
 #include <notepad_colon/workspace.h>
 #include <notepad_colon/encoding_analysis.h>
+#include <notepad_colon/editor_config.h>
 
 #include <windows.h>
 
@@ -26,27 +27,26 @@ struct LoadedText {
     EncodingKind encoding = EncodingKind::utf8;
     unsigned int code_page = 65001;
     FileState state;
+    bool unicode_bom = true;
 };
 
 // Reads and decodes a file the same way the editor does: Unicode by byte
 // order mark or validity, otherwise the detected legacy code page.
 std::optional<LoadedText> LoadText(const std::filesystem::path& path,
                                    std::uintmax_t maximum_size) {
-    LoadedText loaded;
-    loaded.state = CaptureFileState(path);
-    if (!loaded.state.exists || loaded.state.size > maximum_size) return std::nullopt;
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return std::nullopt;
-    const std::string raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-    const std::span<const std::uint8_t> bytes{
-        reinterpret_cast<const std::uint8_t*>(raw.data()), raw.size()};
-    const auto analysis = AnalyzeEncoding(bytes);
-    if (analysis.encoding == EncodingKind::binary) return std::nullopt;
-    auto decoded = DecodeBytes(bytes, analysis.encoding, analysis.code_page);
+    auto decoded = ReadEncodedFileText(path, maximum_size);
+    if (!decoded) {
+        const auto fallback = ResolveEditorConfig(path).encoding;
+        if (fallback == EncodingKind::utf16_le || fallback == EncodingKind::utf16_be)
+            decoded = ReadEncodedFileText(path, maximum_size, 0, {}, fallback);
+    }
     if (!decoded) return std::nullopt;
-    loaded.text = std::move(*decoded);
-    loaded.encoding = analysis.encoding;
-    loaded.code_page = analysis.code_page;
+    LoadedText loaded;
+    loaded.text = std::move(decoded->text);
+    loaded.encoding = decoded->analysis.encoding;
+    loaded.code_page = decoded->analysis.code_page;
+    loaded.state = decoded->state;
+    loaded.unicode_bom = decoded->analysis.has_bom;
     return loaded;
 }
 
@@ -453,7 +453,7 @@ ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring
         }
         // A replacement that the file's own encoding cannot represent must not
         // silently change that encoding or drop characters.
-        if (!EncodeText(replaced.text, loaded->encoding, loaded->code_page)) {
+        if (!EncodeText(replaced.text, loaded->encoding, loaded->code_page, loaded->unicode_bom)) {
             outcome.error = L"The replacement is not representable in the file's encoding";
         } else {
             if (options.create_backups) {
@@ -463,10 +463,9 @@ ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring
                     outcome.error = L"The backup could not be created";
             }
             if (outcome.error.empty()) {
-                const EncodedWriteExpectation expected{
-                    loaded->state.size, loaded->state.last_write, loaded->state.exists};
+                const auto expected = loaded->state;
                 if (WriteEncodedFileAtomic(path, replaced.text, loaded->encoding,
-                                           loaded->code_page, expected))
+                                           loaded->code_page, expected, loaded->unicode_bom))
                     outcome.written = true;
                 else outcome.error = L"The file changed on disk or could not be written";
             }
@@ -481,14 +480,7 @@ ReplaceResult ReplaceInWorkspace(const std::filesystem::path& root, std::wstring
 }
 
 FileState CaptureFileState(const std::filesystem::path& path) noexcept {
-    FileState state;
-    std::error_code error;
-    state.exists = std::filesystem::is_regular_file(path, error);
-    if (!state.exists || error) return state;
-    state.size = std::filesystem::file_size(path, error);
-    if (error) return {};
-    state.last_write = std::filesystem::last_write_time(path, error);
-    return error ? FileState{} : state;
+    return ReadEncodedFileState(path).value_or(FileState{});
 }
 
 }  // namespace notepad_colon

@@ -18,7 +18,7 @@ struct CheckpointCopy {
     std::filesystem::path path;
     std::uint64_t size = 0;
     std::uint64_t checksum = 0;
-    std::filesystem::file_time_type last_write{};
+    EncodedWriteExpectation state;
 };
 
 class LargeFileBuffer final {
@@ -30,6 +30,7 @@ public:
     void MarkModified() noexcept { modified_ = true; }
     std::uint64_t Size() const noexcept { return size_; }
     const std::filesystem::path& SourcePath() const noexcept { return source_path_; }
+    const EncodedWriteExpectation& SourceState() const noexcept { return source_state_; }
 
     std::vector<std::uint8_t> Read(std::uint64_t offset, std::size_t length) const;
     std::optional<std::uint64_t> Find(std::span<const std::uint8_t> needle,
@@ -67,8 +68,8 @@ private:
     std::vector<Piece> pieces_;
     std::uint64_t size_ = 0;
     bool modified_ = false;
-    std::uint64_t source_disk_size_ = 0;
-    std::filesystem::file_time_type source_last_write_{};
+    EncodedWriteExpectation source_state_;
+    bool use_mapping_ = true;
     mutable std::mutex checkpoint_mutex_;
     mutable std::map<std::filesystem::path, CheckpointCopy> checkpoint_copies_;
 };

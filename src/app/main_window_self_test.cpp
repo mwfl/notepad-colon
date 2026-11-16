@@ -614,6 +614,125 @@ void MainWindow::RunSelfTest() noexcept {
             if (open_document && !CloseActive(true)) result = 79;
         }
         if (result == 0) {
+            // Exercise the actual open -> external reload -> edit -> save path
+            // for every supported encoding, rather than only the decoder model.
+            const auto encoding_root = test_workspace / L"encoding-cases";
+            std::filesystem::create_directories(encoding_root);
+            std::ofstream(encoding_root / L".editorconfig") <<
+                "root=true\n[*.txt]\ntrim_trailing_whitespace=false\ninsert_final_newline=false\n";
+            struct Sample { notepad_colon::EncodingKind kind; unsigned int page; std::wstring_view text; };
+            using Kind = notepad_colon::EncodingKind;
+            const Sample samples[]{
+                {Kind::utf8, 0, L"Unicode Ω text\n"}, {Kind::utf8_bom, 0, L"Unicode 中文 text\n"},
+                {Kind::utf16_le, 0, L"UTF-16 LE 😀\n"}, {Kind::utf16_be, 0, L"UTF-16 BE 😀\n"},
+                {Kind::ansi, 54936, L"这是简体中文文件，我们需要打开并保存。\n"},
+                {Kind::ansi, 950, L"這是繁體中文檔案，我們需要打開並儲存。\n"},
+                {Kind::ansi, 932, L"これは日本語のテキストファイルです。保存します。\n"},
+                {Kind::ansi, 51932, L"これは日本語のテキストファイルです。保存します。\n"},
+                {Kind::ansi, 949, L"이것은 한국어 텍스트 파일입니다. 저장합니다.\n"},
+                {Kind::ansi, 1252, L"Café déjà vu, Straße.\n"},
+            };
+            std::size_t index = 0;
+            for (const auto& sample : samples) {
+                if (result != 0) break;
+                if (sample.page && !::IsValidCodePage(sample.page)) continue;
+                const auto path = encoding_root / (std::to_wstring(index++) + L".txt");
+                if (!notepad_colon::WriteEncodedFileAtomic(path, sample.text, sample.kind, sample.page) ||
+                    !OpenPath(path, sample.page, false)) { result = 150; break; }
+                auto* current = ActiveDocument();
+                const auto after = L"changed\n" + std::wstring{sample.text};
+                if (!notepad_colon::WriteEncodedFileAtomic(path, after, sample.kind, sample.page)) result = 151;
+                CheckExternalChanges(true);
+                if (!current || current->editor->GetText() != after || current->detected_encoding != sample.kind ||
+                    (sample.page && current->ansi_code_page != sample.page) || workspace_.Find(current->id)->dirty ||
+                    current->editor->Send(SCI_GETEOLMODE) != SC_EOL_LF) result = 152;
+                if (result == 0) {
+                    current->editor->Send(SCI_APPENDTEXT, 1, reinterpret_cast<LPARAM>("!"));
+                    const auto expected = notepad_colon::EncodeText(after + L"!", sample.kind, sample.page);
+                    if (!SaveDocument(*current, false) || !expected || ReadFileBytes(path) != expected) result = 153;
+                }
+                if (!CloseActive(true)) result = 154;
+            }
+            if (result == 0) {
+                const auto path = encoding_root / L"pinned.txt";
+                if (!notepad_colon::WriteEncodedFileAtomic(path, L"initial\n", Kind::ansi, 1252) ||
+                    !OpenPath(path, 1252)) result = 155;
+                auto* current = result == 0 ? ActiveDocument() : nullptr;
+                if (current) {
+                    if (!notepad_colon::WriteEncodedFileAtomic(path, L"é\n", Kind::utf8)) result = 156;
+                    CheckExternalChanges(true);
+                    if (current->editor->GetText() != L"\u00c3\u00a9\n" || !current->legacy_encoding_override) result = 157;
+                    ReopenActiveWithCodePage(0);
+                    if (current->editor->GetText() != L"é\n" || current->legacy_encoding_override ||
+                        current->detected_encoding != Kind::utf8) result = 158;
+                    const std::vector<std::uint8_t> binary{0xef, 0xbb, 0xbf, 'x', 0, 'y'};
+                    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(binary.data()),
+                                                               static_cast<std::streamsize>(binary.size()));
+                    CheckExternalChanges(true);
+                    if (current->editor->GetText() != L"é\n" || !current->external_changed ||
+                        SaveDocument(*current, false) || ReadFileBytes(path) != std::optional{binary}) result = 159;
+                    if (!notepad_colon::WriteEncodedFileAtomic(path, L"repaired\n", Kind::utf8)) result = 160;
+                    CheckExternalChanges(true);
+                    if (current->editor->GetText() != L"repaired\n" || current->external_changed) result = 161;
+                    std::ofstream(path, std::ios::binary).put(static_cast<char>(0x82));
+                    ReopenActiveWithCodePage(932);
+                    if (current->editor->GetText() != L"repaired\n" || current->legacy_encoding_override || current->read_only)
+                        result = 162;
+                    if (!CloseActive(true)) result = 163;
+                }
+            }
+        }
+        if (result == 0) {
+            // EditorConfig is a fallback for decoding BOMless UTF-16, never
+            // permission to drop a prefix or reinterpret a BOM-tagged file.
+            using Kind = notepad_colon::EncodingKind;
+            const auto root = test_workspace / L"format-config";
+            std::filesystem::create_directories(root);
+            const auto config = root / L".editorconfig";
+            std::ofstream(config) << "root=true\n[*.txt]\ncharset=utf-8-bom\nend_of_line=lf\ninsert_final_newline=true\n";
+            const auto file = root / L"plain.txt";
+            if (!notepad_colon::WriteEncodedFileAtomic(file, L"abcdef", Kind::utf8) || !OpenPath(file)) result = 164;
+            auto* plain = result == 0 ? ActiveDocument() : nullptr;
+            if (plain) {
+                if (plain->editor->GetText() != L"abcdef" || plain->detected_encoding != Kind::utf8 ||
+                    plain->editor->Send(SCI_GETEOLMODE) != SC_EOL_LF || !SaveDocument(*plain, false) ||
+                    ReadFileBytes(file) != notepad_colon::EncodeText(L"abcdef\n", Kind::utf8)) result = 165;
+                if (!CloseActive(true)) result = 166;
+            }
+            if (result == 0 && (!notepad_colon::WriteEncodedFileAtomic(file, L"hello Ω\n", Kind::utf16_be) ||
+                !OpenPath(file))) result = 167;
+            auto* unicode = result == 0 ? ActiveDocument() : nullptr;
+            if (unicode) {
+                if (unicode->editor->GetText() != L"hello Ω\n" || unicode->detected_encoding != Kind::utf16_be ||
+                    !SaveDocument(*unicode, false) ||
+                    ReadFileBytes(file) != notepad_colon::EncodeText(L"hello Ω\n", Kind::utf16_be)) result = 168;
+                if (!CloseActive(true)) result = 169;
+            }
+            std::ofstream(config) << "root=true\n[*.txt]\ncharset=utf-16le\nend_of_line=lf\n";
+            if (result == 0 && (!notepad_colon::WriteEncodedFileAtomic(file, L"hello Ω\n", Kind::utf16_le, 0, {}, false) ||
+                !OpenPath(file))) result = 170;
+            auto* bomless = result == 0 ? ActiveDocument() : nullptr;
+            std::optional<notepad_colon::SessionEntry> saved;
+            if (bomless) {
+                if (bomless->editor->GetText() != L"hello Ω\n" || bomless->unicode_bom || !SaveDocument(*bomless, false) ||
+                    ReadFileBytes(file) != notepad_colon::EncodeText(L"hello Ω\n", Kind::utf16_le, 0, false)) result = 171;
+                if (const auto captured = CaptureSession())
+                    for (const auto& entry : captured->documents) if (entry.path == file) saved = entry;
+                if (!CloseActive(true)) result = 172;
+            }
+            std::filesystem::remove(config);
+            if (result == 0) {
+                if (!saved || !RestoreSessionEntry(*saved)) result = 173;
+                else {
+                    auto* restored = ActiveDocument();
+                    if (restored->unicode_bom || restored->detected_encoding != Kind::utf16_le ||
+                        !SaveDocument(*restored, false) ||
+                        ReadFileBytes(file) != notepad_colon::EncodeText(L"hello Ω\n", Kind::utf16_le, 0, false)) result = 174;
+                    if (!CloseActive(true)) result = 175;
+                }
+            }
+        }
+        if (result == 0) {
             // Empty text is an edit, not a missing recovery payload. Exercise
             // the real capture/write/restore path with a non-default code page.
             const auto empty_file = test_workspace / L"empty-recovery.txt";
@@ -729,6 +848,67 @@ void MainWindow::RunLargeFileSelfTest() noexcept {
         if (std::string(prefix.begin(), prefix.end()) != marker ||
             document->large_buffer->IsModified() || workspace_.Find(document->id)->dirty)
             result = 43;
+    }
+    if (result == 0) {
+        // Whole-file conversions must never mutate only the visible window.
+        const auto size = document->large_buffer->Size();
+        SetEncoding(mwfl::TextEncoding::utf16_le);
+        SetAnsiEncoding(932);
+        SetLineEnding(notepad_colon::LineEnding::lf);
+        if (document->detected_encoding != notepad_colon::EncodingKind::utf8 ||
+            document->large_buffer->Size() != size || workspace_.Find(document->id)->dirty ||
+            commands_.Find(kUtf16Le)->IsEnabled()) result = 176;
+        const auto path = workspace_.Find(document->id)->path;
+        // Two scalars cross both the 8 MiB view boundary and its lookahead
+        // boundary. Neither detection nor scrolling may turn them into ANSI.
+        static_cast<void>(session_writer_.Flush());
+        constexpr std::uint64_t boundary = 8u * 1024 * 1024;
+        constexpr std::string_view scalars = "\xf0\x9f\x98\x80\xf0\x9f\x98\x80";
+        const auto original = document->large_buffer->Read(boundary - 2, scalars.size());
+        {
+            std::fstream patch(path, std::ios::binary | std::ios::in | std::ios::out);
+            patch.seekp(static_cast<std::streamoff>(boundary - 2));
+            patch.write(scalars.data(), static_cast<std::streamsize>(scalars.size()));
+            if (!patch) result = 185;
+        }
+        CheckExternalChanges(true);
+        if (document->detected_encoding != notepad_colon::EncodingKind::utf8 || document->read_only) result = 186;
+        MoveLargeFileWindow(true);
+        if (!document->editor->GetText().value_or(L"").starts_with(L"😀😀") ||
+            workspace_.Find(document->id)->dirty) result = 187;
+        {
+            std::fstream patch(path, std::ios::binary | std::ios::in | std::ios::out);
+            patch.seekp(static_cast<std::streamoff>(boundary - 2));
+            patch.write(reinterpret_cast<const char*>(original.data()), static_cast<std::streamsize>(original.size()));
+            if (!patch) result = 188;
+        }
+        CheckExternalChanges(true);
+        document->follow_tail = true;
+        constexpr std::string_view appended = "extra-tail\n";
+        std::ofstream(path, std::ios::binary | std::ios::app) << appended;
+        CheckExternalChanges(true);
+        const auto followed = document->editor->GetText();
+        if (!document->large_buffer || document->large_buffer->Size() != size + appended.size() ||
+            !followed || !followed->ends_with(L"extra-tail\n") || !document->follow_tail ||
+            workspace_.Find(document->id)->dirty) result = 177;
+        std::filesystem::resize_file(path, size);
+        CheckExternalChanges(true);
+        if (!document->large_buffer || document->large_buffer->Size() != size || !document->follow_tail) result = 178;
+        const auto old_identity = document->file_state.file_index;
+        const auto rotation = path.wstring() + L".rotation";
+        if (!::CopyFileW(path.c_str(), rotation.c_str(), FALSE) ||
+            !::ReplaceFileW(path.c_str(), rotation.c_str(), nullptr, 0, nullptr, nullptr)) result = 179;
+        CheckExternalChanges(true);
+        if (document->file_state.file_index == old_identity || !document->follow_tail) result = 180;
+        const auto regrow = path.wstring() + L".regrow";
+        if (!::CopyFileW(path.c_str(), regrow.c_str(), FALSE)) result = 181;
+        std::filesystem::resize_file(path, 0);
+        CheckExternalChanges(true);
+        if (document->large_buffer || document->editor->GetText() != L"" || !document->follow_tail) result = 182;
+        if (!::ReplaceFileW(path.c_str(), regrow.c_str(), nullptr, 0, nullptr, nullptr)) result = 183;
+        CheckExternalChanges(true);
+        if (!document->large_buffer || document->large_buffer->Size() != size || !document->follow_tail ||
+            workspace_.Find(document->id)->dirty) result = 184;
     }
     StopWorkers();
     RemoveTestState();

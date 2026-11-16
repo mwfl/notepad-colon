@@ -1,5 +1,7 @@
 #pragma once
 
+#include <notepad_colon/encoding_analysis.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <stop_token>
@@ -50,12 +52,7 @@ struct SearchResult {
     std::wstring error;
 };
 
-struct FileState {
-    std::uintmax_t size = 0;
-    std::filesystem::file_time_type last_write{};
-    bool exists = false;
-    friend bool operator==(const FileState&, const FileState&) = default;
-};
+using FileState = EncodedWriteExpectation;
 
 bool IsExcludedWorkspaceDirectory(std::wstring_view name) noexcept;
 WorkspaceScan ScanWorkspace(const std::filesystem::path& root,

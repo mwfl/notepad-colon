@@ -63,6 +63,10 @@ code indexing out of the process.
 - Automatic detection of legacy CJK encodings — GB18030, Big5, Shift-JIS,
   EUC-JP and EUC-KR — independent of the system code page, with **Reopen as**
   and **Convert to** commands for each.
+- Opening, external reload, comparison and folder search use the same checked
+  decoder. **Reopen with Automatic Encoding** clears a manual code-page override.
+  A file's BOM and existing encoding take precedence over EditorConfig charset
+  hints; hints can decode BOMless UTF-16 without adding a BOM when saving.
 - Lossless conversion checks, mixed-EOL reporting, and warnings for bidi and
   zero-width characters.
 - Safe atomic replacement, optional backup-before-save, conflict detection, and
@@ -91,6 +95,9 @@ code indexing out of the process.
   conflict-safe streaming save, and follow-tail are supported.
 - Other large encodings remain read-only until byte-to-character mapping can be
   guaranteed lossless.
+- Whole-file encoding and line-ending conversions are disabled in large-file
+  windows. UTF-8 log following handles truncation and rotation, including an
+  empty file that grows again; unreadable updates keep the last usable text.
 
 ### Logs and tables
 

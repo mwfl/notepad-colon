@@ -16,7 +16,7 @@ bool MainWindow::ConfigureViewLanguage(mwfl::ScintillaEditor& view, const Editor
         return notepad_colon::ConfigureRegisteredLanguage(view, lexilla_, *registered, dark);
     return notepad_colon::ConfigureLanguage(
         view, lexilla_, document.language, dark,
-        document.mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
+        document.large_buffer ? notepad_colon::SyntaxPerformanceMode::lightweight
                              : notepad_colon::SyntaxPerformanceMode::full);
 }
 

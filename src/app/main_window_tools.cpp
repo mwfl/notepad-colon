@@ -5,6 +5,9 @@ namespace notepad_colon::app {
 void MainWindow::CompareWithFile() {
     const auto* document = ActiveDocument();
     if (!document) return;
+    if (document->large_buffer) {
+        status_.SetText(Tr(L"A complete comparison is unavailable for this file; local edits were retained. Use Save As")); return;
+    }
     const auto left = document->editor->GetText();
     if (!left) return;
     const auto selected = mwfl::ShowOpenFileDialog({
@@ -12,9 +15,10 @@ void MainWindow::CompareWithFile() {
         .filters = {{Tr(L"Text and source files"), L"*.txt;*.md;*.cpp;*.h;*.json;*.xml;*.ini;*.yaml;*.yml;*.ps1"},
                     {Tr(L"All files"), L"*.*"}}});
     if (!selected.accepted) return;
-    const auto loaded = mwfl::ReadTextFile(selected.path);
-    if (!loaded.Succeeded()) { status_.SetText(Tr(L"Comparison file could not be opened")); return; }
-    ShowComparison(selected.path.filename().wstring(), *left, loaded.value->text);
+    const auto loaded = notepad_colon::ReadEncodedFileText(selected.path, notepad_colon::LargeFilePolicy{}.editable_limit,
+        0, {}, notepad_colon::ResolveEditorConfig(selected.path).encoding);
+    if (!loaded) { status_.SetText(Tr(L"Comparison file could not be opened")); return; }
+    ShowComparison(selected.path.filename().wstring(), *left, loaded->text);
 }
 
 void MainWindow::CompareWithDisk() {
@@ -24,10 +28,16 @@ void MainWindow::CompareWithDisk() {
         status_.SetText(Tr(L"Save the document before comparing with its saved version"));
         return;
     }
+    if (document->large_buffer) {
+        status_.SetText(Tr(L"A complete comparison is unavailable for this file; local edits were retained. Use Save As")); return;
+    }
     const auto left = document->editor->GetText();
-    const auto loaded = mwfl::ReadTextFile(metadata->path);
-    if (!left || !loaded.Succeeded()) { status_.SetText(Tr(L"Saved version could not be read")); return; }
-    ShowComparison(Tr(L"Saved — ") + metadata->title, *left, loaded.value->text);
+    const auto loaded = notepad_colon::ReadEncodedFileText(metadata->path, notepad_colon::LargeFilePolicy{}.editable_limit,
+        document->detected_encoding == notepad_colon::EncodingKind::ansi ? document->ansi_code_page : 0,
+        document->legacy_encoding_override ? std::optional{notepad_colon::EncodingKind::ansi} : std::nullopt,
+        document->detected_encoding);
+    if (!left || !loaded) { status_.SetText(Tr(L"Saved version could not be read")); return; }
+    ShowComparison(Tr(L"Saved — ") + metadata->title, *left, loaded->text);
 }
 
 void MainWindow::ShowComparison(std::wstring right_title, std::wstring left_text,

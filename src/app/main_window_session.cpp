@@ -301,6 +301,9 @@ std::optional<notepad_colon::Session> MainWindow::CaptureSession() {
             ? notepad_colon::Encoding::ansi : ToSessionEncoding(document->encoding);
         entry.line_ending = document->line_ending;
         entry.ansi_code_page = document->ansi_code_page;
+        entry.legacy_encoding_override = document->legacy_encoding_override;
+        entry.unicode_bom = document->unicode_bom;
+        entry.line_ending_override = document->line_ending_override;
         const auto selection = document->editor->GetSelection();
         entry.view.anchor = selection.start;
         entry.view.caret = selection.end;
@@ -382,9 +385,10 @@ bool MainWindow::RestoreSessionEntry(const notepad_colon::SessionEntry& entry, b
         }
     }
     if (!entry.recovery_file.empty()) {
-        if (!OpenPath(entry.recovery_file)) return false;
+        if (!OpenPath(entry.recovery_file, 0, false, true)) return false;
     } else if (!entry.path.empty() && OpenPath(entry.path,
-            entry.encoding == notepad_colon::Encoding::ansi ? entry.ansi_code_page : 0)) {
+            entry.encoding == notepad_colon::Encoding::ansi ? entry.ansi_code_page : 0,
+            entry.legacy_encoding_override, false, static_cast<notepad_colon::EncodingKind>(entry.encoding))) {
         if (entry.dirty) {
             auto* document = ActiveDocument();
             // Pre-v5 large sessions contain only a window, so recover that
@@ -406,6 +410,9 @@ bool MainWindow::RestoreSessionEntry(const notepad_colon::SessionEntry& entry, b
         document->detected_encoding = static_cast<notepad_colon::EncodingKind>(entry.encoding);
         document->line_ending = entry.line_ending;
         if (entry.ansi_code_page) document->ansi_code_page = entry.ansi_code_page;
+        document->legacy_encoding_override = entry.legacy_encoding_override;
+        document->unicode_bom = entry.unicode_bom;
+        document->line_ending_override = entry.line_ending_override;
         if (entry.path.empty() && !entry.recovery_file.empty())
             workspace_.Rename(document->id, Tr(L"Recovered session note"), {});
         if (!entry.path.empty()) {
@@ -416,7 +423,8 @@ bool MainWindow::RestoreSessionEntry(const notepad_colon::SessionEntry& entry, b
             workspace_.Rename(document->id, entry.path.filename().wstring(), already_open ? std::filesystem::path{} : entry.path);
             document->file_state = entry.disk_state.value_or(notepad_colon::CaptureFileState(entry.path));
             document->stamp = QueryFileStamp(entry.path);
-            document->external_changed = notepad_colon::CaptureFileState(entry.path) != document->file_state;
+            document->external_changed = !notepad_colon::MatchesEncodedFileState(
+                document->file_state, notepad_colon::CaptureFileState(entry.path));
             if (const auto* language = language_registry_.Detect(entry.path)) {
                 document->language = language->builtin.value_or(notepad_colon::Language::plain_text);
                 document->language_id = language->id;
@@ -426,6 +434,10 @@ bool MainWindow::RestoreSessionEntry(const notepad_colon::SessionEntry& entry, b
         if (document->large_buffer && entry.dirty) document->large_buffer->MarkModified();
         workspace_.SetDirty(document->id, entry.dirty);
     }
+    document->line_ending_override = entry.line_ending_override;
+    const auto ending = document->line_ending_override.value_or(document->line_ending);
+    document->editor->Send(SCI_SETEOLMODE, ending == notepad_colon::LineEnding::lf ? SC_EOL_LF :
+        ending == notepad_colon::LineEnding::cr ? SC_EOL_CR : SC_EOL_CRLF);
     if (document->large_buffer && document->large_buffer->Size() > 0) {
         const auto offset = (std::min)(entry.window_offset, document->large_buffer->Size() - 1);
         if (!LoadLargeFileWindow(*document, offset)) return false;

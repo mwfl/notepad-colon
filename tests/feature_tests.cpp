@@ -3,7 +3,9 @@
 #include <notepad_colon/comparison.h>
 #include <notepad_colon/encoding_analysis.h>
 #include <notepad_colon/encoding_detection.h>
+#include <notepad_colon/editor_config.h>
 #include <notepad_colon/language.h>
+#include <notepad_colon/large_file_buffer.h>
 #include <notepad_colon/language_registry.h>
 #include <notepad_colon/line_tools.h>
 #include <notepad_colon/localization.h>
@@ -13,6 +15,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -210,6 +213,168 @@ void WriteBytes(const std::filesystem::path& path, const std::vector<std::uint8_
 std::vector<std::uint8_t> EncodeAs(std::wstring_view text, notepad_colon::EncodingKind kind,
                                    unsigned int code_page = 0) {
     return notepad_colon::EncodeText(text, kind, code_page).value_or(std::vector<std::uint8_t>{});
+}
+
+void TestReliableFileIO() {
+    using namespace notepad_colon;
+    const auto root = std::filesystem::temp_directory_path() /
+        (L"notepad-colon-file-io-" + std::to_wstring(::GetCurrentProcessId()));
+    std::filesystem::create_directories(root);
+    const auto path = root / L"document.txt";
+    const auto text_at = [](const std::filesystem::path& file) -> std::optional<std::wstring> {
+        auto loaded = ReadEncodedFileText(file, 1024 * 1024);
+        return loaded ? std::optional{std::move(loaded->text)} : std::nullopt;
+    };
+    struct Sample { EncodingKind kind; unsigned int page; std::wstring_view text; bool bom = true; };
+    const Sample samples[]{
+        {EncodingKind::utf8, 0, L"plain text and Ω\n"},
+        {EncodingKind::utf8_bom, 0, L"UTF-8 BOM 中文\r\n"},
+        {EncodingKind::utf16_le, 0, L"UTF-16 LE 😀\n"},
+        {EncodingKind::utf16_be, 0, L"UTF-16 BE 😀\r\n"},
+        {EncodingKind::utf16_le, 0, L"BOMless UTF-16 LE\n", false},
+        {EncodingKind::utf16_be, 0, L"BOMless UTF-16 BE\n", false},
+        {EncodingKind::ansi, 54936, L"这是简体中文文件，我们需要打开并保存。\n"},
+        {EncodingKind::ansi, 950, L"這是繁體中文檔案，我們需要打開並儲存。\n"},
+        {EncodingKind::ansi, 932, L"これは日本語のテキストファイルです。保存します。\n"},
+        {EncodingKind::ansi, 51932, L"これは日本語のテキストファイルです。保存します。\n"},
+        {EncodingKind::ansi, 949, L"이것은 한국어 텍스트 파일입니다. 저장합니다.\n"},
+        {EncodingKind::ansi, 1252, L"Café déjà vu, Straße.\n"},
+    };
+    for (const auto& sample : samples) {
+        if (sample.page && !::IsValidCodePage(sample.page)) continue;
+        EncodedWriteExpectation written;
+        Check(WriteEncodedFileAtomic(path, sample.text, sample.kind, sample.page, {}, sample.bom, &written),
+              "write a complete file and return its committed identity");
+        const auto loaded = ReadEncodedFileText(path, 1024 * 1024, sample.page, {}, sample.kind);
+        Check(loaded && loaded->text == sample.text && loaded->analysis.encoding == sample.kind &&
+              loaded->state == written && written.file_index != 0 &&
+              written.last_write == std::filesystem::last_write_time(path),
+              "read text, code page and metadata from the same file generation");
+        const auto expected = EncodeText(sample.text, sample.kind, sample.page, sample.bom);
+        Check(expected && ReadBytes(path) == *expected, "the initial write preserves every encoded byte");
+        if (loaded) {
+            Check(WriteEncodedFileAtomic(path, loaded->text, loaded->analysis.encoding, loaded->analysis.code_page,
+                    loaded->state, loaded->analysis.has_bom) && expected && ReadBytes(path) == *expected,
+                  "read and resave preserve BOM presence, byte order, code page and line endings");
+        }
+    }
+    const std::array<std::uint8_t, 3> ascii{'a', 'b', 'c'};
+    Check(DecodeBytes(ascii, EncodingKind::utf8_bom) == L"abc", "a missing UTF-8 BOM never eats the first three bytes");
+    const std::array<std::uint8_t, 4> broken_utf16{0xff, 0xfe, 0x00, 0xd8};
+    Check(!DecodeBytes(broken_utf16, EncodingKind::utf16_le), "unpaired UTF-16 surrogates are rejected");
+    Check(!EncodeText(std::wstring{static_cast<wchar_t>(0xd800)}, EncodingKind::utf16_le),
+          "invalid UTF-16 input is never written as a successful conversion");
+    const std::array<std::uint8_t, 1> broken_sjis{0x82};
+    Check(!DecodeBytes(broken_sjis, EncodingKind::ansi, 932), "a truncated Shift-JIS sequence is never replaced silently");
+    WriteBytes(path, {0xef, 0xbb, 0xbf, 0xc3});
+    Check(!ReadEncodedFileText(path, 1024), "invalid BOM-tagged UTF-8 cannot fall back to a legacy encoding");
+    {
+        LargeFileBuffer damaged;
+        MappedFile mapped;
+        Check(damaged.Open(path, false) && !damaged.ReadTextWindow(0, 1024, EncodingKind::utf8_bom) &&
+              mapped.Open(path, false) && !mapped.ReadTextWindow(0, 1024, EncodingKind::utf8_bom),
+              "a damaged final character is not trimmed away at the actual end of a file");
+    }
+    WriteBytes(path, {0xef, 0xbb, 0xbf, 'x', 0, 'y'});
+    Check(!ReadEncodedFileText(path, 1024) && !DecodeFileText(ReadBytes(path), 1252, EncodingKind::ansi),
+          "embedded NUL content cannot be silently truncated by the editor control");
+
+    Check(WriteEncodedFileAtomic(path, L"original", EncodingKind::utf8), "prepare a stale-file test");
+    const auto original = ReadEncodedFileState(path);
+    const auto replacement = root / L"replacement.txt";
+    Check(WriteEncodedFileAtomic(replacement, L"external", EncodingKind::utf8), "prepare an equal-length replacement");
+    if (original) std::filesystem::last_write_time(replacement, original->last_write);
+    Check(::ReplaceFileW(path.c_str(), replacement.c_str(), nullptr, 0, nullptr, nullptr) != FALSE,
+          "replace a document without changing its size or timestamp");
+    const auto external = ReadEncodedFileState(path);
+    Check(original && external && original->size == external->size && original->last_write == external->last_write &&
+          original->file_index != external->file_index &&
+          !WriteEncodedFileAtomic(path, L"overwrite", EncodingKind::utf8, 0, original) &&
+          text_at(path) == L"external",
+          "file identity blocks stale saves even when size and timestamps match");
+    const auto lock = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    const auto locked_state = ReadEncodedFileState(path);
+    Check(lock != INVALID_HANDLE_VALUE && (!locked_state || locked_state->exists) && !ReadEncodedFileText(path, 1024),
+          "file-sharing violations are errors, not missing files or empty text");
+    if (lock != INVALID_HANDLE_VALUE) ::CloseHandle(lock);
+    Check(::SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_READONLY) != FALSE &&
+          !WriteEncodedFileAtomic(path, L"lost", EncodingKind::utf8) && text_at(path) == L"external",
+          "a failed save leaves a read-only target intact");
+    ::SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+    Check(!ReadEncodedFileText(path, 2), "bounded reads do not allocate for an oversized file");
+    const auto shared_writer = ::CreateFileW(path.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    const auto live = ReadEncodedFileText(path, 1024, 0, {}, {}, true);
+    Check(shared_writer != INVALID_HANDLE_VALUE && !ReadEncodedFileText(path, 1024) && live && live->text == L"external" &&
+          !WriteEncodedFileAtomic(path, L"overwrite", EncodingKind::utf8),
+          "ordinary reads and saves reject an active writer; explicit follow reads remain available");
+    if (shared_writer != INVALID_HANDLE_VALUE) ::CloseHandle(shared_writer);
+
+    const auto source = root / L"large-source.txt";
+    const auto rescued = root / L"rescued.txt";
+    const std::array<std::uint8_t, 1> edit{'!'};
+    LargeFileBuffer buffer;
+    Check(WriteEncodedFileAtomic(source, L"original", EncodingKind::utf8) && buffer.Open(source, false) &&
+          buffer.Insert(1, edit), "prepare a buffered large-file source with local edits");
+    Check(WriteEncodedFileAtomic(source, L"external", EncodingKind::utf8) && !buffer.SaveAs(source),
+          "a renamed external version cannot be overwritten by a stale piece table");
+    auto frozen = buffer.Snapshot();
+    Check(frozen != nullptr && buffer.SaveAs(rescued) && text_at(rescued) == L"o!riginal" &&
+          text_at(source) == L"external",
+          "Save As can rescue the original edited contents after an external atomic replacement");
+    if (frozen) {
+        const auto cached = frozen->Checkpoint(root / L"cache");
+        const auto corrupt = root / L"cache-replacement";
+        if (cached) {
+            WriteBytes(corrupt, std::vector<std::uint8_t>(static_cast<std::size_t>(cached->size), '?'));
+            std::filesystem::last_write_time(corrupt, cached->state.last_write);
+            Check(::ReplaceFileW(cached->path.c_str(), corrupt.c_str(), nullptr, 0, nullptr, nullptr) != FALSE,
+                  "replace a cached recovery copy without changing its size or timestamp");
+            const auto repaired = frozen->Checkpoint(root / L"cache");
+            Check(repaired && repaired->path != cached->path && repaired->checksum == cached->checksum &&
+                  text_at(repaired->path) == L"o!riginal",
+                  "recovery-cache identity checks regenerate an externally replaced copy");
+        } else Check(false, "create a reusable recovery checkpoint");
+    }
+    buffer.Close();
+    Check(buffer.Open(source, false) && buffer.Insert(1, edit) && ::DeleteFileW(source.c_str()),
+          "delete an open, buffered source after local edits");
+    auto deleted = buffer.Snapshot();
+    Check(deleted && deleted->Checkpoint(root / L"deleted-recovery") && buffer.SaveAs(root / L"deleted-rescue.txt") &&
+          text_at(root / L"deleted-rescue.txt") == L"e!xternal",
+          "deleted large-file contents can still be checkpointed and recreated losslessly");
+    buffer.Close();
+    frozen.reset();
+    deleted.reset();
+    const auto workspace = root / L"workspace";
+    std::filesystem::create_directories(workspace);
+    std::ofstream(workspace / L".editorconfig") << "root=true\n[*.txt]\ncharset=utf-16le\n";
+    const auto bomless = workspace / L"bomless.txt";
+    Check(WriteEncodedFileAtomic(bomless, L"needle Ω\n", EncodingKind::utf16_le, 0, {}, false),
+          "prepare a BOMless UTF-16 workspace file");
+    Check(SearchWorkspace(workspace, L"needle").matches.size() == 1,
+          "folder search uses the same EditorConfig fallback as opening the file");
+    ReplaceOptions replacements;
+    replacements.create_backups = false;
+    Check(ReplaceInWorkspace(workspace, L"needle", L"thread", replacements).files_changed == 1 &&
+          ReadBytes(bomless) == EncodeText(L"thread Ω\n", EncodingKind::utf16_le, 0, false).value(),
+          "folder replacement preserves a UTF-16 file's lack of BOM");
+    const auto unicode_directory = workspace / L"中文目录";
+    std::filesystem::create_directories(unicode_directory);
+    std::ofstream(unicode_directory / L".editorconfig") <<
+        "\xef\xbb\xbf[*.txt]\ncharset=unset\nend_of_line=unset\n";
+    const auto unicode_path = unicode_directory / L"日本語.txt";
+    Check(WriteEncodedFileAtomic(unicode_path, L"Unicode path\n", EncodingKind::utf8) &&
+          SearchWorkspace(unicode_directory, L"Unicode").matches.size() == 1,
+          "EditorConfig and folder search handle Unicode directory and file names");
+    Check(!notepad_colon::ResolveEditorConfig(unicode_path).encoding,
+          "a child config can unset an inherited encoding, including a BOM-tagged config file");
+    std::ofstream(unicode_directory / L".editorconfig") << "\xef\xbb\xbfroot=true\n[*.txt]\nend_of_line=lf\n";
+    const auto rooted = notepad_colon::ResolveEditorConfig(unicode_path);
+    Check(!rooted.encoding && rooted.line_ending == LineEnding::lf,
+          "a UTF-8 BOM does not hide the EditorConfig root marker");
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }
 
 void TestReplaceInText() {
@@ -770,6 +935,7 @@ void TestColumnTools() {
 int main() {
     TestLanguages();
     TestEncodingDetection();
+    TestReliableFileIO();
     TestReplaceInText();
     TestReplaceInWorkspace();
     TestLocalization();

@@ -557,6 +557,11 @@ void MainWindow::SyncPresentation(std::wstring_view action) {
     set_enabled(kClose, has_editor, false);
     set_enabled(kUndo, has_editor && document->editor->CanUndo(), true);
     set_enabled(kRedo, has_editor && document->editor->CanRedo(), true);
+    const bool can_convert = has_editor && !document->large_buffer && !document->read_only;
+    for (const auto id : {kUtf8, kUtf8Bom, kUtf16Le, kUtf16Be, kSaveSystemAnsi, kCrlf, kLf})
+        set_enabled(id, can_convert, false);
+    for (WORD index = 0; index < notepad_colon::SupportedLegacyCodePages().size(); ++index)
+        set_enabled({static_cast<WORD>(kConvertCodePageBase.value + index)}, can_convert, false);
     if (menu_changed) ::DrawMenuBar(GetHwnd());
 }
 

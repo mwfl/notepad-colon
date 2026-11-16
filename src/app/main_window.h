@@ -208,8 +208,7 @@ constexpr mwfl::ControlId kCloseRightTabs{429};
 constexpr mwfl::ControlId kOpenNewWindow{430};
 constexpr mwfl::ControlId kEncodingInfo{431};
 constexpr mwfl::ControlId kReopenSystemAnsi{432};
-// 433 and 434 were the fixed Windows-1252 / GB18030 reopen commands; the
-// per-code-page ranges below replace them.
+constexpr mwfl::ControlId kReopenAutomatic{433};
 constexpr mwfl::ControlId kReopenCodePageBase{900};
 constexpr mwfl::ControlId kConvertCodePageBase{920};
 constexpr mwfl::ControlId kSaveSystemAnsi{435};
@@ -299,7 +298,6 @@ struct EditorDocument {
     notepad_colon::EncodingKind detected_encoding = notepad_colon::EncodingKind::utf8;
     unsigned int ansi_code_page = 65001;
     notepad_colon::EncodingAnalysis encoding_analysis;
-    std::unique_ptr<notepad_colon::MappedFile> mapped_file;
     std::unique_ptr<notepad_colon::LargeFileBuffer> large_buffer;
     std::uint64_t mapped_offset = 0;
     std::uint64_t mapped_decoded_offset = 0;
@@ -329,6 +327,9 @@ struct EditorDocument {
     std::optional<std::wstring> review_base;
     std::shared_ptr<const notepad_colon::LargeFileBuffer> recovery_snapshot;
     std::uint64_t recovery_revision = UINT64_MAX;
+    bool legacy_encoding_override = false;
+    bool unicode_bom = true;
+    std::optional<notepad_colon::LineEnding> line_ending_override;
     // Second view onto the same Scintilla document (declared last so it is
     // destroyed before the primary editor that owns the document).
     std::unique_ptr<mwfl::ScintillaEditor> split_editor;
@@ -619,7 +620,9 @@ private:
 
     void NewDocument(std::wstring text = {}, std::wstring title = {});
 
-    bool OpenPath(const std::filesystem::path& path, unsigned int ansi_code_page = 0);
+    bool OpenPath(const std::filesystem::path& path, unsigned int ansi_code_page = 0,
+                  bool pin_legacy_encoding = true, bool recovery_copy = false,
+                  std::optional<notepad_colon::EncodingKind> known_encoding = {});
 
     void OpenInteractive();
 
@@ -819,6 +822,8 @@ private:
     void ShowEncodingInformation();
 
     void ReopenActiveWithCodePage(unsigned int code_page);
+    bool ReloadDocumentFromDisk(EditorDocument& document, bool follow_tail = false,
+                                 std::optional<unsigned int> force_code_page = {});
 
     void SetAnsiEncoding(unsigned int code_page);
 

@@ -9,6 +9,7 @@
 namespace notepad_colon {
 namespace {
 std::string Trim(std::string value) {
+    if (value.starts_with("\xef\xbb\xbf")) value.erase(0, 3);
     const auto whitespace = [](unsigned char ch) { return std::isspace(ch) != 0; };
     value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), whitespace));
     value.erase(std::find_if_not(value.rbegin(), value.rend(), whitespace).base(), value.end());
@@ -36,7 +37,15 @@ bool GlobMatch(std::string_view pattern, std::string_view text) {
 
 void Apply(EditorConfigSettings& out, std::string key, std::string value) {
     key = Lower(Trim(std::move(key))); value = Lower(Trim(std::move(value)));
-    if (value == "unset") return;
+    if (value == "unset") {
+        if (key == "indent_style") out.use_tabs.reset();
+        else if (key == "indent_size") out.indent_size.reset();
+        else if (key == "end_of_line") out.line_ending.reset();
+        else if (key == "charset") out.encoding.reset();
+        else if (key == "trim_trailing_whitespace") out.trim_trailing_whitespace.reset();
+        else if (key == "insert_final_newline") out.insert_final_newline.reset();
+        return;
+    }
     if (key == "indent_style") out.use_tabs = value == "tab";
     else if (key == "indent_size" && value != "tab") {
         try { const auto size = std::stoul(value); if (size >= 1 && size <= 16) out.indent_size = size; }
@@ -63,7 +72,8 @@ EditorConfigSettings ResolveEditorConfig(const std::filesystem::path& file) {
     auto directory = file.parent_path();
     for (std::size_t depth = 0; !directory.empty() && depth < 64; ++depth) {
         const auto config = directory / L".editorconfig";
-        if (std::filesystem::is_regular_file(config)) {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(config, error) && !error) {
             bool root = false; std::ifstream input(config); std::string line;
             while (std::getline(input, line)) {
                 const auto equal = line.find('=');
@@ -80,8 +90,11 @@ EditorConfigSettings ResolveEditorConfig(const std::filesystem::path& file) {
     std::ranges::reverse(configs);
     for (const auto& config : configs) {
         std::ifstream input(config.path); std::string line, section; bool active = false;
-        const auto relative = std::filesystem::relative(file, config.path.parent_path()).generic_string();
-        const auto filename = file.filename().string();
+        const auto relative_path = file.lexically_normal().lexically_relative(config.path.parent_path().lexically_normal());
+        const auto relative_utf8 = relative_path.generic_u8string();
+        const auto filename_utf8 = file.filename().generic_u8string();
+        const std::string relative{reinterpret_cast<const char*>(relative_utf8.data()), relative_utf8.size()};
+        const std::string filename{reinterpret_cast<const char*>(filename_utf8.data()), filename_utf8.size()};
         while (std::getline(input, line)) {
             line = Trim(std::move(line));
             if (line.empty() || line.front() == '#' || line.front() == ';') continue;

@@ -61,13 +61,20 @@ void MainWindow::BuildCommands() {
         }))
         .Add(mwfl::Command(kFollowTail, L"Follow Growing File", [this] {
             auto* document = ActiveDocument();
-            if (!document || !document->large_buffer) {
-                status_.SetText(Tr(L"Follow mode is available for large files")); return;
+            if (document && document->follow_tail) {
+                document->follow_tail = false;
+                status_.SetText(Tr(L"Follow mode stopped")); return;
             }
-            document->follow_tail = !document->follow_tail;
+            const auto* metadata = document ? workspace_.Find(document->id) : nullptr;
+            if (!document || !metadata || metadata->path.empty() || metadata->dirty || document->read_only ||
+                (document->detected_encoding != notepad_colon::EncodingKind::utf8 &&
+                 document->detected_encoding != notepad_colon::EncodingKind::utf8_bom)) {
+                status_.SetText(Tr(L"Follow mode requires a saved, unmodified UTF-8 file")); return;
+            }
+            document->follow_tail = true;
             // A growing log is exactly where highlighted levels help most.
             if (document->follow_tail) document->highlight_lines = true;
-            status_.SetText(document->follow_tail ? Tr(L"Following appended data") : Tr(L"Follow mode stopped"));
+            status_.SetText(Tr(L"Following appended data"));
         }))
         .Add(mwfl::Command(kRefreshGitChanges, L"Refresh Git Change Markers", [this] {
             RefreshGitChangeMarkers(); }))
@@ -82,6 +89,7 @@ void MainWindow::BuildCommands() {
     commands_
         .Add(mwfl::Command(kEncodingInfo, L"Document Encoding Information...", [this] { ShowEncodingInformation(); }))
         .Add(mwfl::Command(kReopenSystemAnsi, L"Reopen with System ANSI", [this] { ReopenActiveWithCodePage(::GetACP()); }))
+        .Add(mwfl::Command(kReopenAutomatic, L"Reopen with Automatic Encoding", [this] { ReopenActiveWithCodePage(0); }))
         .Add(mwfl::Command(kSaveSystemAnsi, L"Convert to System ANSI", [this] { SetAnsiEncoding(::GetACP()); }));
     {
         WORD index = 0;
@@ -407,6 +415,7 @@ void MainWindow::BuildMenu() {
         mwfl::Must(encoding.AppendCommand(*commands_.Find(
             {static_cast<WORD>(kConvertCodePageBase.value + index)})), "append convert command");
     mwfl::Must(encoding.AppendSeparator(), "append encoding separator");
+    mwfl::Must(encoding.AppendCommand(*commands_.Find(kReopenAutomatic)), "append automatic reopen command");
     mwfl::Must(encoding.AppendCommand(*commands_.Find(kReopenSystemAnsi)), "append reopen command");
     for (WORD index = 0; index < notepad_colon::SupportedLegacyCodePages().size(); ++index)
         mwfl::Must(encoding.AppendCommand(*commands_.Find(

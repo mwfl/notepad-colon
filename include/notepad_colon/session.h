@@ -26,6 +26,9 @@ struct SessionEntry {
     // Transient worker input; durable sessions refer to an independent copy.
     std::shared_ptr<const LargeFileBuffer> large_snapshot;
     std::optional<FileState> disk_state;
+    bool legacy_encoding_override = false;
+    bool unicode_bom = true;
+    std::optional<LineEnding> line_ending_override;
 };
 
 struct Session {

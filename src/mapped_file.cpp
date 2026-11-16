@@ -47,6 +47,24 @@ void MappedFile::Close() noexcept {
 
 bool MappedFile::IsOpen() const noexcept { return file_ != INVALID_HANDLE_VALUE; }
 
+std::optional<EncodedWriteExpectation> MappedFile::State() const noexcept {
+    return IsOpen() ? ReadEncodedFileHandleState(file_) : std::nullopt;
+}
+
+std::optional<MappedFile> MappedFile::CloneBuffered(bool stable) const noexcept {
+    MappedFile copy;
+    HANDLE duplicate = INVALID_HANDLE_VALUE;
+    if (!IsOpen()) return std::nullopt;
+    if (stable) {
+        duplicate = ::ReOpenFile(static_cast<HANDLE>(file_), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0);
+        if (duplicate == INVALID_HANDLE_VALUE) return std::nullopt;
+    } else if (!::DuplicateHandle(::GetCurrentProcess(), static_cast<HANDLE>(file_),
+        ::GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) return std::nullopt;
+    copy.file_ = duplicate;
+    copy.size_ = size_;
+    return copy;
+}
+
 std::vector<std::uint8_t> MappedFile::Read(std::uint64_t offset, std::size_t length) const {
     if (!IsOpen() || offset >= size_ || !length) return {};
     const auto available = size_ - offset;
@@ -127,7 +145,8 @@ std::optional<MappedTextWindow> MappedFile::ReadTextWindow(
     if (bytes.empty()) return std::nullopt;
     const auto window_encoding = encoding == EncodingKind::utf8_bom && read_offset != 0
         ? EncodingKind::utf8 : encoding;
-    for (std::size_t trim = 0; trim <= 4 && trim <= bytes.size(); ++trim) {
+    const auto maximum_trim = read_offset + bytes.size() < size_ ? std::size_t{4} : std::size_t{0};
+    for (std::size_t trim = 0; trim <= maximum_trim && trim <= bytes.size(); ++trim) {
         auto decoded = DecodeBytes(std::span<const std::uint8_t>{bytes}.first(bytes.size() - trim),
                                    window_encoding, ansi_code_page);
         if (!decoded) continue;

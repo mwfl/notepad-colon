@@ -34,6 +34,8 @@ public:
     bool Open(const std::filesystem::path& path, bool use_mapping = true) noexcept;
     void Close() noexcept;
     bool IsOpen() const noexcept;
+    std::optional<EncodedWriteExpectation> State() const noexcept;
+    std::optional<MappedFile> CloneBuffered(bool stable = false) const noexcept;
     std::uint64_t Size() const noexcept { return size_; }
     std::vector<std::uint8_t> Read(std::uint64_t offset, std::size_t length) const;
     std::optional<std::uint64_t> Find(std::span<const std::uint8_t> needle,

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Unify opening, external reload, comparisons and folder operations on a checked,
+  lossless decoder. Preserve legacy code-page overrides, UTF-16 byte order and
+  BOM presence; add automatic-encoding reopen and reject malformed text safely.
+- Detect disk replacements even when the new file preserves the original size
+  and timestamp. Refuse saves while another writer holds the destination, and
+  retain edited large-file contents for Save As after deletion or replacement.
+- Keep UTF-8 log following active across append, truncation to zero, rotation
+  and regrowth. Prevent encoding or line-ending conversion from changing only
+  a large file's loaded window, and keep typed newlines consistent with the file.
+- Treat EditorConfig charset as a fallback instead of reinterpreting a detected
+  encoding. Handle Unicode paths, BOM-tagged configs and inherited `unset`
+  properties, and retain BOMless UTF-16 through search, replacement and recovery.
+
 - Preserve unsaved empty documents and explicit ANSI code pages across session
   recovery. Restore the saved caret and scroll position for clean documents too.
 - Checkpoint the complete contents of edited large files in a background worker,

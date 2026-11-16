@@ -7,7 +7,7 @@ void MainWindow::SetActiveLanguage(notepad_colon::Language language) {
     if (!document || document->language == language) return;
     if (!notepad_colon::ConfigureLanguage(
             *document->editor, lexilla_, language, IsDark(),
-            document->mapped_file ? notepad_colon::SyntaxPerformanceMode::lightweight
+            document->large_buffer ? notepad_colon::SyntaxPerformanceMode::lightweight
                                   : notepad_colon::SyntaxPerformanceMode::full)) {
         status_.SetText(Tr(L"Could not load the selected syntax lexer"));
         return;
@@ -79,7 +79,7 @@ std::optional<std::string> MainWindow::EditorUtf8(const mwfl::ScintillaEditor& e
 void MainWindow::InitializeSyntaxTree(EditorDocument& document) noexcept {
     document.syntax_tree.reset();
     document.wasm_syntax.reset();
-    if (document.mapped_file) return;
+    if (document.large_buffer) return;
     const auto text = EditorUtf8(*document.editor);
     if (!text || text->size() > 8u * 1024 * 1024) return;
     try {
@@ -216,7 +216,7 @@ void MainWindow::ToggleActiveLineComment() {
 
 void MainWindow::ShowLocalCompletion() {
     auto* document = ActiveDocument();
-    if (!document || document->large_buffer || document->mapped_file) {
+    if (!document || document->large_buffer) {
         status_.SetText(Tr(L"Local completion is disabled for large files")); return;
     }
     const auto text = EditorUtf8(*document->editor);

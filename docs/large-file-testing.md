@@ -1,7 +1,9 @@
 # Large-file testing
 
 The large-file path avoids placing the complete document in Scintilla or RAM.
-An 8 MiB decoded window is backed by a mapped source and a piece table. Saving
+An 8 MiB decoded window is backed by a file reader and a piece table. The editor
+uses shared-delete buffered handles so log rotation does not have to wait for
+an open memory mapping. Saving
 streams original and inserted pieces to a temporary file, flushes it, checks
 the source again for external changes, and atomically replaces the destination.
 
@@ -14,8 +16,11 @@ ctest --preset vs2026-x64-release -L performance --output-on-failure
 ```
 
 `notepad-colon.large-file-edit` creates a 34 MiB UTF-8 C++ text file, opens it
-through the application, inserts a marker, streams the save, and checks both
-the marker and unchanged tail. `notepad-colon.performance` creates a sparse
+through the application, edits and checkpoints several distant regions, restores
+the complete checkpoint, streams the save, and checks both the marker and
+unchanged tail. It also follows append, shrink, atomic rotation, truncation to
+zero and regrowth, and verifies that whole-file conversions cannot change just
+the loaded window. `notepad-colon.performance` creates a sparse
 file of exactly 4 GiB, opens it without allocating 4 GiB, edits near the tail,
 and verifies fixed-memory search near that position.
 
@@ -31,6 +36,12 @@ Manual acceptance for a 100 MiB or 4 GiB UTF-8 file:
    to overwrite it.
 7. Enable **Follow Growing File**, append lines externally, and confirm the view
    advances without discarding edits (follow mode requires a clean document).
+8. Rotate or truncate the followed file, including to zero bytes, then grow it
+   again. Confirm the next valid update loads and following remains enabled.
 
 Full-file regular expressions are deliberately restricted to the loaded window
 for large files. Literal full-file search is streaming and bounded-memory.
+
+For sustained-run acceptance, keep the log writer's handle open and append
+continuously. Sample tail-update latency, private bytes and handle counts over
+repeated updates, including periods when the writer never becomes idle.

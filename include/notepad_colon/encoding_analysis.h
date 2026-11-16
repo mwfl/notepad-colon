@@ -40,7 +40,33 @@ struct EncodedWriteExpectation {
     std::uintmax_t size = 0;
     std::filesystem::file_time_type last_write{};
     bool exists = false;
+    std::uint64_t file_index = 0;
+    std::uint32_t volume_serial = 0;
+    friend bool operator==(const EncodedWriteExpectation&, const EncodedWriteExpectation&) = default;
 };
+
+struct DecodedFileText {
+    std::wstring text;
+    EncodingAnalysis analysis;
+};
+
+struct EncodedFileText : DecodedFileText {
+    EncodedWriteExpectation state;
+};
+
+// Missing files return an empty state; access/I/O errors return nullopt.
+std::optional<EncodedWriteExpectation> ReadEncodedFileState(const std::filesystem::path& path) noexcept;
+// Read metadata from a caller-owned Windows file handle without changing its position.
+std::optional<EncodedWriteExpectation> ReadEncodedFileHandleState(void* handle) noexcept;
+bool MatchesEncodedFileState(const EncodedWriteExpectation& expected,
+                             const EncodedWriteExpectation& current) noexcept;
+std::optional<DecodedFileText> DecodeFileText(std::span<const std::uint8_t> bytes,
+    unsigned int legacy_code_page = 0, std::optional<EncodingKind> force_encoding = {},
+    std::optional<EncodingKind> fallback_encoding = {});
+std::optional<EncodedFileText> ReadEncodedFileText(const std::filesystem::path& path,
+    std::uintmax_t maximum_size, unsigned int legacy_code_page = 0,
+    std::optional<EncodingKind> force_encoding = {}, std::optional<EncodingKind> fallback_encoding = {},
+    bool allow_live_writes = false);
 
 EncodingAnalysis AnalyzeEncoding(std::span<const std::uint8_t> bytes,
                                  unsigned int ansi_code_page = 0);
@@ -49,9 +75,11 @@ std::optional<std::wstring> DecodeBytes(std::span<const std::uint8_t> bytes,
                                         unsigned int ansi_code_page = 0);
 std::optional<std::vector<std::uint8_t>> EncodeText(std::wstring_view text,
                                                     EncodingKind encoding,
-                                                    unsigned int ansi_code_page = 0);
+                                                    unsigned int ansi_code_page = 0,
+                                                    bool unicode_bom = true);
 bool WriteEncodedFileAtomic(const std::filesystem::path& path, std::wstring_view text,
                             EncodingKind encoding, unsigned int ansi_code_page = 0,
-                            std::optional<EncodedWriteExpectation> expected = std::nullopt) noexcept;
+                            std::optional<EncodedWriteExpectation> expected = std::nullopt,
+                            bool unicode_bom = true, EncodedWriteExpectation* written_state = nullptr) noexcept;
 
 }  // namespace notepad_colon

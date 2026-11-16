@@ -104,7 +104,7 @@ bool WriteDurable(const std::filesystem::path& path, std::string_view bytes) {
 
 std::string SerializeSession(const Session& session) {
     std::ostringstream output;
-    output << "NPCSESSION\t5\t" << session.active_index;
+    output << "NPCSESSION\t6\t" << session.active_index;
     if (!session.workspace_paths.empty()) {
         for (const auto& path : session.workspace_paths) output << '\t' << Escape(path.wstring());
     } else if (!session.workspace_path.empty()) {
@@ -122,7 +122,11 @@ std::string SerializeSession(const Session& session) {
                << entry.recovery_checksum << '\t' << (entry.disk_state ? 1 : 0) << '\t'
                << (entry.disk_state && entry.disk_state->exists ? 1 : 0) << '\t'
                << (entry.disk_state ? entry.disk_state->size : 0) << '\t'
-               << (entry.disk_state ? entry.disk_state->last_write.time_since_epoch().count() : 0) << '\n';
+               << (entry.disk_state ? entry.disk_state->last_write.time_since_epoch().count() : 0) << '\t'
+               << (entry.legacy_encoding_override ? 1 : 0) << '\t' << (entry.unicode_bom ? 1 : 0) << '\t'
+               << (entry.disk_state ? entry.disk_state->file_index : 0) << '\t'
+               << (entry.disk_state ? entry.disk_state->volume_serial : 0) << '\t'
+               << (entry.line_ending_override ? static_cast<int>(*entry.line_ending_override) : -1) << '\n';
     }
     const auto contents = output.str();
     output << "NPCEND\t" << session.documents.size() << '\t' << Checksum(contents) << '\n';
@@ -132,7 +136,7 @@ std::string SerializeSession(const Session& session) {
 bool DeserializeSession(std::string_view input, Session& session) noexcept {
     try {
         std::optional<std::size_t> document_count;
-        if (input.starts_with("NPCSESSION\t5\t")) {
+        if (input.starts_with("NPCSESSION\t5\t") || input.starts_with("NPCSESSION\t6\t")) {
             const auto footer_start = input.rfind("\nNPCEND\t");
             if (footer_start == std::string_view::npos || input.back() != '\n') return false;
             const auto footer = input.substr(footer_start + 8, input.size() - footer_start - 9);
@@ -156,9 +160,10 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
         if (header_fields.size() < 3 ||
             header_fields[0] != "NPCSESSION" ||
             (header_fields[1] != "1" && header_fields[1] != "2" &&
-             header_fields[1] != "3" && header_fields[1] != "4" && header_fields[1] != "5")) return false;
-        const bool version4 = header_fields[1] == "4" || header_fields[1] == "5";
-        const bool version5 = header_fields[1] == "5";
+             header_fields[1] != "3" && header_fields[1] != "4" && header_fields[1] != "5" && header_fields[1] != "6")) return false;
+        const bool version6 = header_fields[1] == "6";
+        const bool version5 = header_fields[1] == "5" || version6;
+        const bool version4 = header_fields[1] == "4" || version5;
         if ((header_fields[1] == "1" && header_fields.size() != 3) ||
             (header_fields[1] == "2" && header_fields.size() != 4)) return false;
         std::size_t active = 0;
@@ -188,7 +193,7 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
             std::string field;
             while (std::getline(row, field, '\t')) fields.push_back(field);
             if (!line.empty() && line.back() == '\t') fields.emplace_back();
-            if (fields.size() != (version5 ? 17u : version4 ? 9u : 8u)) return false;
+            if (fields.size() != (version6 ? 22u : version5 ? 17u : version4 ? 9u : 8u)) return false;
             SessionEntry entry;
             int encoding = 0, ending = 0;
             if (!Number(fields[0], encoding) || !Number(fields[1], ending)) return false;
@@ -206,11 +211,13 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
                 const auto& page = fields[8];
                 const auto parsed_page = std::from_chars(page.data(), page.data() + page.size(), entry.ansi_code_page);
                 if (parsed_page.ec != std::errc{} || parsed_page.ptr != page.data() + page.size() ||
-                    (entry.ansi_code_page != 0 && !::IsValidCodePage(entry.ansi_code_page))) return false;
+                    (entry.encoding == Encoding::ansi && entry.ansi_code_page != 0 &&
+                     !::IsValidCodePage(entry.ansi_code_page))) return false;
             }
             std::wstring path;
             if (!Unescape(fields[6], path) || !Unescape(fields[7], entry.recovery_text)) return false;
             entry.path = path;
+            entry.legacy_encoding_override = entry.encoding == Encoding::ansi && entry.ansi_code_page != 0;
             if (version5) {
                 std::wstring copy;
                 if (!Number(fields[9], entry.window_offset) || !Unescape(fields[10], copy) ||
@@ -226,6 +233,19 @@ bool DeserializeSession(std::string_view input, Session& session) noexcept {
                 state.exists = exists != 0;
                 state.last_write = std::filesystem::file_time_type{std::filesystem::file_time_type::duration{ticks}};
                 if (has_state) entry.disk_state = state;
+                if (version6) {
+                    int pinned = 0, bom = 0;
+                    if (!Number(fields[17], pinned) || (pinned != 0 && pinned != 1) ||
+                        !Number(fields[18], bom) || (bom != 0 && bom != 1) ||
+                        !Number(fields[19], state.file_index) || !Number(fields[20], state.volume_serial)) return false;
+                    entry.legacy_encoding_override = pinned != 0;
+                    entry.unicode_bom = bom != 0;
+                    if (has_state) entry.disk_state = state;
+                    int override_ending = -1;
+                    if (!Number(fields[21], override_ending) || override_ending < -1 ||
+                        override_ending > static_cast<int>(LineEnding::cr)) return false;
+                    if (override_ending >= 0) entry.line_ending_override = static_cast<LineEnding>(override_ending);
+                }
             }
             parsed.documents.push_back(std::move(entry));
         }

@@ -98,4 +98,6 @@ try {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath ($path + '.bak') -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath ($path + '.selftest-error') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($path + '.rotation') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($path + '.regrow') -Force -ErrorAction SilentlyContinue
 }
