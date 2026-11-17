@@ -38,7 +38,8 @@ void MainWindow::RunSelfTest() noexcept {
         if (toolbar_count != 9) result = 44;
         SIZE toolbar_image_size{};
         if (!toolbar_images_.GetIconSize(toolbar_image_size) ||
-            toolbar_image_size.cx != 24 || toolbar_image_size.cy != 24)
+            toolbar_image_size.cx != toolbar_icon_size_ || toolbar_image_size.cy != toolbar_icon_size_ ||
+            toolbar_icon_size_ < 24)
             result = 44;
         for (int index = 0; index < toolbar_count; ++index) {
             TBBUTTON button{};

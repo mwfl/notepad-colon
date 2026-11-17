@@ -268,7 +268,7 @@ void MainWindow::ShowDocumentSymbols() {
     };
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Document Symbols"),
         .initial_client_size = {520.0_dip, 420.0_dip}, .resizable = true,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window}; ui.Add(query, {741}, L""); ui.Add(list, {742}, {});
             ui.Add(open, {IDOK}, Tr(L"Go to")); ui.Add(cancel, {IDCANCEL}, Tr(L"Cancel"));
             const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)

@@ -32,16 +32,17 @@ void MainWindow::BuildUI() {
         ::GetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE));
     ::SetWindowLongPtrW(toolbar_.GetHwnd(), GWL_STYLE,
                         toolbar_style & ~static_cast<DWORD>(TBSTYLE_LIST));
-    mwfl::Must(toolbar_images_.Create(24, 24, ILC_COLOR24 | ILC_MASK, 7, 1),
+    const int dpi = static_cast<int>(::GetDpiForWindow(GetHwnd()));
+    // Icons are drawn from the system icon font at the display scale; without
+    // that font the 24-pixel bitmap strip is used as it is.
+    toolbar_icon_size_ = ::MulDiv(24, dpi, 96);
+    mwfl::Must(toolbar_images_.Create(toolbar_icon_size_, toolbar_icon_size_, ILC_COLOR32, 7, 1),
                "create toolbar image list");
-    const auto strip = reinterpret_cast<HBITMAP>(::LoadImageW(
-        ::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDB_TOOLBAR), IMAGE_BITMAP,
-        0, 0, LR_CREATEDIBSECTION));
-    mwfl::Must(strip != nullptr &&
-                   ImageList_AddMasked(toolbar_images_.GetHandle(), strip,
-                                       RGB(255, 0, 255)) == 0,
-               "load toolbar images");
-    ::DeleteObject(strip);
+    if (!LoadToolbarImages(IsDark()) && toolbar_icon_size_ != 24) {
+        toolbar_icon_size_ = 24;
+        mwfl::Must(toolbar_images_.Create(24, 24, ILC_COLOR32, 7, 1), "create toolbar image list");
+    }
+    mwfl::Must(LoadToolbarImages(IsDark()), "load toolbar images");
     mwfl::Must(toolbar_images_.SetBackgroundColor(CLR_NONE),
                "make toolbar images transparent");
     mwfl::Must(toolbar_.SetImageList(toolbar_images_), "attach toolbar images");
@@ -73,8 +74,11 @@ void MainWindow::BuildUI() {
     add_separator(); add_button(kToggleFindBar);
     ::SendMessageW(toolbar_.GetHwnd(), TB_SETMAXTEXTROWS, 0, 0);
     ::SendMessageW(toolbar_.GetHwnd(), TB_SETINDENT, 6, 0);
-    ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONSIZE, 0, MAKELPARAM(40, 36));
-    ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0, MAKELPARAM(8, 6));
+    ::SendMessageW(toolbar_.GetHwnd(), TB_SETBUTTONSIZE, 0,
+                   MAKELPARAM(toolbar_icon_size_ + ::MulDiv(16, dpi, 96),
+                              toolbar_icon_size_ + ::MulDiv(12, dpi, 96)));
+    ::SendMessageW(toolbar_.GetHwnd(), TB_SETPADDING, 0,
+                   MAKELPARAM(::MulDiv(8, dpi, 96), ::MulDiv(6, dpi, 96)));
     toolbar_.AutoSize();
     mwfl::Must(mwfl::SetAccessibleName(toolbar_.GetHwnd(), Tr(L"Primary commands").c_str()),
                "name toolbar");
@@ -86,6 +90,9 @@ void MainWindow::BuildUI() {
                "attach document tab adapter");
     ::SendMessageW(tabs_.GetHwnd(), TCM_SETPADDING, 0, MAKELPARAM(14, 5));
     BuildMenu();
+    InstallDarkMenuBar(GetHwnd());
+    InstallDarkTabStrip(tabs_.GetHwnd());
+    InstallDarkStatusBar(status_.GetHwnd());
     mwfl::Must(accelerators_.Create(commands_), "create accelerators");
     SetAccelerators(accelerators_.GetHandle());
 
@@ -508,7 +515,28 @@ void MainWindow::ApplyEditorAppearance(bool dark) {
     }
 }
 
+bool MainWindow::LoadToolbarImages(bool dark) noexcept {
+    const COLORREF ink = dark ? RGB(228, 228, 228) : RGB(42, 55, 70);
+    // In image-list order: new, open, save, undo, redo, find, open folder.
+    constexpr std::wstring_view glyphs = L"";
+    if (FillToolbarGlyphs(toolbar_images_.GetHandle(), glyphs, toolbar_icon_size_, ink)) return true;
+    // The bitmap strip only fits an image list of its own size.
+    if (toolbar_icon_size_ != 24) return false;
+    const auto strip = reinterpret_cast<HBITMAP>(::LoadImageW(
+        ::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDB_TOOLBAR), IMAGE_BITMAP,
+        0, 0, LR_CREATEDIBSECTION));
+    if (!strip) return false;
+    const bool loaded = FillToolbarImages(toolbar_images_.GetHandle(), strip, ink);
+    ::DeleteObject(strip);
+    return loaded;
+}
+
 void MainWindow::ApplyNativeControlColors(const mwfl::AppearanceState& state) noexcept {
+    FlattenControlBorders(GetHwnd(), state.IsDark());
+    if (toolbar_.GetHwnd() && toolbar_images_.GetHandle()) {
+        static_cast<void>(LoadToolbarImages(state.IsDark()));
+        ::InvalidateRect(toolbar_.GetHwnd(), nullptr, TRUE);
+    }
     const COLORREF background = state.palette.control_background;
     const COLORREF text = state.palette.text;
     if (status_.GetHwnd())

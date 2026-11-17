@@ -182,6 +182,7 @@ add_executable(notepad-colon WIN32
     src/app/main_window_languages.cpp
     src/app/main_window_lines.cpp
     src/app/main_window_replace.cpp
+    src/app/dark_chrome.cpp
     src/app/main_window_review.cpp
     src/app/main_window_search.cpp
     src/app/main_window_self_test.cpp

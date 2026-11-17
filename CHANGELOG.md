@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Finish the dark theme. The menu bar, document tabs, status bar and every
+  dialog are now dark instead of white, toolbar icons are larger, drawn at the
+  display scale and tinted so they stay
+  visible, and the bright 3D frame around the editor and input fields is gone.
+
 - Keep sustained log following bounded: install refreshed text without retaining
   old windows in undo history, decode only the captured UTF-8 tail, and use
   lightweight coloring while following. Preserve exact-state checks for saving

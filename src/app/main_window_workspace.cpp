@@ -86,7 +86,7 @@ std::optional<std::wstring> MainWindow::PromptWorkspaceName(std::wstring_view ti
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = std::wstring(title),
         .initial_client_size = {400.0_dip, 104.0_dip}, .resizable = false,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(name, {731}, std::wstring(initial));
                 ui.Add(accept, {IDOK}, Tr(L"OK")); ui.Add(cancel, {IDCANCEL}, Tr(L"Cancel"));
                 mwfl::SetAccessibleName(name.GetHwnd(), Tr(L"Workspace item name").c_str());
@@ -133,7 +133,7 @@ void MainWindow::ShowWorkspaceManager() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Recent and Favorite Workspaces"),
         .initial_client_size = {620.0_dip, 330.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(list, {781}, {});
                 ui.Add(open, {782}, Tr(L"Open")); ui.Add(favorite, {783}, Tr(L"Favorite / Unfavorite"));
                 ui.Add(close, {IDCANCEL}, Tr(L"Close"));

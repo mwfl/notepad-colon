@@ -367,7 +367,7 @@ void MainWindow::ShowHighlightRules() {
     mwfl::Dialog* pointer = nullptr;
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Highlight Rules"),
         .initial_client_size = {620.0_dip, 210.0_dip}, .resizable = false,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window};
             ui.Add(caption, {780}, Tr(L"Rules (first match wins)"));
             ui.Add(rules_box, {781}, mwfl::FromUtf8(
@@ -431,7 +431,7 @@ void MainWindow::ShowFilterLines() {
     mwfl::Dialog* pointer = nullptr;
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Filter Lines"),
         .initial_client_size = {520.0_dip, 250.0_dip}, .resizable = false,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window};
             ui.Add(caption, {790}, Tr(L"Keep lines containing"));
             ui.Add(query_box, {791}, query);

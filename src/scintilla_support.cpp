@@ -609,6 +609,18 @@ void GoToLine(mwfl::ScintillaEditor& editor, std::size_t one_based_line) noexcep
 void ApplyPreferences(mwfl::ScintillaEditor& editor,
                       const Preferences& preferences,
                       bool dark) noexcept {
+    // The sunken 3D edge is drawn in light system colours, which leaves a
+    // bright frame around a dark editor; the dark theme goes without it.
+    if (const HWND window = editor.GetHwnd()) {
+        const auto extended = ::GetWindowLongPtrW(window, GWL_EXSTYLE);
+        const auto wanted = dark ? extended & ~static_cast<LONG_PTR>(WS_EX_CLIENTEDGE)
+                                 : extended | WS_EX_CLIENTEDGE;
+        if (wanted != extended) {
+            ::SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
+            ::SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+    }
     const int required = ::WideCharToMultiByte(CP_UTF8, 0, preferences.font_name.c_str(), -1,
                                                 nullptr, 0, nullptr, nullptr);
     std::string font(required > 0 ? static_cast<std::size_t>(required) : 1, '\0');

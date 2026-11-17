@@ -65,6 +65,8 @@
 #include <commctrl.h>
 #include <Scintilla.h>
 
+#include "dark_chrome.h"
+
 using mwfl::operator""_dip;
 
 namespace notepad_colon::app {
@@ -655,6 +657,7 @@ private:
     void ApplyAppearance();
 
     void ApplyEditorAppearance(bool dark);
+    bool LoadToolbarImages(bool dark) noexcept;
 
     void ApplyNativeControlColors(const mwfl::AppearanceState& state) noexcept;
 
@@ -980,6 +983,7 @@ private:
     bool session_checkpoint_blocked_ = false;
     std::optional<std::wstring> session_restore_warning_;
     bool find_bar_visible_ = false;
+    int toolbar_icon_size_ = 24;
     bool search_match_case_ = false;
     bool search_whole_word_ = false;
     bool search_regex_ = false;

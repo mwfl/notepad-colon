@@ -160,7 +160,7 @@ void MainWindow::ShowChangeReview(EditorDocument& document) {
         .owner = GetHwnd(), .title = Tr(L"Review External Changes — ") + metadata->title,
         .initial_client_size = {1040.0_dip, 640.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window};
                 ui.Add(left_label, {621}, Tr(L"Before"));
                 ui.Add(right_label, {622}, Tr(L"After (in the editor now)"));

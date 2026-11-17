@@ -586,7 +586,7 @@ void MainWindow::ShowCommandPalette() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Command Palette"),
         .initial_client_size = {560.0_dip, 430.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(query, {701}, L""); ui.Add(list, {702}, {});
                 ui.Add(hint, {703}, L""); ui.Add(run, {IDOK}, Tr(L"Run")); ui.Add(cancel, {IDCANCEL}, Tr(L"Cancel"));
                 mwfl::SetAccessibleName(query.GetHwnd(), Tr(L"Filter commands").c_str());
@@ -656,7 +656,7 @@ void MainWindow::SaveLastMacro() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Save Macro"),
         .initial_client_size = {420.0_dip, 110.0_dip}, .resizable = false,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(name, {711}, L"");
                 ui.Add(save, {IDOK}, Tr(L"Save")); ui.Add(cancel, {IDCANCEL}, Tr(L"Cancel"));
                 mwfl::SetAccessibleName(name.GetHwnd(), Tr(L"Macro name").c_str());
@@ -685,7 +685,7 @@ void MainWindow::ShowMacroManager() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Macros"),
         .initial_client_size = {520.0_dip, 330.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(list, {721}, {});
                 ui.Add(play, {722}, Tr(L"Play")); ui.Add(remove, {723}, Tr(L"Delete")); ui.Add(close, {IDCANCEL}, Tr(L"Close"));
                 for (const auto& macro : saved_macros_)
@@ -795,7 +795,7 @@ void MainWindow::ShowShortcutSettings() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Keyboard Shortcuts"),
         .initial_client_size = {650.0_dip, 460.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(list, {731}, {}); ui.Add(shortcut, {732}, L"");
                 ui.Add(diagnostic, {733}, L""); ui.Add(apply, {IDOK}, Tr(L"Apply"));
                 ui.Add(defaults, {734}, Tr(L"Restore defaults")); ui.Add(close, {IDCANCEL}, Tr(L"Close"));

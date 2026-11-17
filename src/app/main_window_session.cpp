@@ -81,7 +81,7 @@ void MainWindow::ShowPreferences() {
         .owner = GetHwnd(), .title = Tr(L"Notepad:: Preferences"),
         .initial_client_size = {500.0_dip, 390.0_dip}, .resizable = false,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window};
                 ui.Add(font_label, {401}, Tr(L"Font family")); ui.Add(font, {402}, candidate.font_name);
                 ui.Add(size_label, {403}, Tr(L"Font size (8-40)")); ui.Add(size, {404}, std::to_wstring(candidate.font_size));
@@ -190,7 +190,7 @@ void MainWindow::ShowRecoveryManager() {
         .owner = GetHwnd(), .title = Tr(L"Recovery Manager"),
         .initial_client_size = {620.0_dip, 340.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window};
                 ui.Add(list, {501}, {});
                 ui.Add(details, {502}, Tr(L"Local snapshots, newest first"));

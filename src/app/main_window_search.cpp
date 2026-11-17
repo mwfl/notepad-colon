@@ -58,7 +58,7 @@ void MainWindow::ShowQuickOpen() {
     };
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Quick Open File"),
         .initial_client_size = {620.0_dip, 430.0_dip}, .resizable = true,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window}; ui.Add(query, {743}, L""); ui.Add(list, {744}, {});
             ui.Add(open, {IDOK}, Tr(L"Open")); ui.Add(cancel, {IDCANCEL}, Tr(L"Cancel"));
             const auto layout = pointer->SetLayout(mwfl::Column().Margin(8.0_dip).Gap(6.0_dip)
@@ -236,7 +236,7 @@ bool MainWindow::PromptFolderSearch(std::wstring& query, bool& open_documents_on
     mwfl::Dialog* pointer = nullptr;
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Find in Files"),
         .initial_client_size = {560.0_dip, 270.0_dip}, .resizable = false,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window};
             ui.Add(query_label, {750}, Tr(L"Find")); ui.Add(query_box, {751}, query);
             ui.Add(include_label, {752}, Tr(L"Include files (semicolon-separated globs)"));

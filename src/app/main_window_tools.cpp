@@ -122,7 +122,7 @@ void MainWindow::ShowComparison(std::wstring right_title, std::wstring left_text
         .owner = GetHwnd(), .title = Tr(L"Compare Text"),
         .initial_client_size = {980.0_dip, 620.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window};
                 ui.Add(left_label, {601}, Tr(L"Current document"));
                 ui.Add(right_label, {602}, right_title);
@@ -225,7 +225,7 @@ void MainWindow::ShowDocumentStatistics() {
         L"\n" + row(Tr(L"Selected words"), selection_stats.words);
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Document Statistics"),
         .initial_client_size = {410.0_dip, 300.0_dip}, .resizable = false,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window}; ui.Add(values, {741}, content); ui.Add(close, {IDOK}, Tr(L"Close"));
             return pointer->SetLayout(mwfl::Column().Margin(14.0_dip).Gap(8.0_dip)
                 .Add(values, mwfl::Stretch())
@@ -260,7 +260,7 @@ void MainWindow::ShowPageSetup() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Page Setup"),
         .initial_client_size = {470.0_dip, 285.0_dip}, .resizable = false,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(margin_label, {761}, Tr(L"Margins (inches)"));
                 ui.Add(margin, {762}, std::to_wstring(candidate.margin_inches));
                 ui.Add(header, {763}, Tr(L"Print document title in header"));
@@ -406,7 +406,7 @@ void MainWindow::ShowPrintPreview() {
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Print Preview"),
         .initial_client_size = {760.0_dip, 700.0_dip}, .resizable = true,
         .callbacks = {
-            .initialize = [&](HWND window) {
+            .initialize = [&](HWND window) { DarkenDialog(window);
                 mwfl::ControlHost ui{window}; ui.Add(page_label, {751}, L"");
                 ui.Add(previous, {752}, Tr(L"Previous")); ui.Add(next, {753}, Tr(L"Next"));
                 ui.Add(print, {754}, Tr(L"Print...")); ui.Add(close, {IDCANCEL}, Tr(L"Close"));

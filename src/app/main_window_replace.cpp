@@ -15,7 +15,7 @@ bool MainWindow::PromptReplaceInFiles(std::wstring& query, std::wstring& replace
     mwfl::Dialog* pointer = nullptr;
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Replace in Files"),
         .initial_client_size = {580.0_dip, 380.0_dip}, .resizable = false,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window};
             ui.Add(query_label, {760}, Tr(L"Find")); ui.Add(query_box, {761}, query);
             ui.Add(replacement_label, {762}, Tr(L"Replace with"));
@@ -184,7 +184,7 @@ bool MainWindow::ReviewReplacement(notepad_colon::ReplacePlan& plan, bool histor
     mwfl::Dialog dialog({.owner = self_test_ ? nullptr : GetHwnd(),
         .title = history ? Tr(L"Review Replacement History") : Tr(L"Review Replacement"),
         .initial_client_size = {1180.0_dip, 620.0_dip}, .resizable = true,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window};
             if (!files.Create(window, {770}, {}) || !before.Create(window, {771}, {}, runtime_) ||
                 !after.Create(window, {772}, {}, runtime_)) return false;
@@ -444,7 +444,7 @@ void MainWindow::ShowReplacementHistory() {
     mwfl::Dialog* pointer = nullptr;
     mwfl::Dialog dialog({.owner = GetHwnd(), .title = Tr(L"Replacement History"),
         .initial_client_size = {760.0_dip, 400.0_dip}, .resizable = true,
-        .callbacks = {.initialize = [&](HWND window) {
+        .callbacks = {.initialize = [&](HWND window) { DarkenDialog(window);
             mwfl::ControlHost ui{window}; ui.Add(list, {790}, mwfl::RectDip{}, mwfl::ListBoxOptions{});
             for (const auto& plan : plans) {
                 std::size_t changed = 0;
