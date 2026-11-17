@@ -23,3 +23,26 @@ jobs:
       release-title: Notepad Colon
       package-mode: cpack
       cpack-glob: build/vs2026-x64/notepad-colon-*.zip
+
+  # Wraps the published portable ZIP in an installer, so both downloads carry
+  # exactly the same binaries.
+  installer:
+    needs: release
+    runs-on: windows-2025-vs2026
+    permissions: {contents: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Download the published portable ZIP
+        run: gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*-windows-x64-portable.zip' --dir artifacts/release
+      - name: Build installer
+        run: ./scripts/build-installer.ps1 -Zip (Get-Item artifacts/release/*-windows-x64-portable.zip).FullName
+      - name: Test installer
+        run: ./scripts/test-installer.ps1 -Installer (Get-Item artifacts/installer/notepad-colon-*-setup.exe).FullName
+      - name: Publish installer
+        run: |
+          $assets = @(Get-ChildItem artifacts/installer/notepad-colon-*-setup.exe*).FullName
+          gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

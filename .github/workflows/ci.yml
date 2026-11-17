@@ -28,6 +28,16 @@ jobs:
           name: notepad-colon-windows-x64
           path: build/vs2026-x64/notepad-colon-*.zip
           if-no-files-found: error
+      - name: Build installer
+        run: ./scripts/build-installer.ps1 -Zip (Get-Item build/vs2026-x64/notepad-colon-*.zip).FullName
+      - name: Test installer
+        run: ./scripts/test-installer.ps1 -Installer (Get-Item artifacts/installer/notepad-colon-*-setup.exe).FullName
+      - name: Upload installer
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: notepad-colon-windows-x64-setup
+          path: artifacts/installer/notepad-colon-*-setup.exe
+          if-no-files-found: error
 
   # Cross-compiled on the x64 runner: this proves the ARM64 configuration
   # builds and packages. The binaries cannot execute here, so the test suite

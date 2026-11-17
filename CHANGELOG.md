@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add a Windows installer (`windows-x64-setup.exe`) next to the portable ZIP.
+  It installs for the current user without administrator rights, supports
+  silent installation, upgrades in place and uninstalls only what it installed.
+
 ## 1.3.2 - 2026-11-17
 
 - Finish the dark theme. The menu bar, document tabs, status bar and every

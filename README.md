@@ -194,7 +194,10 @@ components and grammar licenses are listed in
 Notepad:: never checks the network for updates. Microsoft Store installations
 are updated by the Store, while Portable users can choose when to download a
 new version from the GitHub Releases page. Tag releases publish a versioned
-`windows-x64-portable.zip` plus SHA-256 checksums.
+`windows-x64-portable.zip` and a `windows-x64-setup.exe` installer built from
+that ZIP, plus SHA-256 checksums. The installer needs no administrator rights:
+it installs for the current user, adds a Start menu shortcut and an
+*Apps & features* entry, and supports silent installation with `/S`.
 
 Build the Store MSIX from an existing Release configuration with:
 
