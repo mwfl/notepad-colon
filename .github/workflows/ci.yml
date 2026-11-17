@@ -28,6 +28,10 @@ jobs:
           name: notepad-colon-windows-x64
           path: build/vs2026-x64/notepad-colon-*.zip
           if-no-files-found: error
+      - name: Install NSIS
+        run: |
+          choco install nsis --version=3.10 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build installer
         run: ./scripts/build-installer.ps1 -Zip (Get-Item build/vs2026-x64/notepad-colon-*.zip).FullName
       - name: Test installer

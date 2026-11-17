@@ -37,6 +37,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Download the published portable ZIP
         run: gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*-windows-x64-portable.zip' --dir artifacts/release
+      - name: Install NSIS
+        run: |
+          choco install nsis --version=3.10 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build installer
         run: ./scripts/build-installer.ps1 -Zip (Get-Item artifacts/release/*-windows-x64-portable.zip).FullName
       - name: Test installer
