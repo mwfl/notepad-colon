@@ -33,7 +33,7 @@
 {L"Search history is empty", L"搜索历史为空"},
 {L"Following appended data", L"正在跟随追加的数据"},
 {L"Follow mode stopped", L"已停止跟随"},
-{L"Notepad:: 1.3.1\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.1\n基于 MWFL 与 Scintilla 的原生日常代码编辑器。"},
+{L"Notepad:: 1.3.2\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.2\n基于 MWFL 与 Scintilla 的原生日常代码编辑器。"},
 {L"About Notepad::", L"关于 Notepad::"},
 {L"Reopen as ", L"重新打开为 "},
 {L"Convert to ", L"转换为 "},

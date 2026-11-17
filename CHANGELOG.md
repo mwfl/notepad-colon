@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.2 - 2026-11-17
 
 - Finish the dark theme. The menu bar, document tabs, status bar and every
   dialog are now dark instead of white, toolbar icons are larger, drawn at the

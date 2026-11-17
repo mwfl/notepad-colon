@@ -27,7 +27,7 @@
 {L"Search history is empty", L"搜尋歷史為空"},
 {L"Following appended data", L"正在跟隨追加的數據"},
 {L"Follow mode stopped", L"已停止跟隨"},
-{L"Notepad:: 1.3.1\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.1\n基于 MWFL 與 Scintilla 的原生日常程式碼編輯器。"},
+{L"Notepad:: 1.3.2\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.2\n基于 MWFL 與 Scintilla 的原生日常程式碼編輯器。"},
 {L"About Notepad::", L"關于 Notepad::"},
 {L"Reopen as ", L"重新開啟為 "},
 {L"Convert to ", L"轉換為 "},

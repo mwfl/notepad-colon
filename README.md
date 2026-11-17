@@ -204,4 +204,4 @@ Build the Store MSIX from an existing Release configuration with:
 
 The script stages the product files, applies the Partner Center package identity,
 generates the required logo sizes from the repository icon, and validates the
-manifest while packing `artifacts/store/notepad-colon-1.3.1.0-x64.msix`.
+manifest while packing `artifacts/store/notepad-colon-1.3.2.0-x64.msix`.

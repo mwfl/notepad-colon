@@ -27,7 +27,7 @@
 {L"Search history is empty", L"खोज का इतिहास खाली है"},
 {L"Following appended data", L"जोड़े गए डेटा का अनुसरण जारी"},
 {L"Follow mode stopped", L"अनुसरण रोक दिया गया"},
-{L"Notepad:: 1.3.1\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.1\nMWFL और Scintilla के साथ रोज़मर्रा के काम का मूल कोड संपादक।"},
+{L"Notepad:: 1.3.2\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.2\nMWFL और Scintilla के साथ रोज़मर्रा के काम का मूल कोड संपादक।"},
 {L"About Notepad::", L"Notepad:: के बारे में"},
 {L"Reopen as ", L"इस रूप में फिर खोलें: "},
 {L"Convert to ", L"इसमें बदलें: "},

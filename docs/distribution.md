@@ -33,7 +33,7 @@ the published name differs. `-Arm64Zip` is optional.
 Nothing is submitted for you. Validate and submit by hand:
 
 ```powershell
-winget validate --manifest artifacts\packages\winget\manifests\a\AtomSprout\NotepadColon\1.3.1
+winget validate --manifest artifacts\packages\winget\manifests\a\AtomSprout\NotepadColon\1.3.2
 ```
 
 Then open a pull request against

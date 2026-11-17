@@ -27,7 +27,7 @@
 {L"Search history is empty", L"L’historique de recherche est vide"},
 {L"Following appended data", L"Suivi des données ajoutées"},
 {L"Follow mode stopped", L"Suivi arrêté"},
-{L"Notepad:: 1.3.1\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.1\nÉditeur de code natif au quotidien, avec MWFL et Scintilla."},
+{L"Notepad:: 1.3.2\nNative everyday code editing with MWFL and Scintilla.", L"Notepad:: 1.3.2\nÉditeur de code natif au quotidien, avec MWFL et Scintilla."},
 {L"About Notepad::", L"À propos de Notepad::"},
 {L"Reopen as ", L"Rouvrir en "},
 {L"Convert to ", L"Convertir en "},
