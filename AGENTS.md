@@ -93,8 +93,9 @@ As of 2026-11-17. Update this section when a release or submission changes.
 - **GitHub Release**: v1.3.2 is the latest, with the portable ZIP and the NSIS
   installer. That installer was built and uploaded by hand; the workflow's
   `installer` job was added afterwards and has not yet run on a tag.
-- **Microsoft Store**: a submission with package 1.3.1.0 was in certification
-  when last checked (2026-11-15). 1.3.2 has not been submitted.
+- **Microsoft Store**: submission 3 (package 1.3.1.0, publisher AtomSprout)
+  passed certification and is live in the Store. 1.3.2 has not been submitted;
+  nothing is in certification, so a new submission can start.
 - **winget**: [microsoft/winget-pkgs#480510](https://github.com/microsoft/winget-pkgs/pull/480510)
   adds `AtomSprout.NotepadColon` 1.3.1. It has passed validation and is
   waiting for a moderator. 1.3.2 has not been submitted.
